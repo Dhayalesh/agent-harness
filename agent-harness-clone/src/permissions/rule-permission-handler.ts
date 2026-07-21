@@ -1,0 +1,70 @@
+import type {
+  PermissionDecision,
+  PermissionHandler,
+  PermissionRequest,
+} from './permission-handler.js';
+
+export type PermissionMode = 'default' | 'plan' | 'bypass' | 'deny';
+
+export type PermissionRule = {
+  tool: string;
+  decision: Exclude<PermissionDecision, 'ask'>;
+  inputPattern?: string;
+  source?: string;
+};
+
+export type RulePermissionOptions = {
+  mode?: PermissionMode;
+  rules?: readonly PermissionRule[];
+  fallback?: PermissionDecision;
+};
+
+export class RulePermissionHandler implements PermissionHandler {
+  private readonly mode: PermissionMode;
+  private readonly rules: readonly PermissionRule[];
+  private readonly fallback: PermissionDecision;
+
+  constructor(options: RulePermissionOptions = {}) {
+    this.mode = options.mode ?? 'default';
+    this.rules = options.rules ?? [];
+    this.fallback = options.fallback ?? 'ask';
+  }
+
+  evaluate(request: PermissionRequest): PermissionDecision {
+    if (this.mode === 'bypass') return 'allow';
+    if (this.mode === 'deny') return 'deny';
+
+    for (const rule of this.rules) {
+      if (!wildcardMatch(rule.tool, request.tool.name)) continue;
+      if (
+        rule.inputPattern !== undefined &&
+        !wildcardMatch(rule.inputPattern, stableInput(request.input))
+      ) {
+        continue;
+      }
+      return rule.decision;
+    }
+
+    if (this.mode === 'plan' && request.tool.kind !== 'read') return 'deny';
+    if (request.tool.kind === 'read') return 'allow';
+    return this.fallback;
+  }
+}
+
+function stableInput(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input && typeof input === 'object') {
+    const record = input as Record<string, unknown>;
+    const preferred = record.command ?? record.path ?? record.filePath;
+    if (typeof preferred === 'string') return preferred;
+  }
+  return JSON.stringify(input);
+}
+
+function wildcardMatch(pattern: string, value: string): boolean {
+  const expression = pattern
+    .split('*')
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${expression}$`).test(value);
+}

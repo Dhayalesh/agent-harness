@@ -1,0 +1,54 @@
+{
+  "name": "@trueai/agent-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UI-independent agent runtime for terminal, web, desktop, IDE, and SDK consumers",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "agent-harness": "./dist/adapters/cli/index.js",
+    "agent-harness-service": "./dist/service/index.js",
+    "agent-platform-service": "./dist/platform/service-index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run format:check && npm run typecheck && npm test",
+    "agent": "tsx src/adapters/cli/index.ts",
+    "service": "tsx src/service/index.ts",
+    "platform": "tsx src/platform/service-index.ts",
+    "platform:setup": "tsx examples/platform/setup-agent.ts",
+    "platform:run": "tsx examples/platform/run-agent.ts",
+    "demo:client": "tsx examples/service/demo-client.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.112.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "mongodb": "^7.5.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.9.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}

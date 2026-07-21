@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/ashok/trueAI/ && echo \"---\" && ls -la /Users/ashok/trueAI/trueAI-harness)",
+      "Read(//Users/ashok/trueAI/**)"
+    ]
+  }
+}
