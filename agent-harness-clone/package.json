@@ -33,6 +33,7 @@
     "service": "tsx src/service/index.ts",
     "platform": "tsx src/platform/service-index.ts",
     "platform:setup": "tsx examples/platform/setup-agent.ts",
+    "platform:setup:web-search": "tsx examples/platform/setup-web-search-agent.ts",
     "platform:run": "tsx examples/platform/run-agent.ts",
     "demo:client": "tsx examples/service/demo-client.ts"
   },

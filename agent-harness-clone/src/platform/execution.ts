@@ -89,7 +89,12 @@ export class AgentExecutionPlatform {
       principal.tenantId,
       resolved.version.definition.model,
     );
-    const tools = this.options.tools.resolve(resolved.version.definition.tools, runtime);
+    const tools = this.options.tools.resolve(
+      resolved.version.definition.tools,
+      runtime,
+      principal,
+      this.options.secrets,
+    );
     const connections = await connectMcpServers(
       resolved.version.definition.mcpServers,
       principal.tenantId,

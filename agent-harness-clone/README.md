@@ -136,6 +136,12 @@ See the [MongoDB platform runbook](./docs/platform.md) for the complete data
 model, API workflow, provider configuration, authentication, capability trust
 boundary, and future worker handoff.
 
+The [Web Research Agent demo](./docs/web-search-agent-demo.md) shows how a
+versioned agent retrieves its model, search tool, skill, permissions, and limits
+from MongoDB, then answers a live question with cited Tavily sources.
+Its [live acceptance result](./docs/web-search-agent-live-result.md) records the
+successful Atlas/OpenRouter/Tavily trajectory and model fallback evidence.
+
 ## Included harness capabilities
 
 - provider-neutral streaming model contract, Anthropic, OpenRouter and generic

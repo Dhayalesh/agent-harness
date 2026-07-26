@@ -252,6 +252,8 @@ export type {
   DefaultPlatformModelResolverOptions,
   PlatformModelResolver,
 } from './platform/model-resolver.js';
+export { registerWebSearchTool } from './platform/web-search-tool.js';
+export type { TavilyWebSearchOptions } from './platform/web-search-tool.js';
 export { MongoPlatformRuntimeStore, MongoTenantSessionStore } from './platform/mongodb-runtime.js';
 export type { MongoPlatformRuntimeStoreOptions } from './platform/mongodb-runtime.js';
 export { InMemoryPlatformRuntimeStore } from './platform/runtime-state.js';

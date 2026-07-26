@@ -17,6 +17,8 @@ import type {
 
 export type ToolFactoryContext = {
   runtime: RuntimeHost;
+  principal: PlatformPrincipal;
+  secrets: PlatformSecretResolver;
   shared: Map<string, unknown>;
 };
 
@@ -32,8 +34,13 @@ export class TrustedToolCatalog {
     return () => this.factories.delete(key);
   }
 
-  resolve(bindings: readonly ToolBinding[], runtime: RuntimeHost): Tool[] {
-    const context: ToolFactoryContext = { runtime, shared: new Map() };
+  resolve(
+    bindings: readonly ToolBinding[],
+    runtime: RuntimeHost,
+    principal: PlatformPrincipal,
+    secrets: PlatformSecretResolver,
+  ): Tool[] {
+    const context: ToolFactoryContext = { runtime, principal, secrets, shared: new Map() };
     return bindings.map((binding) => {
       const factory = this.factories.get(catalogKey(binding.name, binding.version));
       if (!factory) {

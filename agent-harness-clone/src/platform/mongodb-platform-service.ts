@@ -24,6 +24,7 @@ import { startAgentPlatformServer, type RunningAgentPlatformServer } from './api
 import { AgentPlatformSessionManager } from './session-manager.js';
 import type { PlatformPrincipal } from './definitions.js';
 import { mcpServerBindingSchema } from './definitions.js';
+import { registerWebSearchTool } from './web-search-tool.js';
 
 export type MongoAgentPlatformOptions = {
   mongoUri: string;
@@ -57,6 +58,7 @@ export async function startMongoAgentPlatform(
   const controlPlane = new AgentPlatformControlPlane(store);
   const tools = new TrustedToolCatalog();
   registerBuiltinToolCatalog(tools);
+  registerWebSearchTool(tools);
   const dataSources = new TrustedDataSourceCatalog();
   dataSources.register(new InlineDataSourceConnector());
   dataSources.register(new MongoCollectionDataSourceConnector(runtimeStore.database));
