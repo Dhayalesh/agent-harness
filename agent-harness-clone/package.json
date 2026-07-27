@@ -25,23 +25,22 @@
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "tsx --env-file-if-exists=.env --test tests/**/*.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test",
-    "agent": "tsx src/adapters/cli/index.ts",
-    "service": "tsx src/service/index.ts",
-    "platform": "tsx src/platform/service-index.ts",
-    "platform:setup": "tsx examples/platform/setup-agent.ts",
-    "platform:setup:web-search": "tsx examples/platform/setup-web-search-agent.ts",
-    "platform:run": "tsx examples/platform/run-agent.ts",
-    "demo:client": "tsx examples/service/demo-client.ts"
+    "agent": "tsx --env-file-if-exists=.env src/adapters/cli/index.ts",
+    "service": "tsx --env-file-if-exists=.env src/service/index.ts",
+    "platform": "tsx --env-file-if-exists=.env src/platform/service-index.ts",
+    "platform:setup": "tsx --env-file-if-exists=.env examples/platform/setup-agent.ts",
+    "platform:setup:web-search": "tsx --env-file-if-exists=.env examples/platform/setup-web-search-agent.ts",
+    "platform:run": "tsx --env-file-if-exists=.env examples/platform/run-agent.ts",
+    "demo:client": "tsx --env-file-if-exists=.env examples/service/demo-client.ts"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.112.3",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "mongodb": "^7.5.0",
     "zod": "^4.0.0"

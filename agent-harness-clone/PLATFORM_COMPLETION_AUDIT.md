@@ -17,16 +17,16 @@ orphaned by the former process as failed on startup.
 
 ## Implemented evidence
 
-| Area            | Result                                                                                                                                                                             |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model providers | Anthropic, canonical OpenRouter, and operator-allowlisted OpenAI-compatible streaming providers; normalized text, tool calls, usage, stop, error, retry, and cancellation behavior |
-| Control plane   | Tenant agents, immutable checksummed versions, publish, deployment revisions, rollback, archive guards, audit records, and role checks                                             |
-| Database        | MongoDB stores and indexes for agents, versions, deployments, API keys, audit, model messages, platform sessions, run claims, and ordered replay events                            |
-| Execution       | Stored definition resolves exact tool/MCP versions, skills, retrieved data, permissions, limits, model credential, workspace, artifacts, and session store                         |
-| API             | Authenticated management endpoints, session creation/listing, SSE runs, asynchronous permission decisions, interrupt, replay, run status, and close                                |
-| Isolation       | Tenant filters, hashed API/control tokens, tenant-secret namespaces, per-session workspaces/artifacts, safe Mongo filters, trusted model endpoints and exact MCP configurations    |
-| Durability      | Idempotent run IDs, persisted events, automatic session rehydration, monotonic post-restart sequences, and orphaned-run recovery for the single-process mode                       |
-| Demo            | MongoDB service entry point, setup script, and streaming run client; no frontend required                                                                                          |
+| Area            | Result                                                                                                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Model providers | Canonical OpenRouter and operator-allowlisted OpenAI-compatible streaming providers; normalized text, tool calls, usage, stop, error, retry, and cancellation behavior          |
+| Control plane   | Tenant agents, immutable checksummed versions, publish, deployment revisions, rollback, archive guards, audit records, and role checks                                          |
+| Database        | MongoDB stores and indexes for agents, versions, deployments, API keys, audit, model messages, platform sessions, run claims, and ordered replay events                         |
+| Execution       | Stored definition resolves exact tool/MCP versions, skills, retrieved data, permissions, limits, model credential, workspace, artifacts, and session store                      |
+| API             | Authenticated management endpoints, session creation/listing, SSE runs, asynchronous permission decisions, interrupt, replay, run status, and close                             |
+| Isolation       | Tenant filters, hashed API/control tokens, tenant-secret namespaces, per-session workspaces/artifacts, safe Mongo filters, trusted model endpoints and exact MCP configurations |
+| Durability      | Idempotent run IDs, persisted events, automatic session rehydration, monotonic post-restart sequences, and orphaned-run recovery for the single-process mode                    |
+| Demo            | MongoDB service entry point, setup script, and streaming run client; no frontend required                                                                                       |
 
 ## Verification performed
 
@@ -57,9 +57,8 @@ MongoDB URI and passed. Two paid-provider calls remain unexecuted because no
 provider credentials were supplied:
 
 - live OpenRouter streaming: set `AGENT_HARNESS_LIVE_OPENROUTER=1` and
-  `OPENROUTER_API_KEY=...`, then run `npm test`;
-- live Anthropic streaming: set `AGENT_HARNESS_LIVE_ANTHROPIC=1` and
-  `ANTHROPIC_API_KEY=...`, then run `npm test`.
+  `OPENROUTER_API_KEY=...`, optionally `AGENT_HARNESS_LIVE_OPENROUTER_MODEL=...`,
+  then run `npm test`.
 
 These provider calls are deployment acceptance gates, not missing adapter code.
 The deterministic suites exercise their request, SSE parsing, tool-fragment,

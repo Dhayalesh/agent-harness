@@ -12,7 +12,7 @@ import {
   ScriptedModelProvider,
   SessionRateLimiter,
   checkForUpdate,
-  createAnthropicProviderFromSecrets,
+  createOpenRouterProviderFromSecrets,
   type AgentEvent,
   type Tool,
 } from '../../src/index.js';
@@ -60,13 +60,14 @@ test('large tool results are stored as artifacts with bounded previews', async (
 });
 
 test('credentials, notifications, and update discovery stay optional adapters', async () => {
-  const provider = await createAnthropicProviderFromSecrets(
+  const provider = await createOpenRouterProviderFromSecrets(
     new InMemorySecretProvider({ API_KEY: 'test-key' }),
-    { secretName: 'API_KEY', model: 'test-model' },
+    { secretName: 'API_KEY', model: 'openai/gpt-4.1-mini' },
   );
-  assert.equal(provider.name, 'anthropic');
+  assert.equal(provider.name, 'openrouter');
+  assert.equal(provider.defaultModel, 'openai/gpt-4.1-mini');
   await assert.rejects(
-    createAnthropicProviderFromSecrets(new InMemorySecretProvider({})),
+    createOpenRouterProviderFromSecrets(new InMemorySecretProvider({})),
     /Missing provider credential/,
   );
 

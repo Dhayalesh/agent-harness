@@ -18,21 +18,25 @@ export type {
   ModelUsage,
   StopReason,
 } from './models/provider.js';
-export { AnthropicModelProvider } from './models/anthropic-provider.js';
-export type { AnthropicProviderOptions } from './models/anthropic-provider.js';
+export {
+  createOpenRouterProvider,
+  DEFAULT_OPENROUTER_MODEL,
+  listOpenRouterModels,
+  OPENROUTER_BASE_URL,
+  OpenRouterModelProvider,
+} from './models/openrouter-provider.js';
+export type {
+  ListOpenRouterModelsOptions,
+  OpenRouterModel,
+  OpenRouterProviderOptions,
+} from './models/openrouter-provider.js';
 export { RetryModelProvider } from './models/retry-provider.js';
 export type { RetryProviderOptions } from './models/retry-provider.js';
 export { ScriptedModelProvider } from './models/scripted-provider.js';
 export type { ScriptedStep } from './models/scripted-provider.js';
 export { ModelProviderRegistry } from './models/registry.js';
-export {
-  createOpenRouterProvider,
-  OpenAICompatibleModelProvider,
-} from './models/openai-compatible-provider.js';
-export type {
-  OpenAICompatibleProviderOptions,
-  OpenRouterProviderOptions,
-} from './models/openai-compatible-provider.js';
+export { OpenAICompatibleModelProvider } from './models/openai-compatible-provider.js';
+export type { OpenAICompatibleProviderOptions } from './models/openai-compatible-provider.js';
 export {
   AllowAllPermissionHandler,
   DefaultPermissionHandler,
@@ -76,6 +80,36 @@ export {
   FileSnapshotStore,
 } from './tools/builtin/index.js';
 export type { BuiltinToolOptions } from './tools/builtin/index.js';
+export {
+  assertHostAllowed,
+  createTavilySearchProvider,
+  createWebFetchTool,
+  createWebSearchTool,
+  createWebTools,
+  decodeHtmlEntities,
+  extractHtmlTitle,
+  htmlToReadableText,
+  isNonPublicHost,
+  isSameSiteRedirect,
+  MAX_FETCH_URL_LENGTH,
+  resolveFetchUrl,
+  TAVILY_SEARCH_ENDPOINT,
+  tavilyProviderFromEnvironment,
+} from './tools/web/index.js';
+export type {
+  TavilySearchProviderOptions,
+  UrlPolicyOptions,
+  WebFetchInput,
+  WebFetchSummarizer,
+  WebFetchToolOptions,
+  WebSearchHit,
+  WebSearchInput,
+  WebSearchProvider,
+  WebSearchRequest,
+  WebSearchResponse,
+  WebSearchToolOptions,
+  WebToolsOptions,
+} from './tools/web/index.js';
 export {
   CompactingContextManager,
   estimateMessagesTokens,
@@ -184,7 +218,7 @@ export type {
   TeamCoordinatorOptions,
   TeamRunResult,
 } from './tasks/team-coordinator.js';
-export { createAnthropicProviderFromSecrets } from './services/provider-auth.js';
+export { createOpenRouterProviderFromSecrets } from './services/provider-auth.js';
 export { checkForUpdate, compareVersions } from './services/version-service.js';
 export type { VersionInfo, VersionSource } from './services/version-service.js';
 export { runParityScenario } from './testing/parity-runner.js';

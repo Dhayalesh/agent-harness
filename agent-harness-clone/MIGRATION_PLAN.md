@@ -185,7 +185,7 @@ with packages such as `@agent-harness/core`, `@agent-harness/node-runtime`,
    capability, not only moved types or incomplete files.
 2. **Core first, surfaces second.** Behavior belongs in the harness; UIs only
    translate input, events, and permission responses.
-3. **Provider-neutral internal types.** Anthropic-specific SDK types stop at the
+3. **Provider-neutral internal types.** Gateway-specific wire types stop at the
    provider boundary.
 4. **Fail closed.** Unknown tools, invalid schemas, missing permissions, and
    unavailable runtime capabilities are denied or returned as controlled errors.
@@ -248,7 +248,7 @@ Exit gate:
 
 Work:
 
-- first production model adapter, initially Anthropic;
+- first production model adapter, OpenRouter;
 - streamed text and tool-call assembly;
 - tool schema conversion at the provider boundary;
 - tool registry and lookup;

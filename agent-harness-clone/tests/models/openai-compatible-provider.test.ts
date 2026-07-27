@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  createOpenRouterProvider,
   OpenAICompatibleModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
@@ -86,25 +85,22 @@ test('OpenAI-compatible provider maps messages, tools, usage, and streamed tool 
   ]);
 });
 
-test('OpenRouter preset uses the compatible endpoint and attribution headers', async () => {
-  let request: { input: string; init?: RequestInit } | undefined;
-  const provider = createOpenRouterProvider({
-    apiKey: 'openrouter-key',
-    defaultModel: 'anthropic/test-model',
-    appUrl: 'https://app.example',
-    appName: 'Harness Platform',
-    fetch: async (input, init) => {
-      request = { input: String(input), ...(init === undefined ? {} : { init }) };
+test('OpenAI-compatible provider keeps the OpenAI output-limit field', async () => {
+  let body: Record<string, unknown> = {};
+  const provider = new OpenAICompatibleModelProvider({
+    apiKey: 'test-key',
+    baseURL: 'https://compatible.example/v1',
+    defaultModel: 'test/model',
+    fetch: async (_input, init) => {
+      body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return sseResponse([{ choices: [{ delta: { content: 'hello' }, finish_reason: 'stop' }] }]);
     },
   });
   const events: ModelStreamEvent[] = [];
-  for await (const event of provider.stream({ ...baseRequest, tools: [] })) events.push(event);
-  assert.equal(request?.input, 'https://openrouter.ai/api/v1/chat/completions');
-  const headers = request?.init?.headers as Record<string, string>;
-  assert.equal(headers.authorization, 'Bearer openrouter-key');
-  assert.equal(headers['HTTP-Referer'], 'https://app.example');
-  assert.equal(headers['X-OpenRouter-Title'], 'Harness Platform');
+  for await (const event of provider.stream({ ...baseRequest, maxOutputTokens: 256 })) {
+    events.push(event);
+  }
+  assert.equal(body.max_completion_tokens, 256);
   assert.deepEqual(events, [
     { type: 'text_delta', delta: 'hello' },
     { type: 'completed', stopReason: 'end_turn' },
@@ -127,20 +123,6 @@ test('OpenAI-compatible provider surfaces HTTP status for retry policy', async (
     (error: unknown) => error instanceof Error && 'status' in error && error.status === 503,
   );
 });
-
-test(
-  'optional live OpenRouter adapter streams a completion',
-  { skip: !process.env.AGENT_HARNESS_LIVE_OPENROUTER },
-  async () => {
-    const provider = createOpenRouterProvider({
-      apiKey: process.env.OPENROUTER_API_KEY ?? '',
-      defaultModel: process.env.AGENT_HARNESS_LIVE_OPENROUTER_MODEL ?? 'openai/gpt-4.1-mini',
-    });
-    const events: ModelStreamEvent[] = [];
-    for await (const event of provider.stream({ ...baseRequest, tools: [] })) events.push(event);
-    assert.ok(events.some((event) => event.type === 'text_delta'));
-  },
-);
 
 function sseResponse(chunks: readonly unknown[]): Response {
   return new Response(

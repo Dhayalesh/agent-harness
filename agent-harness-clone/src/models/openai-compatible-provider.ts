@@ -8,6 +8,13 @@ export type OpenAICompatibleProviderOptions = {
   defaultModel: string;
   name?: string;
   defaultHeaders?: Readonly<Record<string, string>>;
+  /**
+   * Output-limit field name. OpenAI-style gateways expect
+   * `max_completion_tokens`; OpenRouter normalizes on `max_tokens`.
+   */
+  maxTokensField?: 'max_tokens' | 'max_completion_tokens';
+  /** Gateway-specific request fields merged into the JSON body. */
+  extraBody?: Readonly<Record<string, unknown>>;
   fetch?: typeof fetch;
 };
 
@@ -59,19 +66,27 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
         body: JSON.stringify({
           model: request.model ?? this.options.defaultModel,
           messages: toCompatibleMessages(request.messages, request.systemPrompt),
-          tools: request.tools.map((tool) => ({
-            type: 'function',
-            function: {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.inputSchema,
-            },
-          })),
+          // Some upstream vendors reject an empty `tools` array.
+          ...(request.tools.length
+            ? {
+                tools: request.tools.map((tool) => ({
+                  type: 'function',
+                  function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: tool.inputSchema,
+                  },
+                })),
+              }
+            : {}),
           stream: true,
           stream_options: { include_usage: true },
           ...(request.maxOutputTokens === undefined
             ? {}
-            : { max_completion_tokens: request.maxOutputTokens }),
+            : {
+                [this.options.maxTokensField ?? 'max_completion_tokens']: request.maxOutputTokens,
+              }),
+          ...this.options.extraBody,
         }),
       },
     );
@@ -147,30 +162,6 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       yield { type: 'completed', stopReason: emitted.length ? 'tool_use' : 'end_turn' };
     }
   }
-}
-
-export type OpenRouterProviderOptions = {
-  apiKey: string;
-  defaultModel: string;
-  appUrl?: string;
-  appName?: string;
-  fetch?: typeof fetch;
-};
-
-export function createOpenRouterProvider(
-  options: OpenRouterProviderOptions,
-): OpenAICompatibleModelProvider {
-  return new OpenAICompatibleModelProvider({
-    name: 'openrouter',
-    apiKey: options.apiKey,
-    baseURL: 'https://openrouter.ai/api/v1',
-    defaultModel: options.defaultModel,
-    defaultHeaders: {
-      ...(options.appUrl === undefined ? {} : { 'HTTP-Referer': options.appUrl }),
-      ...(options.appName === undefined ? {} : { 'X-OpenRouter-Title': options.appName }),
-    },
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-  });
 }
 
 function toCompatibleMessages(

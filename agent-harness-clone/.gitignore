@@ -6,3 +6,7 @@ coverage/
 .agent-harness/
 .agent-core-demo/
 .agent-platform/
+
+# Local mongodump output. Contains raw collection data, including
+# platform_secrets.value in plaintext. Never commit.
+backup-*/

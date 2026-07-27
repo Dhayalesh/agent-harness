@@ -30,18 +30,7 @@ isolated output is written to:
 
 No API key or model usage is required for this mode.
 
-## Live Anthropic mode
-
-```bash
-AGENT_PROVIDER=anthropic \
-ANTHROPIC_API_KEY=... \
-npm run service
-```
-
-Optionally set `AGENT_MODEL`. The default provider model is configured by the
-Anthropic adapter.
-
-## OpenRouter mode
+## Live OpenRouter mode
 
 ```bash
 AGENT_PROVIDER=openrouter \
@@ -50,25 +39,36 @@ AGENT_MODEL=anthropic/claude-sonnet-4.6 \
 npm run service
 ```
 
-`OPENROUTER_APP_URL` and `OPENROUTER_APP_NAME` optionally add OpenRouter app
-attribution headers. The selected model must support tool calling for agent
-trajectories that use tools.
+`AGENT_MODEL` is optional and falls back to `OPENROUTER_MODEL`, then to the
+adapter default. Model ids are OpenRouter slugs; browse the live catalog at
+[openrouter.ai/models](https://openrouter.ai/models) or call
+`listOpenRouterModels({ toolCapableOnly: true })`. The selected model must
+support tool calling for trajectories that use tools.
+
+`OPENROUTER_APP_URL` and `OPENROUTER_APP_NAME` add OpenRouter app attribution
+headers. `OPENROUTER_FALLBACK_MODELS` accepts a comma-separated slug list that
+OpenRouter may route to when the primary model is unavailable.
 
 ## Service configuration
 
-| Variable                | Default                      | Purpose                                                   |
-| ----------------------- | ---------------------------- | --------------------------------------------------------- |
-| `AGENT_PROVIDER`        | `demo`                       | `demo`, `anthropic`, `openrouter`, or `openai-compatible` |
-| `AGENT_SERVICE_HOST`    | `127.0.0.1`                  | Bind address                                              |
-| `AGENT_SERVICE_PORT`    | `8787`                       | HTTP port; `0` selects an available port                  |
-| `AGENT_SERVICE_KEY`     | unset                        | Optional value required in `x-agent-service-key`          |
-| `AGENT_WORKSPACE`       | `.agent-core-demo/workspace` | Tool workspace boundary                                   |
-| `AGENT_DATA_DIR`        | `.agent-core-demo/data`      | Session and artifact files                                |
-| `AGENT_PERMISSION_MODE` | `default`                    | `default`, `plan`, `bypass`, or `deny`                    |
-| `AGENT_MODEL`           | provider default             | Live model override                                       |
-| `ANTHROPIC_BASE_URL`    | SDK default                  | Optional compatible API endpoint                          |
-| `MODEL_API_KEY`         | unset                        | Generic OpenAI-compatible API key                         |
-| `MODEL_BASE_URL`        | unset                        | Generic OpenAI-compatible `/v1` base URL                  |
+| Variable                     | Default                        | Purpose                                          |
+| ---------------------------- | ------------------------------ | ------------------------------------------------ |
+| `AGENT_PROVIDER`             | `demo`                         | `demo`, `openrouter`, or `openai-compatible`     |
+| `AGENT_SERVICE_HOST`         | `127.0.0.1`                    | Bind address                                     |
+| `AGENT_SERVICE_PORT`         | `8787`                         | HTTP port; `0` selects an available port         |
+| `AGENT_SERVICE_KEY`          | unset                          | Optional value required in `x-agent-service-key` |
+| `AGENT_WORKSPACE`            | `.agent-core-demo/workspace`   | Tool workspace boundary                          |
+| `AGENT_DATA_DIR`             | `.agent-core-demo/data`        | Session and artifact files                       |
+| `AGENT_PERMISSION_MODE`      | `default`                      | `default`, `plan`, `bypass`, or `deny`           |
+| `AGENT_MODEL`                | adapter default                | OpenRouter model slug override                   |
+| `OPENROUTER_API_KEY`         | unset                          | OpenRouter credential                            |
+| `OPENROUTER_MODEL`           | adapter default                | Model slug used when `AGENT_MODEL` is unset      |
+| `OPENROUTER_BASE_URL`        | `https://openrouter.ai/api/v1` | Gateway base URL                                 |
+| `OPENROUTER_APP_URL`         | unset                          | Sent as `HTTP-Referer` attribution               |
+| `OPENROUTER_APP_NAME`        | unset                          | Sent as `X-OpenRouter-Title` attribution         |
+| `OPENROUTER_FALLBACK_MODELS` | unset                          | Comma-separated fallback slugs                   |
+| `MODEL_API_KEY`              | unset                          | Generic OpenAI-compatible API key                |
+| `MODEL_BASE_URL`             | unset                          | Generic OpenAI-compatible `/v1` base URL         |
 
 For a remotely reachable service, configure `AGENT_SERVICE_KEY`, terminate TLS
 in a trusted proxy, and do not use `bypass` permission mode.

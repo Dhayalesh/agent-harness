@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { AnthropicModelProvider } from '../models/anthropic-provider.js';
+import { OpenAICompatibleModelProvider } from '../models/openai-compatible-provider.js';
 import {
+  DEFAULT_OPENROUTER_MODEL,
   createOpenRouterProvider,
-  OpenAICompatibleModelProvider,
-} from '../models/openai-compatible-provider.js';
+} from '../models/openrouter-provider.js';
 import type { PermissionMode } from '../permissions/rule-permission-handler.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
 import { createAgentCoreDemoProvider, startAgentCoreService } from './agent-core-service.js';
@@ -34,18 +34,26 @@ const service = await startAgentCoreService({
       if (!process.env.OPENROUTER_API_KEY) {
         throw new Error('OPENROUTER_API_KEY is required when AGENT_PROVIDER=openrouter');
       }
-      if (!process.env.AGENT_MODEL) {
-        throw new Error('AGENT_MODEL is required when AGENT_PROVIDER=openrouter');
-      }
       return createOpenRouterProvider({
         apiKey: process.env.OPENROUTER_API_KEY,
-        defaultModel: process.env.AGENT_MODEL,
+        defaultModel:
+          process.env.AGENT_MODEL ?? process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL,
+        ...(process.env.OPENROUTER_BASE_URL === undefined
+          ? {}
+          : { baseURL: process.env.OPENROUTER_BASE_URL }),
         ...(process.env.OPENROUTER_APP_URL === undefined
           ? {}
           : { appUrl: process.env.OPENROUTER_APP_URL }),
         ...(process.env.OPENROUTER_APP_NAME === undefined
           ? {}
           : { appName: process.env.OPENROUTER_APP_NAME }),
+        ...(process.env.OPENROUTER_FALLBACK_MODELS === undefined
+          ? {}
+          : {
+              fallbackModels: process.env.OPENROUTER_FALLBACK_MODELS.split(',')
+                .map((model) => model.trim())
+                .filter((model) => model.length > 0),
+            }),
       });
     }
     if (providerName === 'openai-compatible') {
@@ -61,19 +69,9 @@ const service = await startAgentCoreService({
         defaultModel: process.env.AGENT_MODEL,
       });
     }
-    if (providerName === 'anthropic') {
-      if (!process.env.ANTHROPIC_API_KEY) {
-        throw new Error('ANTHROPIC_API_KEY is required when AGENT_PROVIDER=anthropic');
-      }
-      return new AnthropicModelProvider({
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        ...(process.env.AGENT_MODEL === undefined ? {} : { defaultModel: process.env.AGENT_MODEL }),
-        ...(process.env.ANTHROPIC_BASE_URL === undefined
-          ? {}
-          : { baseURL: process.env.ANTHROPIC_BASE_URL }),
-      });
-    }
-    throw new Error(`Unsupported AGENT_PROVIDER: ${providerName}`);
+    throw new Error(
+      `Unsupported AGENT_PROVIDER: ${providerName} (expected demo, openrouter, or openai-compatible)`,
+    );
   },
 });
 

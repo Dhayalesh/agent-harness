@@ -11,7 +11,14 @@ browser UI, Electron windows, and editor-specific UI remain consumer-owned.
 
 - Node.js 22 or newer
 - npm
-- `ANTHROPIC_API_KEY` only when using the live Anthropic provider
+- `OPENROUTER_API_KEY` only when using the live OpenRouter provider
+
+Every live model is routed through [OpenRouter](https://openrouter.ai/models),
+so model ids are OpenRouter slugs in `vendor/model` form (for example
+`anthropic/claude-sonnet-4.6`, `openai/gpt-4.1-mini`, `google/gemini-2.5-pro`).
+`listOpenRouterModels()` resolves the live catalog from the gateway, and
+`OpenRouterModelProvider#assertModelAvailable()` fails fast on an unroutable
+slug.
 
 ## Install and verify
 
@@ -20,6 +27,20 @@ npm install
 npm run check
 npm run build
 ```
+
+## Configuration
+
+Copy the annotated template and fill in what you need:
+
+```bash
+cp .env.example .env
+```
+
+`.env` is gitignored and loaded automatically by the `agent`, `service`,
+`platform`, `demo:client`, and `test` scripts through Node's
+`--env-file-if-exists`. Real process environment variables always win over
+`.env` values. `OPENROUTER_API_KEY` is the only variable needed for a live CLI
+run; every other section is per-surface and optional.
 
 `npm run check` verifies formatting, TypeScript, deterministic integration
 tests, security boundaries, transport contracts, and cross-surface acceptance.
@@ -32,10 +53,17 @@ Run the deterministic CLI without credentials:
 npm run agent -- "Explain this repository"
 ```
 
-Run the same CLI with Anthropic and local coding tools:
+Run the same CLI with OpenRouter and local coding tools:
 
 ```bash
-ANTHROPIC_API_KEY=... npm run agent -- "Find and fix the failing test"
+OPENROUTER_API_KEY=... npm run agent -- "Find and fix the failing test"
+```
+
+`AGENT_MODEL` (or `OPENROUTER_MODEL`) overrides the routed model; it defaults to
+`DEFAULT_OPENROUTER_MODEL`:
+
+```bash
+OPENROUTER_API_KEY=... AGENT_MODEL=openai/gpt-4.1-mini npm run agent -- "Summarize src/core"
 ```
 
 Mutating tools request terminal approval. Filesystem operations are confined to
@@ -85,6 +113,39 @@ The control surface also supports `interrupt(reason)`,
 `respondToPermission(requestId, decision)`, persistent resume through
 `resumeAgentSession`, and clean resource release through `close()`.
 
+## Web tools
+
+`createWebTools()` adds two opt-in network tools alongside the workspace tools.
+They are a separate factory from `createBuiltinTools`, so existing
+workspace-only sessions keep exactly the tools they had.
+
+```ts
+import { createBuiltinTools, createWebTools, LocalRuntimeHost } from '@trueai/agent-harness';
+
+const runtime = new LocalRuntimeHost(process.cwd());
+const tools = [...createBuiltinTools(runtime), ...createWebTools()];
+```
+
+- `web_fetch` retrieves one http(s) URL and returns readable text. HTML is
+  converted without extra dependencies, `http` is upgraded to `https`, responses
+  are cached for 15 minutes, and content is bounded by bytes, characters, and a
+  request timeout. Pass a `summarize` hook to reduce pages with a model instead
+  of returning the extracted text.
+- `web_search` returns bounded, cited hits through a pluggable
+  `WebSearchProvider`. It registers only when a provider is available; the
+  default Tavily backend activates when `TAVILY_API_KEY` is set.
+
+Both report `kind: 'network'`, so the default and rule permission handlers ask
+before running them, and `plan` mode denies them. Results carry an explicit
+untrusted-content notice.
+
+Security boundaries enforced before any request leaves the process: non-public
+hosts refused (loopback, link-local, private ranges, IP literals, and
+`.local`/`.internal`-style names), URLs with embedded credentials refused,
+non-http(s) schemes refused, and cross-site redirects reported to the model
+rather than followed. `allowedHosts`, `blockedHosts`, and `allowPrivateHosts`
+let an operator narrow or widen that policy.
+
 ## Other consumers
 
 - `runJsonlAdapter` provides line-delimited commands and events for automation.
@@ -115,7 +176,7 @@ npm run demo:client -- "Demonstrate the API"
 The deterministic demo exercises session creation, SSE streaming, a remote
 permission response, a real workspace tool, event replay, persistence, and
 session close. See the [service demo runbook](./docs/agent-core-service-demo.md)
-for endpoints, environment configuration, security notes, and Anthropic mode.
+for endpoints, environment configuration, security notes, and OpenRouter mode.
 
 ## MongoDB agent platform
 
@@ -144,11 +205,14 @@ successful Atlas/OpenRouter/Tavily trajectory and model fallback evidence.
 
 ## Included harness capabilities
 
-- provider-neutral streaming model contract, Anthropic, OpenRouter and generic
-  OpenAI-compatible adapters, retry policy, and deterministic scripted provider;
+- provider-neutral streaming model contract, an OpenRouter adapter with live
+  model-catalog resolution and routing fallbacks, a generic OpenAI-compatible
+  adapter, retry policy, and a deterministic scripted provider;
 - schema-validated tools with serial/explicitly-safe parallel execution;
 - workspace-scoped read, glob, grep, write, edit, and shell tools;
 - allow/ask/deny permission rules and plan/default/bypass/deny modes;
+- opt-in `web_fetch` and `web_search` network tools with SSRF-resistant URL
+  policy, redirect containment, bounded results, and pluggable search backends;
 - context budgeting, reactive prompt-too-long compaction, usage events, large
   result artifacts, file-backed sessions, resume, and transcript exports;
 - typed hooks, layered configuration, commands, skills, trusted plugins, and

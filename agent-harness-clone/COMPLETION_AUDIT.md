@@ -20,7 +20,7 @@ repository, so the rollout is documented but not represented as completed here.
 | ------------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 0 — Baseline and decisions      | Complete                   | npm/TypeScript/Prettier/CI scaffold, `SOURCE_INVENTORY.md`, `CLEAN_ROOM.md`, ADRs, parity checklist                                                                     |
 | 1 — Core contracts              | Complete                   | provider-neutral messages, protocol-v1 events, SDK example, cancellation/turn-limit/serialization tests                                                                 |
-| 2 — Model and tool loop         | Complete                   | Anthropic, scripted, and retry providers; valid/invalid tool and safe-concurrency tests; optional credential-gated live test                                            |
+| 2 — Model and tool loop         | Complete                   | OpenRouter, scripted, and retry providers; valid/invalid tool and safe-concurrency tests; optional credential-gated live test                                           |
 | 3 — Coding runtime              | Complete                   | six built-in tools, canonical workspace and symlink checks, read-before-edit snapshots, permission modes, shell process-tree cancellation                               |
 | 4 — Consumer adapters           | Complete                   | CLI, SDK, JSONL, SSE, gateway permission routing, replay and cross-surface tests                                                                                        |
 | 5 — Context and sessions        | Complete                   | project context, system prompt composition, usage/budgets, artifact previews, file persistence/restart, transcript export, pair-safe and reactive compaction            |
@@ -46,7 +46,7 @@ Result:
 
 - formatting and TypeScript checks passed;
 - 47 deterministic tests passed;
-- 1 optional live Anthropic test was skipped because it is credential-gated;
+- 1 optional live OpenRouter test was skipped because it is credential-gated;
 - the compiled CLI and compiled public SDK import both ran successfully;
 - the package dry run contained only `dist`, `README.md`, and package metadata;
 - `src` and package/build configuration contain no import or runtime reference
@@ -55,7 +55,7 @@ Result:
 To run the optional provider gate:
 
 ```bash
-ANTHROPIC_API_KEY=... npm test
+AGENT_HARNESS_LIVE_OPENROUTER=1 OPENROUTER_API_KEY=... npm test
 ```
 
 ## Scope boundary for cutover

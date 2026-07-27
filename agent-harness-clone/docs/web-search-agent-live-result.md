@@ -55,7 +55,8 @@ Immutable versions preserve every attempt:
 4. `poolside/laguna-s-2.1:free` — complete search-and-synthesis trajectory.
 5. The Poolside definition plus final search-result and request-count ceilings;
    this is the current production deployment.
-Can
+   Can
+
 ## Quality observations
 
 - The final answer was detailed and all emitted URLs came from retrieved tool

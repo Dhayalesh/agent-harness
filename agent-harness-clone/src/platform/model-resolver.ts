@@ -1,11 +1,9 @@
-import { AnthropicModelProvider } from '../models/anthropic-provider.js';
 import { OpenAICompatibleModelProvider } from '../models/openai-compatible-provider.js';
+import { OPENROUTER_BASE_URL, OpenRouterModelProvider } from '../models/openrouter-provider.js';
 import type { ModelProvider } from '../models/provider.js';
 import { RetryModelProvider } from '../models/retry-provider.js';
 import type { ModelBinding } from './definitions.js';
 import type { PlatformSecretResolver } from './catalogs.js';
-
-const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 export interface PlatformModelResolver {
   resolve(tenantId: string, binding: ModelBinding): Promise<ModelProvider>;
@@ -24,16 +22,6 @@ export class DefaultPlatformModelResolver implements PlatformModelResolver {
   async resolve(tenantId: string, binding: ModelBinding): Promise<ModelProvider> {
     const apiKey = await this.secrets.get(tenantId, binding.secretRef);
     if (!apiKey) throw new Error(`Missing model credential: ${binding.secretRef}`);
-    if (binding.provider === 'anthropic') {
-      if (binding.baseURL) this.assertAllowedCustomBaseURL(binding.baseURL);
-      return new RetryModelProvider(
-        new AnthropicModelProvider({
-          apiKey,
-          defaultModel: binding.model,
-          ...(binding.baseURL === undefined ? {} : { baseURL: binding.baseURL }),
-        }),
-      );
-    }
     const baseURL =
       binding.provider === 'openrouter'
         ? (binding.baseURL ?? OPENROUTER_BASE_URL)
@@ -44,6 +32,16 @@ export class DefaultPlatformModelResolver implements PlatformModelResolver {
       (binding.baseURL && normalizeBaseURL(binding.baseURL) !== OPENROUTER_BASE_URL)
     ) {
       this.assertAllowedCustomBaseURL(baseURL);
+    }
+    if (binding.provider === 'openrouter') {
+      return new RetryModelProvider(
+        new OpenRouterModelProvider({
+          apiKey,
+          baseURL,
+          defaultModel: binding.model,
+          defaultHeaders: safeModelHeaders(binding.headers),
+        }),
+      );
     }
     return new RetryModelProvider(
       new OpenAICompatibleModelProvider({

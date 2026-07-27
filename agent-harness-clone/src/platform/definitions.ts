@@ -10,7 +10,7 @@ const jsonObject = z.record(z.string(), z.unknown());
 
 export const modelBindingSchema = z
   .object({
-    provider: z.enum(['anthropic', 'openrouter', 'openai-compatible']),
+    provider: z.enum(['openrouter', 'openai-compatible']).default('openrouter'),
     model: z.string().min(1).max(300),
     secretRef: identifier,
     baseURL: z.url().optional(),

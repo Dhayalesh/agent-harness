@@ -29,7 +29,7 @@ flowchart LR
   EP --> TOOLS[Versioned tool catalog]
   EP --> DATA[Trusted data connectors]
   EP --> MCP[Exact MCP catalog]
-  MODEL --> PROVIDER[Anthropic / OpenRouter / compatible API]
+  MODEL --> PROVIDER[OpenRouter gateway / compatible API]
   TOOLS --> RUNTIME[Isolated tenant session workspace]
   DATA --> DB
   EP --> CORE[Provider-neutral AgentSession]
@@ -63,7 +63,7 @@ execution time through `PlatformSecretResolver`.
 The default environment resolver uses
 `PLATFORM_SECRET_<NORMALIZED_TENANT>__<SECRET_REF>`. Global fallback is disabled
 unless the operator explicitly sets `PLATFORM_ALLOW_GLOBAL_SECRETS=true`.
-Custom Anthropic, OpenRouter, and OpenAI-compatible base URLs must also appear
+Custom OpenRouter and OpenAI-compatible base URLs must also appear
 in the operator-controlled comma-separated `PLATFORM_ALLOWED_MODEL_BASE_URLS`.
 The canonical OpenRouter URL needs no allowlist entry.
 
@@ -90,7 +90,7 @@ Requirements:
 
 - Node.js 22+
 - MongoDB or MongoDB Atlas
-- an Anthropic, OpenRouter, or OpenAI-compatible model credential
+- an OpenRouter or OpenAI-compatible model credential
 
 ```bash
 MONGODB_URI='mongodb://127.0.0.1:27017' \
@@ -166,15 +166,15 @@ reusing an allowed name with a different executable or endpoint.
 
 ## Model providers
 
-| Provider value      | Adapter                                                      |
-| ------------------- | ------------------------------------------------------------ |
-| `anthropic`         | Anthropic Messages streaming adapter                         |
-| `openrouter`        | OpenAI-compatible streaming adapter with OpenRouter base URL |
-| `openai-compatible` | Configurable `/v1/chat/completions` endpoint                 |
+| Provider value      | Adapter                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `openrouter`        | Default. OpenRouter gateway adapter with attribution + routing   |
+| `openai-compatible` | Configurable `/v1/chat/completions` endpoint, `baseURL` required |
 
-All providers normalize streamed text, tool calls, usage, stop reasons, errors,
-and cancellation into the harness `ModelProvider` contract. OpenRouter and
-OpenAI-compatible streamed tool-call fragments are assembled and JSON-validated
+`model` is an OpenRouter slug in `vendor/model` form, resolved against the live
+`GET /models` catalog. Both adapters normalize streamed text, tool calls, usage,
+stop reasons, errors, and cancellation into the harness `ModelProvider`
+contract, and streamed tool-call fragments are assembled and JSON-validated
 before they enter the agent loop.
 
 ## API workflow
