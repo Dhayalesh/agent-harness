@@ -30,17 +30,17 @@ Nine collection names are hardcoded. All are literal strings; none are namespace
 or templated per tenant. Tenant separation is a `tenantId` **field**, not a
 collection or database prefix.
 
-| Collection | Defined at | Written by | Read by | Purpose |
-| --- | --- | --- | --- | --- |
-| `agents` | `src/platform/mongodb-store.ts:29` | `createAgent` :55, `archiveAgent` :81, `allocateAgentVersion` :89 | `getAgent` :59, `listAgents` :67 | Agent identity per tenant, plus the monotonic `versionCounter` |
-| `agent_versions` | `src/platform/mongodb-store.ts:30` | `insertAgentVersion` :103 | `getAgentVersion` :107, `listAgentVersions` :119 | Immutable checksummed agent definitions |
-| `agent_deployments` | `src/platform/mongodb-store.ts:31` | `setDeployment` :124 (upsert) | `getDeployment` :146, `listDeployments` :154 | Which version is live in which environment, with a revision counter |
-| `platform_audit` | `src/platform/mongodb-store.ts:32` | `appendAudit` :159 (insert only) | `listAudit` :163 | Control-plane audit trail |
-| `platform_api_keys` | `src/platform/mongodb-store.ts:33` | `insertApiKey` :172, `touchApiKey` :185, `revokeApiKey` :189 | `listApiKeys` :176, `findApiKeyByHash` :181 | Hashed platform API keys and their roles |
-| `agent_sessions` | `src/platform/mongodb-runtime.ts:22` | `save` :33 (`replaceOne` upsert), `delete` :41 | `load` :29, `list` :46 | Model conversation history for session resume |
-| `platform_sessions` | `src/platform/mongodb-runtime.ts:74` | `createSession` :104, `closeSession` :128 | `getSession` :108, `listSessions` :115 | Session ownership, control-token hash, open/closed status |
-| `platform_runs` | `src/platform/mongodb-runtime.ts:75` | `claimRun` :136, `finishRun` :154, `recoverOrphanedRuns` :90 | `getRun` :146 | Run claim records; backs idempotent run IDs |
-| `platform_events` | `src/platform/mongodb-runtime.ts:76` | `appendEvent` :175 | `listEvents` :179, `listRunEvents` :187 | Ordered protocol-v1 event log for replay |
+| Collection          | Defined at                           | Written by                                                        | Read by                                          | Purpose                                                             |
+| ------------------- | ------------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------- |
+| `agents`            | `src/platform/mongodb-store.ts:29`   | `createAgent` :55, `archiveAgent` :81, `allocateAgentVersion` :89 | `getAgent` :59, `listAgents` :67                 | Agent identity per tenant, plus the monotonic `versionCounter`      |
+| `agent_versions`    | `src/platform/mongodb-store.ts:30`   | `insertAgentVersion` :103                                         | `getAgentVersion` :107, `listAgentVersions` :119 | Immutable checksummed agent definitions                             |
+| `agent_deployments` | `src/platform/mongodb-store.ts:31`   | `setDeployment` :124 (upsert)                                     | `getDeployment` :146, `listDeployments` :154     | Which version is live in which environment, with a revision counter |
+| `platform_audit`    | `src/platform/mongodb-store.ts:32`   | `appendAudit` :159 (insert only)                                  | `listAudit` :163                                 | Control-plane audit trail                                           |
+| `platform_api_keys` | `src/platform/mongodb-store.ts:33`   | `insertApiKey` :172, `touchApiKey` :185, `revokeApiKey` :189      | `listApiKeys` :176, `findApiKeyByHash` :181      | Hashed platform API keys and their roles                            |
+| `agent_sessions`    | `src/platform/mongodb-runtime.ts:22` | `save` :33 (`replaceOne` upsert), `delete` :41                    | `load` :29, `list` :46                           | Model conversation history for session resume                       |
+| `platform_sessions` | `src/platform/mongodb-runtime.ts:74` | `createSession` :104, `closeSession` :128                         | `getSession` :108, `listSessions` :115           | Session ownership, control-token hash, open/closed status           |
+| `platform_runs`     | `src/platform/mongodb-runtime.ts:75` | `claimRun` :136, `finishRun` :154, `recoverOrphanedRuns` :90      | `getRun` :146                                    | Run claim records; backs idempotent run IDs                         |
+| `platform_events`   | `src/platform/mongodb-runtime.ts:76` | `appendEvent` :175                                                | `listEvents` :179, `listRunEvents` :187          | Ordered protocol-v1 event log for replay                            |
 
 **Dynamically named collection.** `MongoCollectionDataSourceConnector`
 (`src/platform/catalogs.ts:204`) reads an arbitrary collection whose name comes
@@ -86,7 +86,7 @@ export type AgentRecord = {
 };
 ```
 
-All required except `archivedAt` (optional; its absence *is* the "active" flag,
+All required except `archivedAt` (optional; its absence _is_ the "active" flag,
 `src/platform/mongodb-store.ts:70`).
 
 #### `agent_versions` — `src/platform/definitions.ts:162`
@@ -136,7 +136,7 @@ export const agentDefinitionSchema = z
       .default({ maxTurns: 24 }),
     metadata: jsonObject.default({}),
   })
-  .strict()
+  .strict();
 ```
 
 Nested bindings, verbatim (`src/platform/definitions.ts:12-70`):
@@ -146,11 +146,11 @@ export const modelBindingSchema = z
   .object({
     provider: z.enum(['openrouter', 'openai-compatible']).default('openrouter'),
     model: z.string().min(1).max(300),
-    secretRef: identifier,          // required
+    secretRef: identifier, // required
     baseURL: z.url().optional(),
     headers: z.record(z.string(), z.string()).optional(),
   })
-  .strict()
+  .strict();
 
 export const skillBindingSchema = z
   .object({
@@ -167,7 +167,7 @@ export const dataSourceBindingSchema = z
     name: identifier,
     type: identifier,
     version: z.string().min(1).max(100),
-    config: jsonObject,             // unbounded, arbitrary keys
+    config: jsonObject, // unbounded, arbitrary keys
     secretRefs: z.array(identifier).optional(),
   })
   .strict();
@@ -220,7 +220,7 @@ export type ApiKeyRecord = {
   tenantId: string;
   name: string;
   keyHash: string;
-  roles: PlatformRole[];   // 'admin' | 'editor' | 'executor' | 'viewer'
+  roles: PlatformRole[]; // 'admin' | 'editor' | 'executor' | 'viewer'
   createdAt: string;
   createdBy: string;
   lastUsedAt?: string;
@@ -238,7 +238,8 @@ type TenantSessionDocument = StoredSession & { tenantId: string };
 ```
 
 ```ts
-export type StoredSession = {          // src/sessions/session-store.ts:3
+export type StoredSession = {
+  // src/sessions/session-store.ts:3
   version: 1;
   id: string;
   createdAt: string;
@@ -249,7 +250,8 @@ export type StoredSession = {          // src/sessions/session-store.ts:3
 ```
 
 ```ts
-export type AgentMessage = {           // src/core/messages.ts:29
+export type AgentMessage = {
+  // src/core/messages.ts:29
   id: string;
   role: 'user' | 'assistant';
   content: MessageContent[];
@@ -258,10 +260,11 @@ export type AgentMessage = {           // src/core/messages.ts:29
 
 export type MessageContent = TextBlock | ToolCallBlock | ToolResultBlock;
 
-export type ToolResultBlock = {        // src/core/messages.ts:15
+export type ToolResultBlock = {
+  // src/core/messages.ts:15
   type: 'tool_result';
   toolCallId: string;
-  content: string;                     // unbounded string
+  content: string; // unbounded string
   isError: boolean;
   metadata?: Record<string, unknown>;
 };
@@ -348,22 +351,22 @@ type EventBase = {
 Thirteen indexes are declared, plus the implicit `_id_` on each collection. **No
 TTL index exists anywhere** in code or in the live database.
 
-| Collection | Index | Unique | TTL | Defined at |
-| --- | --- | --- | --- | --- |
-| `agents` | `{ tenantId: 1, slug: 1 }` | yes | no | `src/platform/mongodb-store.ts:44` |
-| `agents` | `{ tenantId: 1, id: 1 }` | yes | no | `src/platform/mongodb-store.ts:45` |
-| `agent_versions` | `{ tenantId: 1, agentId: 1, version: -1 }` | yes | no | `src/platform/mongodb-store.ts:46` |
-| `agent_versions` | `{ tenantId: 1, agentId: 1, id: 1 }` | yes | no | `src/platform/mongodb-store.ts:47` |
-| `agent_deployments` | `{ tenantId: 1, agentId: 1, environment: 1 }` | yes | no | `src/platform/mongodb-store.ts:48` |
-| `platform_audit` | `{ tenantId: 1, resourceId: 1, createdAt: -1 }` | no | no | `src/platform/mongodb-store.ts:49` |
-| `platform_api_keys` | `{ keyHash: 1 }` | yes | no | `src/platform/mongodb-store.ts:50` |
-| `platform_api_keys` | `{ tenantId: 1, id: 1 }` | yes | no | `src/platform/mongodb-store.ts:51` |
-| `agent_sessions` | `{ tenantId: 1, id: 1 }` | yes | no | `src/platform/mongodb-runtime.ts:26` |
-| `platform_sessions` | `{ tenantId: 1, sessionId: 1 }` | yes | no | `src/platform/mongodb-runtime.ts:81` |
-| `platform_sessions` | `{ tenantId: 1, ownerId: 1, updatedAt: -1 }` | no | no | `src/platform/mongodb-runtime.ts:82` |
-| `platform_runs` | `{ tenantId: 1, sessionId: 1, runId: 1 }` | yes | no | `src/platform/mongodb-runtime.ts:83` |
-| `platform_events` | `{ tenantId: 1, sessionId: 1, sequence: 1 }` | yes | no | `src/platform/mongodb-runtime.ts:84` |
-| `platform_events` | `{ tenantId: 1, sessionId: 1, runId: 1, sequence: 1 }` | no | no | `src/platform/mongodb-runtime.ts:85` |
+| Collection          | Index                                                  | Unique | TTL | Defined at                           |
+| ------------------- | ------------------------------------------------------ | ------ | --- | ------------------------------------ |
+| `agents`            | `{ tenantId: 1, slug: 1 }`                             | yes    | no  | `src/platform/mongodb-store.ts:44`   |
+| `agents`            | `{ tenantId: 1, id: 1 }`                               | yes    | no  | `src/platform/mongodb-store.ts:45`   |
+| `agent_versions`    | `{ tenantId: 1, agentId: 1, version: -1 }`             | yes    | no  | `src/platform/mongodb-store.ts:46`   |
+| `agent_versions`    | `{ tenantId: 1, agentId: 1, id: 1 }`                   | yes    | no  | `src/platform/mongodb-store.ts:47`   |
+| `agent_deployments` | `{ tenantId: 1, agentId: 1, environment: 1 }`          | yes    | no  | `src/platform/mongodb-store.ts:48`   |
+| `platform_audit`    | `{ tenantId: 1, resourceId: 1, createdAt: -1 }`        | no     | no  | `src/platform/mongodb-store.ts:49`   |
+| `platform_api_keys` | `{ keyHash: 1 }`                                       | yes    | no  | `src/platform/mongodb-store.ts:50`   |
+| `platform_api_keys` | `{ tenantId: 1, id: 1 }`                               | yes    | no  | `src/platform/mongodb-store.ts:51`   |
+| `agent_sessions`    | `{ tenantId: 1, id: 1 }`                               | yes    | no  | `src/platform/mongodb-runtime.ts:26` |
+| `platform_sessions` | `{ tenantId: 1, sessionId: 1 }`                        | yes    | no  | `src/platform/mongodb-runtime.ts:81` |
+| `platform_sessions` | `{ tenantId: 1, ownerId: 1, updatedAt: -1 }`           | no     | no  | `src/platform/mongodb-runtime.ts:82` |
+| `platform_runs`     | `{ tenantId: 1, sessionId: 1, runId: 1 }`              | yes    | no  | `src/platform/mongodb-runtime.ts:83` |
+| `platform_events`   | `{ tenantId: 1, sessionId: 1, sequence: 1 }`           | yes    | no  | `src/platform/mongodb-runtime.ts:84` |
+| `platform_events`   | `{ tenantId: 1, sessionId: 1, runId: 1, sequence: 1 }` | no     | no  | `src/platform/mongodb-runtime.ts:85` |
 
 `agent_sessions`'s index is created lazily per tenant store
 (`src/platform/mongodb-runtime.ts:25-27`) and once at startup under the sentinel
@@ -371,22 +374,22 @@ tenant `'__index_initializer__'` (`src/platform/mongodb-runtime.ts:88`).
 
 #### Query behind each index
 
-| Index | Query that uses it |
-| --- | --- |
-| `agents {tenantId, slug}` | `getAgent` `$or: [{id}, {slug}]` — `src/platform/mongodb-store.ts:60-63` |
-| `agents {tenantId, id}` | `getAgent` (`$or` other branch) :60; `archiveAgent` :82; `allocateAgentVersion` :91; `listAgents` filter + `sort({id:1})` + cursor `{id:{$gt}}` :69-76 |
-| `agent_versions {tenantId, agentId, version:-1}` | `getAgentVersion` by number :108-111; `listAgentVersions` `sort({version:-1})` :120 |
-| `agent_versions {tenantId, agentId, id}` | `getAgentVersion` by id :108-111, reached from `resolveDeployment` — `src/platform/control-plane.ts:190` |
-| `agent_deployments {tenantId, agentId, environment}` | `setDeployment` upsert key :125-130; `getDeployment` :151 |
-| `platform_audit {tenantId, resourceId, createdAt:-1}` | `listAudit` :164-167 — **partial match only**, see below |
-| `platform_api_keys {keyHash}` | `findApiKeyByHash` :182 — the authentication hot path, `src/platform/control-plane.ts:232` |
-| `platform_api_keys {tenantId, id}` | `touchApiKey` :186; `revokeApiKey` :190-193 |
-| `agent_sessions {tenantId, id}` | `load` :30; `save` `replaceOne` filter :35; `delete` :42 |
-| `platform_sessions {tenantId, sessionId}` | `getSession` :112 — called on every control and view authorization, `src/platform/session-manager.ts:242, 267`; `closeSession` :130 |
-| `platform_sessions {tenantId, ownerId, updatedAt:-1}` | `listSessions` :117-119 — **partial match only**, see below |
-| `platform_runs {tenantId, sessionId, runId}` | `claimRun` duplicate-key detection :137-142; `getRun` :151; `finishRun` :156 |
-| `platform_events {tenantId, sessionId, sequence}` | `listEvents` :181; uniqueness enforces the monotonic sequence guarantee at `appendEvent` :176 |
-| `platform_events {tenantId, sessionId, runId, sequence}` | `listRunEvents` :189 |
+| Index                                                    | Query that uses it                                                                                                                                     |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agents {tenantId, slug}`                                | `getAgent` `$or: [{id}, {slug}]` — `src/platform/mongodb-store.ts:60-63`                                                                               |
+| `agents {tenantId, id}`                                  | `getAgent` (`$or` other branch) :60; `archiveAgent` :82; `allocateAgentVersion` :91; `listAgents` filter + `sort({id:1})` + cursor `{id:{$gt}}` :69-76 |
+| `agent_versions {tenantId, agentId, version:-1}`         | `getAgentVersion` by number :108-111; `listAgentVersions` `sort({version:-1})` :120                                                                    |
+| `agent_versions {tenantId, agentId, id}`                 | `getAgentVersion` by id :108-111, reached from `resolveDeployment` — `src/platform/control-plane.ts:190`                                               |
+| `agent_deployments {tenantId, agentId, environment}`     | `setDeployment` upsert key :125-130; `getDeployment` :151                                                                                              |
+| `platform_audit {tenantId, resourceId, createdAt:-1}`    | `listAudit` :164-167 — **partial match only**, see below                                                                                               |
+| `platform_api_keys {keyHash}`                            | `findApiKeyByHash` :182 — the authentication hot path, `src/platform/control-plane.ts:232`                                                             |
+| `platform_api_keys {tenantId, id}`                       | `touchApiKey` :186; `revokeApiKey` :190-193                                                                                                            |
+| `agent_sessions {tenantId, id}`                          | `load` :30; `save` `replaceOne` filter :35; `delete` :42                                                                                               |
+| `platform_sessions {tenantId, sessionId}`                | `getSession` :112 — called on every control and view authorization, `src/platform/session-manager.ts:242, 267`; `closeSession` :130                    |
+| `platform_sessions {tenantId, ownerId, updatedAt:-1}`    | `listSessions` :117-119 — **partial match only**, see below                                                                                            |
+| `platform_runs {tenantId, sessionId, runId}`             | `claimRun` duplicate-key detection :137-142; `getRun` :151; `finishRun` :156                                                                           |
+| `platform_events {tenantId, sessionId, sequence}`        | `listEvents` :181; uniqueness enforces the monotonic sequence guarantee at `appendEvent` :176                                                          |
+| `platform_events {tenantId, sessionId, runId, sequence}` | `listRunEvents` :189                                                                                                                                   |
 
 **Indexes no query fully matches — simplification candidates:**
 
@@ -419,37 +422,37 @@ All references are application-level string fields. There are no DBRefs, no
 foreign-key enforcement, no cascading deletes, and no multi-document
 transactions anywhere in the codebase.
 
-| From | Field | To | Enforced by |
-| --- | --- | --- | --- |
-| `agent_versions` | `agentId` | `agents.id` | `requireAgent` before insert, `src/platform/control-plane.ts:53` |
-| `agent_deployments` | `agentId` | `agents.id` | `requireAgent`, `src/platform/control-plane.ts:120` |
-| `agent_deployments` | `versionId` | `agent_versions.id` | `requireVersion`, `src/platform/control-plane.ts:122` |
-| `platform_runs` | `sessionId` | `platform_sessions.sessionId` | `authorizeControl` before claim, `src/platform/session-manager.ts:92` |
-| `platform_events` | `sessionId`, `runId` | `platform_sessions`, `platform_runs` | write path only |
-| `agent_sessions` | `id` | `platform_sessions.sessionId` | same generated id, `src/platform/session-manager.ts:64` — nothing links them in the schema |
-| `platform_sessions` | `agentIdOrSlug` | `agents.id` **or** `agents.slug` | not validated on read; resolved at resume, `src/platform/session-manager.ts:250-255` |
+| From                | Field                | To                                   | Enforced by                                                                                |
+| ------------------- | -------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `agent_versions`    | `agentId`            | `agents.id`                          | `requireAgent` before insert, `src/platform/control-plane.ts:53`                           |
+| `agent_deployments` | `agentId`            | `agents.id`                          | `requireAgent`, `src/platform/control-plane.ts:120`                                        |
+| `agent_deployments` | `versionId`          | `agent_versions.id`                  | `requireVersion`, `src/platform/control-plane.ts:122`                                      |
+| `platform_runs`     | `sessionId`          | `platform_sessions.sessionId`        | `authorizeControl` before claim, `src/platform/session-manager.ts:92`                      |
+| `platform_events`   | `sessionId`, `runId` | `platform_sessions`, `platform_runs` | write path only                                                                            |
+| `agent_sessions`    | `id`                 | `platform_sessions.sessionId`        | same generated id, `src/platform/session-manager.ts:64` — nothing links them in the schema |
+| `platform_sessions` | `agentIdOrSlug`      | `agents.id` **or** `agents.slug`     | not validated on read; resolved at resume, `src/platform/session-manager.ts:250-255`       |
 
 **Same data stored twice:**
 
-| Duplicate | Locations | Kept consistent by |
-| --- | --- | --- |
-| Version counter | `agents.versionCounter` vs `max(agent_versions.version)` | `findOneAndUpdate` `$inc` then a separate `insertOne` (`src/platform/mongodb-store.ts:89-102`, `src/platform/control-plane.ts:62-81`). Not atomic across the two collections: if the insert fails after the increment, the counter is permanently ahead and a version number is skipped. Not corrupting, but the two are not guaranteed equal. |
-| Session id | `platform_sessions.sessionId` and `agent_sessions.id` | Nothing. `closeSession` sets `status: 'closed'` and never touches `agent_sessions`; `agent_sessions` documents are never deleted by the platform. |
-| Event sequence and session id | outer `platform_events.sequence` / `.sessionId` vs `platform_events.event.sequence` / `.event.sessionId` | The single write site copies both (`src/platform/session-manager.ts:124-131`). Nothing verifies them afterwards; the unique index constrains only the outer copy. |
-| Deployment provenance | `agent_sessions.metadata.{tenantId, agentId, agentVersionId, agentVersion, deploymentEnvironment, deploymentRevision}` vs `agents` / `agent_versions` / `agent_deployments` | Snapshot written at session open (`src/platform/execution.ts:152-159`). Deliberately frozen and never reconciled — a rollback does not rewrite it. |
-| Message content | `agent_sessions.messages` vs `platform_events` arms `assistant.message.completed` and `tool.completed` | Nothing. Two independent write paths carry the same assistant text and tool results (`src/core/agent-session.ts:327` and `src/platform/session-manager.ts:124`). |
+| Duplicate                     | Locations                                                                                                                                                                   | Kept consistent by                                                                                                                                                                                                                                                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Version counter               | `agents.versionCounter` vs `max(agent_versions.version)`                                                                                                                    | `findOneAndUpdate` `$inc` then a separate `insertOne` (`src/platform/mongodb-store.ts:89-102`, `src/platform/control-plane.ts:62-81`). Not atomic across the two collections: if the insert fails after the increment, the counter is permanently ahead and a version number is skipped. Not corrupting, but the two are not guaranteed equal. |
+| Session id                    | `platform_sessions.sessionId` and `agent_sessions.id`                                                                                                                       | Nothing. `closeSession` sets `status: 'closed'` and never touches `agent_sessions`; `agent_sessions` documents are never deleted by the platform.                                                                                                                                                                                              |
+| Event sequence and session id | outer `platform_events.sequence` / `.sessionId` vs `platform_events.event.sequence` / `.event.sessionId`                                                                    | The single write site copies both (`src/platform/session-manager.ts:124-131`). Nothing verifies them afterwards; the unique index constrains only the outer copy.                                                                                                                                                                              |
+| Deployment provenance         | `agent_sessions.metadata.{tenantId, agentId, agentVersionId, agentVersion, deploymentEnvironment, deploymentRevision}` vs `agents` / `agent_versions` / `agent_deployments` | Snapshot written at session open (`src/platform/execution.ts:152-159`). Deliberately frozen and never reconciled — a rollback does not rewrite it.                                                                                                                                                                                             |
+| Message content               | `agent_sessions.messages` vs `platform_events` arms `assistant.message.completed` and `tool.completed`                                                                      | Nothing. Two independent write paths carry the same assistant text and tool results (`src/core/agent-session.ts:327` and `src/platform/session-manager.ts:124`).                                                                                                                                                                               |
 
 ### 1.5 Growth and document-size risk
 
-| Field | Grows with | Cap |
-| --- | --- | --- |
-| `agent_sessions.messages` | every user prompt, assistant message, stop-continuation, and tool-result batch | **none** |
-| `agent_sessions.messages[].content[].content` (tool result) | tool output size | ~100_000 chars, see below |
-| `agent_versions.definition.skills[].instructions` | agent authoring | 200_000 chars × 100 skills |
-| `agent_versions.definition.systemPrompt` | agent authoring | 500_000 chars |
-| `agent_versions.definition.dataSources[].config` | agent authoring | **none** (`jsonObject`) |
-| `platform_audit.details` | per action | **none** (`Record<string, unknown>`) |
-| `platform_events` (document count) | every event of every run of every session, forever | **none**, no TTL, no pruning |
+| Field                                                       | Grows with                                                                     | Cap                                  |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------ |
+| `agent_sessions.messages`                                   | every user prompt, assistant message, stop-continuation, and tool-result batch | **none**                             |
+| `agent_sessions.messages[].content[].content` (tool result) | tool output size                                                               | ~100_000 chars, see below            |
+| `agent_versions.definition.skills[].instructions`           | agent authoring                                                                | 200_000 chars × 100 skills           |
+| `agent_versions.definition.systemPrompt`                    | agent authoring                                                                | 500_000 chars                        |
+| `agent_versions.definition.dataSources[].config`            | agent authoring                                                                | **none** (`jsonObject`)              |
+| `platform_audit.details`                                    | per action                                                                     | **none** (`Record<string, unknown>`) |
+| `platform_events` (document count)                          | every event of every run of every session, forever                             | **none**, no TTL, no pruning         |
 
 **`agent_sessions.messages` can realistically reach 16MB.** The mechanism:
 
@@ -534,7 +537,7 @@ base64url, stored as `sha256` hex (`src/platform/session-manager.ts:58-59,
 key path. Ownership is checked separately at :243.
 
 **Credentials.** Per code, **no collection stores a credential**. `secretRef`,
-`secretRefs`, and `providerRef`-style fields are *names*; values resolve from
+`secretRefs`, and `providerRef`-style fields are _names_; values resolve from
 environment variables namespaced per tenant
 (`EnvironmentPlatformSecretResolver`, `src/platform/catalogs.ts:266-278`), and
 model base URLs are rejected if they embed credentials
@@ -542,7 +545,7 @@ model base URLs are rejected if they embed credentials
 secret refs (`src/platform/execution.ts:311-330`). See Part 2 — the live database
 contradicts this.
 
-**Audit records — `platform_audit`.** Append-only *by construction*: the
+**Audit records — `platform_audit`.** Append-only _by construction_: the
 `PlatformStore` interface exposes only `appendAudit` and `listAudit`
 (`src/platform/store.ts:39-40`) and the Mongo implementation only ever calls
 `insertOne` (`src/platform/mongodb-store.ts:159-161`). No update or delete path
@@ -553,7 +556,7 @@ exists in application code. Three gaps:
 - Coverage is control-plane only — `agent.created`, `agent.version.created`,
   `agent.archived`, `agent.deployed`, `agent.deployment.rolled_back`,
   `api_key.created`, `api_key.revoked` (`src/platform/control-plane.ts:44, 76,
-  106, 127, 155, 220, 243`). Session creation, run execution, permission
+106, 127, 155, 220, 243`). Session creation, run execution, permission
   decisions, and interrupts write **no** audit record.
 - No retention policy and no TTL, so the collection grows without bound.
 
@@ -570,21 +573,21 @@ Operations issued, all read-only: `listDatabases`, `listCollections`,
 `countDocuments`, `collStats`, `indexes`, `findOne`, `$indexStats`, and a
 `$bsonSize` projection. No write, create, or drop.
 
-| Collection | Docs | Size | Avg doc | Largest doc | Indexes | In code? |
-| --- | --- | --- | --- | --- | --- | --- |
-| `agents` | 2 | 701 B | 350 B | 383 B | 3 | yes |
-| `agent_versions` | 2 | 2,193 B | 1,096 B | 1,547 B | 3 | yes |
-| `agent_deployments` | 2 | 608 B | 304 B | 304 B | 2 | yes |
-| `agent_sessions` | 2 | 2,243 B | 1,121 B | 1,165 B | 2 | yes |
-| `platform_sessions` | 2 | 744 B | 372 B | 372 B | 3 | yes |
-| `platform_runs` | 2 | 702 B | 351 B | 351 B | 2 | yes |
-| `platform_events` | 57 | 27,662 B | 485 B | 733 B | 3 | yes |
-| `platform_audit` | 11 | 3,992 B | 362 B | 427 B | 2 | yes |
-| `platform_api_keys` | 0 | 0 B | — | — | 3 | yes |
-| `platform_secrets` | 1 | 361 B | 361 B | 361 B | 3 | **no** |
-| `platform_model_providers` | 1 | 407 B | 407 B | 407 B | 3 | **no** |
-| `platform_trusted_base_urls` | 1 | 250 B | 250 B | 250 B | 3 | **no** |
-| `platform_prompts` | 0 | 0 B | — | — | 3 | **no** |
+| Collection                   | Docs | Size     | Avg doc | Largest doc | Indexes | In code? |
+| ---------------------------- | ---- | -------- | ------- | ----------- | ------- | -------- |
+| `agents`                     | 2    | 701 B    | 350 B   | 383 B       | 3       | yes      |
+| `agent_versions`             | 2    | 2,193 B  | 1,096 B | 1,547 B     | 3       | yes      |
+| `agent_deployments`          | 2    | 608 B    | 304 B   | 304 B       | 2       | yes      |
+| `agent_sessions`             | 2    | 2,243 B  | 1,121 B | 1,165 B     | 2       | yes      |
+| `platform_sessions`          | 2    | 744 B    | 372 B   | 372 B       | 3       | yes      |
+| `platform_runs`              | 2    | 702 B    | 351 B   | 351 B       | 2       | yes      |
+| `platform_events`            | 57   | 27,662 B | 485 B   | 733 B       | 3       | yes      |
+| `platform_audit`             | 11   | 3,992 B  | 362 B   | 427 B       | 2       | yes      |
+| `platform_api_keys`          | 0    | 0 B      | —       | —           | 3       | yes      |
+| `platform_secrets`           | 1    | 361 B    | 361 B   | 361 B       | 3       | **no**   |
+| `platform_model_providers`   | 1    | 407 B    | 407 B   | 407 B       | 3       | **no**   |
+| `platform_trusted_base_urls` | 1    | 250 B    | 250 B   | 250 B       | 3       | **no**   |
+| `platform_prompts`           | 0    | 0 B      | —       | —           | 3       | **no**   |
 
 Index counts include `_id_`. All thirteen code-declared indexes exist with the
 declared keys and uniqueness. No TTL index exists on any collection.
@@ -669,12 +672,12 @@ bootstrap env key instead of an issued key.
 
 ### Mismatch 3 — fields in documents that are absent from the schema
 
-| Collection | Field present in data | Schema says |
-| --- | --- | --- |
-| `agent_versions` | `definition.model.providerRef` (string, 12 chars) | not a member of `modelBindingSchema`, which is `.strict()` and requires `secretRef` (`src/platform/definitions.ts:14-21`) |
-| `agent_versions` | `definition.model.secretRef` **missing** | required (`src/platform/definitions.ts:17`) |
-| `platform_runs` | `resolvedProfileId` (string, 36 chars) | not in `PlatformRunRecord` (`src/platform/runtime-state.ts:15-25`) |
-| `agent_sessions` | `metadata.modelBinding.{provider, model, profileName, profileId, baseUrlOrigin, indirectDefinition}` | `src/platform/execution.ts:152-159` writes six deployment fields and no `modelBinding` |
+| Collection       | Field present in data                                                                                | Schema says                                                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `agent_versions` | `definition.model.providerRef` (string, 12 chars)                                                    | not a member of `modelBindingSchema`, which is `.strict()` and requires `secretRef` (`src/platform/definitions.ts:14-21`) |
+| `agent_versions` | `definition.model.secretRef` **missing**                                                             | required (`src/platform/definitions.ts:17`)                                                                               |
+| `platform_runs`  | `resolvedProfileId` (string, 36 chars)                                                               | not in `PlatformRunRecord` (`src/platform/runtime-state.ts:15-25`)                                                        |
+| `agent_sessions` | `metadata.modelBinding.{provider, model, profileName, profileId, baseUrlOrigin, indirectDefinition}` | `src/platform/execution.ts:152-159` writes six deployment fields and no `modelBinding`                                    |
 
 `providerRef` / `profileId` / `resolvedProfileId` all point at
 `platform_model_providers`, and `platform_secrets` supplies what `secretRef`
@@ -702,22 +705,22 @@ resolution, not as a validation error.
 
 ## Part 3 — Drop-impact analysis
 
-| Collection | Breaks immediately | Breaks later | Recoverable? | Safe to drop |
-| --- | --- | --- | --- | --- |
-| `agents` | Every control-plane read and write; `requireAgent` throws `Unknown agent` (`src/platform/control-plane.ts:255`), so no run can start | `agent_versions` and `agent_deployments` become unreachable orphans | No. `slug`, `name`, `createdBy`, `versionCounter` exist nowhere else | **No** |
-| `agent_versions` | `resolveDeployment` throws `Unknown agent version` (`src/platform/control-plane.ts:194`); all execution stops | Rollback loses every target; the definition checksum injected into the system prompt is gone (`src/platform/execution.ts:171`) | No. Definitions are stored only here | **No** |
-| `agent_deployments` | `resolveDeployment` throws `Agent is not deployed to {env}` (`src/platform/control-plane.ts:191`); all execution stops | `rollback` throws `No deployment exists` (`src/platform/control-plane.ts:150`) | Partly — re-publish restores pointers; `revision` history is lost | **No**, but rebuildable from `agent_versions` |
-| `platform_audit` | Nothing. `GET /v1/audit` returns `[]` | Nothing functional | No. Append-only history, no second copy | Functionally yes — see compliance callout |
-| `platform_api_keys` | Every issued key fails auth: `findApiKeyByHash` returns undefined → `Invalid platform API key` (`src/platform/mongodb-platform-service.ts:158-160`) | Nothing further | Only by re-issuing. Secrets are unrecoverable (hashes only) | **No** — see authentication callout |
-| `agent_sessions` | Nothing. `create` and in-process runs are unaffected because the live session is held in memory (`src/platform/session-manager.ts:71-76`) | On the first control call after a restart, `authorizeControl` rehydrates via `resumeSession` → `resumeAgentSession` throws `Session not found` / `SESSION_NOT_FOUND` (`src/core/agent-session.ts:81-85`). Every pre-existing open session becomes permanently uncontrollable, and all conversation history is gone | No | **No** — backs session rehydration |
-| `platform_sessions` | `authorizeControl` and `authorizeView` throw `Unknown open session` for every existing session (`src/platform/session-manager.ts:242-248`); `GET /v1/sessions` returns `[]` | Nothing further; new sessions work | No. Control-token hashes and ownership exist nowhere else | **No** — backs control-token auth |
-| `platform_runs` | Nothing. `claimRun` simply inserts (`src/platform/mongodb-runtime.ts:136-144`) | Idempotent run IDs stop working — a retried `runId` re-executes instead of replaying. `GET /v1/sessions/{id}/runs/{runId}` throws (`src/platform/api-server.ts:194`). Startup orphan recovery has nothing to mark failed | Terminal status is inferrable from the last event of a run, not automatically | **No** — backs run idempotency and orphan recovery |
-| `platform_events` | Nothing for a brand-new run | Replay returns `[]` (`src/platform/api-server.ts:207`); completed-run replay-on-duplicate silently yields nothing (`src/platform/session-manager.ts:105-112`); the post-restart sequence baseline resets to 0 (`src/platform/session-manager.ts:110-112`) | No. This is the only durable record of what a run did | **No** — backs event replay |
-| dynamically named data-source collections | Nothing throws; a missing collection returns `[]` | Agents bound to that data source silently lose their grounding documents (`src/platform/catalogs.ts:240-245`) — degraded answers, no error | Depends on the external owner of the data | Operator's call, but failure is silent |
-| `platform_secrets` (live only) | Nothing in `src/` | Whatever build wrote it loses model credentials | No — plaintext values cannot be regenerated | **No** — investigate ownership first |
-| `platform_model_providers` (live only) | Nothing in `src/` | The build behind `providerRef` / `resolvedProfileId` loses model resolution entirely | No | **No** — investigate ownership first |
-| `platform_trusted_base_urls` (live only) | Nothing in `src/` | Base-URL allowlisting for that build; `src/` uses the env var instead | Yes, re-derivable from config | Likely, after confirming ownership |
-| `platform_prompts` (live only) | Nothing; empty | Unknown | N/A (empty) | Yes |
+| Collection                                | Breaks immediately                                                                                                                                                          | Breaks later                                                                                                                                                                                                                                                                                                       | Recoverable?                                                                  | Safe to drop                                       |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- | -------------------------------------------------- |
+| `agents`                                  | Every control-plane read and write; `requireAgent` throws `Unknown agent` (`src/platform/control-plane.ts:255`), so no run can start                                        | `agent_versions` and `agent_deployments` become unreachable orphans                                                                                                                                                                                                                                                | No. `slug`, `name`, `createdBy`, `versionCounter` exist nowhere else          | **No**                                             |
+| `agent_versions`                          | `resolveDeployment` throws `Unknown agent version` (`src/platform/control-plane.ts:194`); all execution stops                                                               | Rollback loses every target; the definition checksum injected into the system prompt is gone (`src/platform/execution.ts:171`)                                                                                                                                                                                     | No. Definitions are stored only here                                          | **No**                                             |
+| `agent_deployments`                       | `resolveDeployment` throws `Agent is not deployed to {env}` (`src/platform/control-plane.ts:191`); all execution stops                                                      | `rollback` throws `No deployment exists` (`src/platform/control-plane.ts:150`)                                                                                                                                                                                                                                     | Partly — re-publish restores pointers; `revision` history is lost             | **No**, but rebuildable from `agent_versions`      |
+| `platform_audit`                          | Nothing. `GET /v1/audit` returns `[]`                                                                                                                                       | Nothing functional                                                                                                                                                                                                                                                                                                 | No. Append-only history, no second copy                                       | Functionally yes — see compliance callout          |
+| `platform_api_keys`                       | Every issued key fails auth: `findApiKeyByHash` returns undefined → `Invalid platform API key` (`src/platform/mongodb-platform-service.ts:158-160`)                         | Nothing further                                                                                                                                                                                                                                                                                                    | Only by re-issuing. Secrets are unrecoverable (hashes only)                   | **No** — see authentication callout                |
+| `agent_sessions`                          | Nothing. `create` and in-process runs are unaffected because the live session is held in memory (`src/platform/session-manager.ts:71-76`)                                   | On the first control call after a restart, `authorizeControl` rehydrates via `resumeSession` → `resumeAgentSession` throws `Session not found` / `SESSION_NOT_FOUND` (`src/core/agent-session.ts:81-85`). Every pre-existing open session becomes permanently uncontrollable, and all conversation history is gone | No                                                                            | **No** — backs session rehydration                 |
+| `platform_sessions`                       | `authorizeControl` and `authorizeView` throw `Unknown open session` for every existing session (`src/platform/session-manager.ts:242-248`); `GET /v1/sessions` returns `[]` | Nothing further; new sessions work                                                                                                                                                                                                                                                                                 | No. Control-token hashes and ownership exist nowhere else                     | **No** — backs control-token auth                  |
+| `platform_runs`                           | Nothing. `claimRun` simply inserts (`src/platform/mongodb-runtime.ts:136-144`)                                                                                              | Idempotent run IDs stop working — a retried `runId` re-executes instead of replaying. `GET /v1/sessions/{id}/runs/{runId}` throws (`src/platform/api-server.ts:194`). Startup orphan recovery has nothing to mark failed                                                                                           | Terminal status is inferrable from the last event of a run, not automatically | **No** — backs run idempotency and orphan recovery |
+| `platform_events`                         | Nothing for a brand-new run                                                                                                                                                 | Replay returns `[]` (`src/platform/api-server.ts:207`); completed-run replay-on-duplicate silently yields nothing (`src/platform/session-manager.ts:105-112`); the post-restart sequence baseline resets to 0 (`src/platform/session-manager.ts:110-112`)                                                          | No. This is the only durable record of what a run did                         | **No** — backs event replay                        |
+| dynamically named data-source collections | Nothing throws; a missing collection returns `[]`                                                                                                                           | Agents bound to that data source silently lose their grounding documents (`src/platform/catalogs.ts:240-245`) — degraded answers, no error                                                                                                                                                                         | Depends on the external owner of the data                                     | Operator's call, but failure is silent             |
+| `platform_secrets` (live only)            | Nothing in `src/`                                                                                                                                                           | Whatever build wrote it loses model credentials                                                                                                                                                                                                                                                                    | No — plaintext values cannot be regenerated                                   | **No** — investigate ownership first               |
+| `platform_model_providers` (live only)    | Nothing in `src/`                                                                                                                                                           | The build behind `providerRef` / `resolvedProfileId` loses model resolution entirely                                                                                                                                                                                                                               | No                                                                            | **No** — investigate ownership first               |
+| `platform_trusted_base_urls` (live only)  | Nothing in `src/`                                                                                                                                                           | Base-URL allowlisting for that build; `src/` uses the env var instead                                                                                                                                                                                                                                              | Yes, re-derivable from config                                                 | Likely, after confirming ownership                 |
+| `platform_prompts` (live only)            | Nothing; empty                                                                                                                                                              | Unknown                                                                                                                                                                                                                                                                                                            | N/A (empty)                                                                   | Yes                                                |
 
 **The four unreferenced collections are not dead weight.** They are referenced by
 the same divergent build that wrote `providerRef`, `resolvedProfileId`, and
@@ -758,13 +761,13 @@ controls.
 automatic session rehydration, monotonic post-restart sequences, and
 orphaned-run recovery for the single-process mode."
 
-| Guarantee | Backed by | Mechanism |
-| --- | --- | --- |
-| Idempotent run IDs | `platform_runs` | Unique index `{tenantId, sessionId, runId}` (`src/platform/mongodb-runtime.ts:83`); `claimRun` treats duplicate-key error 11000 as "already claimed" (:137-142); the caller then replays stored events for a completed or cancelled run (`src/platform/session-manager.ts:104-112`) |
-| Persisted events / replay | `platform_events` | `appendEvent` per event (`src/platform/session-manager.ts:124-131`); `listEvents` / `listRunEvents` (`src/platform/mongodb-runtime.ts:179, 187`) |
-| Automatic session rehydration | `agent_sessions` + `platform_sessions` | `authorizeControl` resumes from the store when the session is not in memory (`src/platform/session-manager.ts:249-262`) → `resumeAgentSession` loads messages (`src/core/agent-session.ts:78-85`) |
-| Monotonic post-restart sequences | `platform_events` | Last stored sequence read at run start, then an offset applied to emitted events (`src/platform/session-manager.ts:110-121`); the unique `{tenantId, sessionId, sequence}` index is the backstop |
-| Orphaned-run recovery | `platform_runs` | `recoverOrphanedRuns` at startup marks every `running` row failed (`src/platform/session-manager.ts:49`, `src/platform/mongodb-runtime.ts:90-102`) |
+| Guarantee                        | Backed by                              | Mechanism                                                                                                                                                                                                                                                                           |
+| -------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Idempotent run IDs               | `platform_runs`                        | Unique index `{tenantId, sessionId, runId}` (`src/platform/mongodb-runtime.ts:83`); `claimRun` treats duplicate-key error 11000 as "already claimed" (:137-142); the caller then replays stored events for a completed or cancelled run (`src/platform/session-manager.ts:104-112`) |
+| Persisted events / replay        | `platform_events`                      | `appendEvent` per event (`src/platform/session-manager.ts:124-131`); `listEvents` / `listRunEvents` (`src/platform/mongodb-runtime.ts:179, 187`)                                                                                                                                    |
+| Automatic session rehydration    | `agent_sessions` + `platform_sessions` | `authorizeControl` resumes from the store when the session is not in memory (`src/platform/session-manager.ts:249-262`) → `resumeAgentSession` loads messages (`src/core/agent-session.ts:78-85`)                                                                                   |
+| Monotonic post-restart sequences | `platform_events`                      | Last stored sequence read at run start, then an offset applied to emitted events (`src/platform/session-manager.ts:110-121`); the unique `{tenantId, sessionId, sequence}` index is the backstop                                                                                    |
+| Orphaned-run recovery            | `platform_runs`                        | `recoverOrphanedRuns` at startup marks every `running` row failed (`src/platform/session-manager.ts:49`, `src/platform/mongodb-runtime.ts:90-102`)                                                                                                                                  |
 
 Every one of `platform_runs`, `platform_events`, `agent_sessions`, and
 `platform_sessions` looks idle under normal operation and is load-bearing only at
@@ -774,7 +777,7 @@ restart.
 
 **Partial deletion is more dangerous than full deletion.** Dropping
 `platform_events` entirely resets the sequence baseline to 0 consistently.
-Deleting *some* events for a session leaves a stale baseline, and the offset
+Deleting _some_ events for a session leaves a stale baseline, and the offset
 arithmetic at `src/platform/session-manager.ts:110-121` can then produce a
 sequence that already exists, which makes `appendEvent` throw a duplicate-key
 error mid-run. Any pruning or TTL added to `platform_events` must be
@@ -786,21 +789,21 @@ session-complete, not time-based.
 
 ### Per collection
 
-| Collection | Recommendation | Reasoning |
-| --- | --- | --- |
-| `agents` | **Keep** | Root identity; every other control-plane collection references it |
-| `agent_versions` | **Keep** | Sole store of agent definitions and the checksum that reaches the system prompt |
-| `agent_deployments` | **Merge into `agents`** | Three meaningful fields plus a counter, one document per `(agent, environment)`; embeds as an `environments` map with no loss |
-| `platform_audit` | **Keep, deprioritise** | Nothing reads it in any product flow, but it is unreconstructable and may be retained for compliance |
-| `platform_api_keys` | **Keep** | Authentication material; dropping locks out clients irreversibly |
-| `agent_sessions` | **Keep separate, but bound `messages`** | Do not merge into `platform_sessions`: that collection is read on every authorization and must stay small |
-| `platform_sessions` | **Keep** | Control-token hash, ownership, and open/closed status — the session authorization record |
-| `platform_runs` | **Keep** | The unique index *is* the idempotency guarantee |
-| `platform_events` | **Keep** | Replay and monotonic sequencing; add session-complete retention, not TTL |
-| `platform_secrets` | **Investigate, do not drop** | Unreferenced by `src/` but holds a plaintext credential; rotate the value regardless |
-| `platform_model_providers` | **Investigate, do not drop** | The likely target of `providerRef` in stored definitions |
-| `platform_trusted_base_urls` | **Drop after confirming ownership** | `src/` implements the same allowlist from an env var |
-| `platform_prompts` | **Drop** | Empty, unreferenced, no reconstructable purpose |
+| Collection                   | Recommendation                          | Reasoning                                                                                                                     |
+| ---------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `agents`                     | **Keep**                                | Root identity; every other control-plane collection references it                                                             |
+| `agent_versions`             | **Keep**                                | Sole store of agent definitions and the checksum that reaches the system prompt                                               |
+| `agent_deployments`          | **Merge into `agents`**                 | Three meaningful fields plus a counter, one document per `(agent, environment)`; embeds as an `environments` map with no loss |
+| `platform_audit`             | **Keep, deprioritise**                  | Nothing reads it in any product flow, but it is unreconstructable and may be retained for compliance                          |
+| `platform_api_keys`          | **Keep**                                | Authentication material; dropping locks out clients irreversibly                                                              |
+| `agent_sessions`             | **Keep separate, but bound `messages`** | Do not merge into `platform_sessions`: that collection is read on every authorization and must stay small                     |
+| `platform_sessions`          | **Keep**                                | Control-token hash, ownership, and open/closed status — the session authorization record                                      |
+| `platform_runs`              | **Keep**                                | The unique index _is_ the idempotency guarantee                                                                               |
+| `platform_events`            | **Keep**                                | Replay and monotonic sequencing; add session-complete retention, not TTL                                                      |
+| `platform_secrets`           | **Investigate, do not drop**            | Unreferenced by `src/` but holds a plaintext credential; rotate the value regardless                                          |
+| `platform_model_providers`   | **Investigate, do not drop**            | The likely target of `providerRef` in stored definitions                                                                      |
+| `platform_trusted_base_urls` | **Drop after confirming ownership**     | `src/` implements the same allowlist from an env var                                                                          |
+| `platform_prompts`           | **Drop**                                | Empty, unreferenced, no reconstructable purpose                                                                               |
 
 ### Three collections carrying the most complexity for the least value
 
@@ -824,7 +827,7 @@ session-complete, not time-based.
 Do not simplify these. Each looks like over-engineering and is not:
 
 - **`platform_runs`' unique index plus the error-11000 catch**
-  (`src/platform/mongodb-runtime.ts:83, 141`). This *is* the idempotent-run-ID
+  (`src/platform/mongodb-runtime.ts:83, 141`). This _is_ the idempotent-run-ID
   guarantee. Remove it and a client retry double-executes an agent run.
 - **`platform_events`' unique `{tenantId, sessionId, sequence}` index and the
   `sequenceOffset` arithmetic** (`src/platform/mongodb-runtime.ts:84`,
@@ -838,7 +841,7 @@ Do not simplify these. Each looks like over-engineering and is not:
 - **`agent_versions` immutability plus `checksum`**
   (`src/platform/definitions.ts:211`). The checksum is not decorative: it is
   embedded in the composed system prompt (`src/platform/execution.ts:171,
-  262-266`), so the model's instructions are pinned to an exact definition.
+262-266`), so the model's instructions are pinned to an exact definition.
   Guarantee: reproducible runs and meaningful rollback.
 - **`agent_deployments.revision`** (`src/platform/mongodb-store.ts:133`).
   Monotonic per environment and surfaced in session metadata and audit records;
@@ -850,14 +853,14 @@ Do not simplify these. Each looks like over-engineering and is not:
 
 Collections and key fields only. `_id` is left to MongoDB in all cases.
 
-| Collection | Key fields | Notes |
-| --- | --- | --- |
-| `tenants` | `tenantId` (unique), `name`, `status`, `createdAt` | **New.** Does not exist today; `tenantId` is currently an unvalidated string with no registry. Needed before tenant scoping means anything |
-| `agents` | `tenantId`, `id`, `slug`, `name`, `versionCounter`, `archivedAt?`, `environments: { [env]: { versionId, revision, updatedAt, updatedBy } }` | Absorbs `agent_deployments`. Unique on `{tenantId, slug}` and `{tenantId, id}` |
-| `agent_versions` | `tenantId`, `agentId`, `id`, `version`, `checksum`, `definition` | Immutable. Unique on `{tenantId, agentId, version}` and `{tenantId, agentId, id}` |
-| `platform_sessions` | `tenantId`, `sessionId`, `ownerId`, `agentIdOrSlug`, `environment`, `controlTokenHash`, `status`, `lastSequence`, `updatedAt` | Add `lastSequence` so run start stops scanning the whole event log. Must stay small — no message history here |
-| `platform_runs` | `tenantId`, `sessionId`, `runId`, `status`, `createdAt`, `updatedAt`, `error?` | Keep the unique `{tenantId, sessionId, runId}` index; add `{status}` for orphan recovery |
-| `platform_events` | `tenantId`, `sessionId`, `runId`, `sequence`, `event`, `createdAt` | Drop the redundant `id`; `{tenantId, sessionId, sequence}` is already a unique key. Drop `event.sequence` and `event.sessionId` on write, re-hydrate on read |
+| Collection          | Key fields                                                                                                                                  | Notes                                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `tenants`           | `tenantId` (unique), `name`, `status`, `createdAt`                                                                                          | **New.** Does not exist today; `tenantId` is currently an unvalidated string with no registry. Needed before tenant scoping means anything                   |
+| `agents`            | `tenantId`, `id`, `slug`, `name`, `versionCounter`, `archivedAt?`, `environments: { [env]: { versionId, revision, updatedAt, updatedBy } }` | Absorbs `agent_deployments`. Unique on `{tenantId, slug}` and `{tenantId, id}`                                                                               |
+| `agent_versions`    | `tenantId`, `agentId`, `id`, `version`, `checksum`, `definition`                                                                            | Immutable. Unique on `{tenantId, agentId, version}` and `{tenantId, agentId, id}`                                                                            |
+| `platform_sessions` | `tenantId`, `sessionId`, `ownerId`, `agentIdOrSlug`, `environment`, `controlTokenHash`, `status`, `lastSequence`, `updatedAt`               | Add `lastSequence` so run start stops scanning the whole event log. Must stay small — no message history here                                                |
+| `platform_runs`     | `tenantId`, `sessionId`, `runId`, `status`, `createdAt`, `updatedAt`, `error?`                                                              | Keep the unique `{tenantId, sessionId, runId}` index; add `{status}` for orphan recovery                                                                     |
+| `platform_events`   | `tenantId`, `sessionId`, `runId`, `sequence`, `event`, `createdAt`                                                                          | Drop the redundant `id`; `{tenantId, sessionId, sequence}` is already a unique key. Drop `event.sequence` and `event.sessionId` on write, re-hydrate on read |
 
 Deliberately absent: `agent_sessions` (fold history into `platform_events` or cap
 it), `platform_audit` (retain as-is only if compliance requires it), and all four
@@ -865,16 +868,16 @@ unreferenced collections.
 
 ### Migration risk
 
-| Collection | Data to preserve | Move required | Risk |
-| --- | --- | --- | --- |
-| `agent_deployments` → `agents.environments` | Yes — `versionId` and `revision` per environment are live routing state | Yes. Read each deployment, `$set` into the parent agent, verify counts, then drop | Low. 2 documents here, small everywhere. Non-atomic across two collections; do it with the API stopped |
-| `agent_sessions` → derived from `platform_events` | Yes if resume must keep working for existing open sessions | Either backfill history from `assistant.message.completed` and `tool.completed` events, or accept that pre-migration sessions cannot be resumed | **High.** Tool results are truncated in the message history at ~100_000 chars with the full text in the artifact store, so an event-derived rebuild is not byte-identical. Verify a rebuilt session produces the same prompt before committing |
-| `platform_audit` | Yes if retained for compliance | Export before any change; do not transform in place | Low technically, potentially high legally. Get a retention answer before touching it |
-| `platform_events` field trimming | Yes — the events themselves | Removing `id` and the duplicated `event.sequence` / `event.sessionId` requires a rewrite of every document | Medium. `listEvents` reconstructs `AgentEvent` objects from `record.event` (`src/platform/mongodb-runtime.ts:183`), so the read path must repopulate the stripped fields or clients receive malformed protocol-v1 events |
-| `platform_secrets` | Unknown ownership; contains a credential | Do not migrate. Identify the owner, move the value to the environment-based resolver, then rotate it | **High.** A plaintext credential in an unauthenticated database should be rotated whether or not the collection is dropped |
-| `platform_model_providers`, `platform_trusted_base_urls` | Only if the divergent build stays in service | Reconcile with `PLATFORM_ALLOWED_MODEL_BASE_URLS` and `modelBindingSchema` first | Medium. Dropping these while stored definitions still carry `providerRef` leaves agents unable to resolve a model |
-| `platform_prompts` | No | None | None. Empty |
-| Stored `providerRef` definitions | Yes | Independent of any drop decision: existing `agent_versions` documents must gain `secretRef` (and `baseURL` where the provider is `openai-compatible`) or no agent in this database can run against `src/` | **High and already broken.** Fix this before, not during, the simplification |
+| Collection                                               | Data to preserve                                                        | Move required                                                                                                                                                                                             | Risk                                                                                                                                                                                                                                           |
+| -------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent_deployments` → `agents.environments`              | Yes — `versionId` and `revision` per environment are live routing state | Yes. Read each deployment, `$set` into the parent agent, verify counts, then drop                                                                                                                         | Low. 2 documents here, small everywhere. Non-atomic across two collections; do it with the API stopped                                                                                                                                         |
+| `agent_sessions` → derived from `platform_events`        | Yes if resume must keep working for existing open sessions              | Either backfill history from `assistant.message.completed` and `tool.completed` events, or accept that pre-migration sessions cannot be resumed                                                           | **High.** Tool results are truncated in the message history at ~100_000 chars with the full text in the artifact store, so an event-derived rebuild is not byte-identical. Verify a rebuilt session produces the same prompt before committing |
+| `platform_audit`                                         | Yes if retained for compliance                                          | Export before any change; do not transform in place                                                                                                                                                       | Low technically, potentially high legally. Get a retention answer before touching it                                                                                                                                                           |
+| `platform_events` field trimming                         | Yes — the events themselves                                             | Removing `id` and the duplicated `event.sequence` / `event.sessionId` requires a rewrite of every document                                                                                                | Medium. `listEvents` reconstructs `AgentEvent` objects from `record.event` (`src/platform/mongodb-runtime.ts:183`), so the read path must repopulate the stripped fields or clients receive malformed protocol-v1 events                       |
+| `platform_secrets`                                       | Unknown ownership; contains a credential                                | Do not migrate. Identify the owner, move the value to the environment-based resolver, then rotate it                                                                                                      | **High.** A plaintext credential in an unauthenticated database should be rotated whether or not the collection is dropped                                                                                                                     |
+| `platform_model_providers`, `platform_trusted_base_urls` | Only if the divergent build stays in service                            | Reconcile with `PLATFORM_ALLOWED_MODEL_BASE_URLS` and `modelBindingSchema` first                                                                                                                          | Medium. Dropping these while stored definitions still carry `providerRef` leaves agents unable to resolve a model                                                                                                                              |
+| `platform_prompts`                                       | No                                                                      | None                                                                                                                                                                                                      | None. Empty                                                                                                                                                                                                                                    |
+| Stored `providerRef` definitions                         | Yes                                                                     | Independent of any drop decision: existing `agent_versions` documents must gain `secretRef` (and `baseURL` where the provider is `openai-compatible`) or no agent in this database can run against `src/` | **High and already broken.** Fix this before, not during, the simplification                                                                                                                                                                   |
 
 ### Blocking issue
 

@@ -13,10 +13,10 @@ Read these before the detail sections; several contradict the assumptions in the
 1. **The SSE loop is not duplicated.** `OpenRouterModelProvider` does not parse SSE at all. It
    delegates to `OpenAICompatibleModelProvider` (`src/models/openrouter-provider.ts:81`). There is
    exactly one wire implementation in the repo. Section 3's premise ("do they share parsing code,
-   or is the SSE logic duplicated") resolves to *fully shared*.
+   or is the SSE logic duplicated") resolves to _fully shared_.
 2. **A provider declares no capabilities and no limits.** `ModelProvider` is `name` + `stream`.
    No context window, no max output, no tool-calling flag, no streaming flag. NOT FOUND anywhere.
-   Model metadata *is* available (`OpenRouterModel.contextLength`,
+   Model metadata _is_ available (`OpenRouterModel.contextLength`,
    `src/models/openrouter-provider.ts:33`) but is never fed into the context manager or limits.
 3. **An on-prem endpoint with authentication disabled cannot be configured today.** An empty API
    key is a hard constructor error (`src/models/openai-compatible-provider.ts:46`) and the platform
@@ -44,7 +44,7 @@ Read these before the detail sections; several contradict the assumptions in the
    `call-1call-1` / `echoecho` with no validation. This is a silent-corruption portability hazard.
 9. **`usage` events are additive, not last-write-wins.** The provider yields a `usage` event for
    any chunk carrying `usage` (`src/models/openai-compatible-provider.ts:118-128`) and
-   `BudgetTracker.add` accumulates (`src/services/limits.ts:20`). A backend that emits *cumulative*
+   `BudgetTracker.add` accumulates (`src/services/limits.ts:20`). A backend that emits _cumulative_
    usage per chunk instead of once at the end will over-count the budget and can trip
    `BUDGET_EXCEEDED` spuriously.
 10. **`.env` in the working tree contains a live `OPENROUTER_API_KEY` value** (`.env:4`). Value not
@@ -185,18 +185,18 @@ Errors are **thrown**, not yielded. All are `AgentHarnessError` (`src/core/error
 string `code` and a boolean `recoverable`, with an HTTP `status` attached via `Object.assign` where
 applicable.
 
-| Code | Site | recoverable | Notes |
-| --- | --- | --- | --- |
-| `MODEL_API_ERROR` | `openai-compatible-provider.ts:96` | 408/409/429/5xx | `status` attached |
-| `EMPTY_MODEL_STREAM` | `openai-compatible-provider.ts:108` | false | |
-| `MODEL_STREAM_ERROR` | `openai-compatible-provider.ts:116` | false | in-band `error` object in a chunk |
-| `MALFORMED_MODEL_STREAM` | `openai-compatible-provider.ts:269` | false | unparseable SSE JSON |
-| `MALFORMED_TOOL_CALL` | `openai-compatible-provider.ts:208` | false | missing id or name |
-| `MALFORMED_TOOL_JSON` | `openai-compatible-provider.ts:214` | false | unparseable arguments |
-| `MISSING_MODEL_CREDENTIAL` | `openrouter-provider.ts:70` | false | |
-| `UNKNOWN_MODEL` | `openrouter-provider.ts:123` | false | |
-| `MODEL_CATALOG_ERROR` | `openrouter-provider.ts:161`, `:172` | 429/5xx on the first | |
-| `SCRIPT_EXHAUSTED` | `scripted-provider.ts:22` | false | |
+| Code                       | Site                                 | recoverable          | Notes                             |
+| -------------------------- | ------------------------------------ | -------------------- | --------------------------------- |
+| `MODEL_API_ERROR`          | `openai-compatible-provider.ts:96`   | 408/409/429/5xx      | `status` attached                 |
+| `EMPTY_MODEL_STREAM`       | `openai-compatible-provider.ts:108`  | false                |                                   |
+| `MODEL_STREAM_ERROR`       | `openai-compatible-provider.ts:116`  | false                | in-band `error` object in a chunk |
+| `MALFORMED_MODEL_STREAM`   | `openai-compatible-provider.ts:269`  | false                | unparseable SSE JSON              |
+| `MALFORMED_TOOL_CALL`      | `openai-compatible-provider.ts:208`  | false                | missing id or name                |
+| `MALFORMED_TOOL_JSON`      | `openai-compatible-provider.ts:214`  | false                | unparseable arguments             |
+| `MISSING_MODEL_CREDENTIAL` | `openrouter-provider.ts:70`          | false                |                                   |
+| `UNKNOWN_MODEL`            | `openrouter-provider.ts:123`         | false                |                                   |
+| `MODEL_CATALOG_ERROR`      | `openrouter-provider.ts:161`, `:172` | 429/5xx on the first |                                   |
+| `SCRIPT_EXHAUSTED`         | `scripted-provider.ts:22`            | false                |                                   |
 
 There is **no `CONTEXT_WINDOW_EXCEEDED` code**. Context overflow is detected heuristically by
 string matching in the session, not by the provider — `src/core/agent-session.ts:651`:
@@ -275,17 +275,17 @@ export class OpenRouterModelProvider implements ModelProvider {        // :59
 Delegate construction — `src/models/openrouter-provider.ts:81`:
 
 ```ts
-    this.delegate = new OpenAICompatibleModelProvider({
-      name: 'openrouter',
-      apiKey: this.apiKey,
-      baseURL: this.baseURL,
-      defaultModel: this.defaultModel,
-      // OpenRouter normalizes on `max_tokens` across every upstream vendor.
-      maxTokensField: 'max_tokens',
-      defaultHeaders: openRouterHeaders(options),
-      ...(routing === undefined ? {} : { extraBody: routing }),
-      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-    });
+this.delegate = new OpenAICompatibleModelProvider({
+  name: 'openrouter',
+  apiKey: this.apiKey,
+  baseURL: this.baseURL,
+  defaultModel: this.defaultModel,
+  // OpenRouter normalizes on `max_tokens` across every upstream vendor.
+  maxTokensField: 'max_tokens',
+  defaultHeaders: openRouterHeaders(options),
+  ...(routing === undefined ? {} : { extraBody: routing }),
+  ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+});
 ```
 
 ### HTTP request construction
@@ -293,48 +293,48 @@ Delegate construction — `src/models/openrouter-provider.ts:81`:
 All of it is in the shared adapter — `src/models/openai-compatible-provider.ts:56-92`:
 
 ```ts
-    const response = await this.fetchImplementation(
-      `${this.options.baseURL.replace(/\/$/, '')}/chat/completions`,
-      {
-        method: 'POST',
-        signal: request.signal,
-        headers: {
-          authorization: `Bearer ${this.options.apiKey}`,
-          'content-type': 'application/json',
-          ...this.options.defaultHeaders,
-        },
-        body: JSON.stringify({
-          model: request.model ?? this.options.defaultModel,
-          messages: toCompatibleMessages(request.messages, request.systemPrompt),
-          // Some upstream vendors reject an empty `tools` array.
-          ...(request.tools.length
-            ? {
-                tools: request.tools.map((tool) => ({
-                  type: 'function',
-                  function: {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.inputSchema,
-                  },
-                })),
-              }
-            : {}),
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(request.maxOutputTokens === undefined
-            ? {}
-            : {
-                [this.options.maxTokensField ?? 'max_completion_tokens']: request.maxOutputTokens,
-              }),
-          ...this.options.extraBody,
-        }),
-      },
-    );
+const response = await this.fetchImplementation(
+  `${this.options.baseURL.replace(/\/$/, '')}/chat/completions`,
+  {
+    method: 'POST',
+    signal: request.signal,
+    headers: {
+      authorization: `Bearer ${this.options.apiKey}`,
+      'content-type': 'application/json',
+      ...this.options.defaultHeaders,
+    },
+    body: JSON.stringify({
+      model: request.model ?? this.options.defaultModel,
+      messages: toCompatibleMessages(request.messages, request.systemPrompt),
+      // Some upstream vendors reject an empty `tools` array.
+      ...(request.tools.length
+        ? {
+            tools: request.tools.map((tool) => ({
+              type: 'function',
+              function: {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.inputSchema,
+              },
+            })),
+          }
+        : {}),
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(request.maxOutputTokens === undefined
+        ? {}
+        : {
+            [this.options.maxTokensField ?? 'max_completion_tokens']: request.maxOutputTokens,
+          }),
+      ...this.options.extraBody,
+    }),
+  },
+);
 ```
 
 - Path: `{baseURL}/chat/completions`, single trailing slash stripped.
-- Auth: `authorization: Bearer <apiKey>`, not overridable — `defaultHeaders` is spread *after*, so
-  a caller *could* override `authorization` by supplying that key, but the platform header
+- Auth: `authorization: Bearer <apiKey>`, not overridable — `defaultHeaders` is spread _after_, so
+  a caller _could_ override `authorization` by supplying that key, but the platform header
   allowlist (§7) strips it.
 - Streaming flag: `stream: true`, always. Non-streaming mode does not exist.
 - `stream_options: { include_usage: true }` is unconditional. Some on-prem OpenAI-compatible
@@ -387,7 +387,7 @@ async function* readSse(
 
 Behaviour notes: frames split on blank line, CRLF tolerant; multi-line `data:` joined with `\n`;
 non-`data:` lines (`event:`, `id:`, `:` keep-alive comments) discarded; trailing partial buffer is
-re-parsed at `done`, so a truncated final frame is *attempted* rather than dropped.
+re-parsed at `done`, so a truncated final frame is _attempted_ rather than dropped.
 
 Consumer loop — `src/models/openai-compatible-provider.ts:110-164`:
 
@@ -561,15 +561,15 @@ session.
 
 ### OpenRouter-specific request/response surface
 
-| Item | Path | Detail |
-| --- | --- | --- |
-| Base URL constant | `src/models/openrouter-provider.ts:5` | `'https://openrouter.ai/api/v1'` |
-| Attribution headers | `src/models/openrouter-provider.ts:181-189` | `HTTP-Referer`, `X-OpenRouter-Title` from `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` |
-| Provider routing | `src/models/openrouter-provider.ts:191-199` | `provider` body field from `providerRouting` |
-| Fallback model array | `src/models/openrouter-provider.ts:195-197` | `models: [...]` body field from `fallbackModels` |
-| `max_tokens` normalization | `src/models/openrouter-provider.ts:86-87` | forces `max_tokens` over `max_completion_tokens` |
-| `usage.cost` | `src/models/openai-compatible-provider.ts:125` | OpenRouter extension, read unconditionally |
-| Extra-body escape hatch | `src/models/openai-compatible-provider.ts:17`, `:89` | `extraBody` is how routing is injected |
+| Item                       | Path                                                 | Detail                                                                                 |
+| -------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Base URL constant          | `src/models/openrouter-provider.ts:5`                | `'https://openrouter.ai/api/v1'`                                                       |
+| Attribution headers        | `src/models/openrouter-provider.ts:181-189`          | `HTTP-Referer`, `X-OpenRouter-Title` from `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` |
+| Provider routing           | `src/models/openrouter-provider.ts:191-199`          | `provider` body field from `providerRouting`                                           |
+| Fallback model array       | `src/models/openrouter-provider.ts:195-197`          | `models: [...]` body field from `fallbackModels`                                       |
+| `max_tokens` normalization | `src/models/openrouter-provider.ts:86-87`            | forces `max_tokens` over `max_completion_tokens`                                       |
+| `usage.cost`               | `src/models/openai-compatible-provider.ts:125`       | OpenRouter extension, read unconditionally                                             |
+| Extra-body escape hatch    | `src/models/openai-compatible-provider.ts:17`, `:89` | `extraBody` is how routing is injected                                                 |
 
 Slug parsing: **NOT FOUND.** No code splits or validates `vendor/model`. The `vendor/model` shape
 is a documentation convention (`README.md:18`) and a Zod string of max length 300
@@ -652,7 +652,8 @@ Validator and rejection error — `src/platform/model-resolver.ts:57`:
 ```
 
 ```ts
-function normalizeBaseURL(value: string): string {              // :66
+function normalizeBaseURL(value: string): string {
+  // :66
   const url = new URL(value);
   if (url.username || url.password) throw new Error('Model base URL cannot contain credentials');
   return url.toString().replace(/\/$/, '');
@@ -662,12 +663,12 @@ function normalizeBaseURL(value: string): string {              // :66
 Trigger condition — `src/platform/model-resolver.ts:30-35`:
 
 ```ts
-    if (
-      binding.provider === 'openai-compatible' ||
-      (binding.baseURL && normalizeBaseURL(binding.baseURL) !== OPENROUTER_BASE_URL)
-    ) {
-      this.assertAllowedCustomBaseURL(baseURL);
-    }
+if (
+  binding.provider === 'openai-compatible' ||
+  (binding.baseURL && normalizeBaseURL(binding.baseURL) !== OPENROUTER_BASE_URL)
+) {
+  this.assertAllowedCustomBaseURL(baseURL);
+}
 ```
 
 Rejection surfaces as a bare `Error` (untyped, no `AgentHarnessError` code), thrown during
@@ -760,7 +761,7 @@ Each `Tool` carries both a Zod schema for validation and a separate JSON Schema 
 `z.toJSONSchema(...)`; MCP tools pass the remote schema through verbatim
 (`src/mcp/client.ts:92`). Two sources of truth per tool, with no test asserting they agree.
 
-Shared or per-provider: the *envelope* is per-provider (each adapter would repeat those 12 lines),
+Shared or per-provider: the _envelope_ is per-provider (each adapter would repeat those 12 lines),
 but nothing OpenAI-specific happens to the schema itself. The scripted provider ignores
 `request.tools` entirely.
 
@@ -783,7 +784,8 @@ Provider-specific handling:
 `src/models/retry-provider.ts`. Applied by decoration, not inside adapters.
 
 ```ts
-export type RetryProviderOptions = {                                    // :4
+export type RetryProviderOptions = {
+  // :4
   maxAttempts?: number;
   initialDelayMs?: number;
   maximumDelayMs?: number;
@@ -806,8 +808,8 @@ Defaults (`:23-26`): `maxAttempts = 3`, `initialDelayMs = 250`, `maximumDelayMs 
 Backoff — `src/models/retry-provider.ts:47`:
 
 ```ts
-        const delay = Math.min(this.maximumDelayMs, this.initialDelayMs * 2 ** (attempt - 1));
-        await abortableDelay(delay, request.signal);
+const delay = Math.min(this.maximumDelayMs, this.initialDelayMs * 2 ** (attempt - 1));
+await abortableDelay(delay, request.signal);
 ```
 
 Pure exponential, **no jitter**. Effective waits: 250 ms, 500 ms. Total added latency before final
@@ -816,14 +818,9 @@ failure is under a second.
 Retry gate — `src/models/retry-provider.ts:38-46`:
 
 ```ts
-        if (
-          emitted ||
-          attempt === this.maxAttempts ||
-          request.signal.aborted ||
-          !this.isRetryable(error)
-        ) {
-          throw error;
-        }
+if (emitted || attempt === this.maxAttempts || request.signal.aborted || !this.isRetryable(error)) {
+  throw error;
+}
 ```
 
 `emitted` is the important one: once any event has been yielded, no retry — partial output is never
@@ -877,24 +874,24 @@ Re-exported from the public API at `src/index.ts:23`.
 
 ### Env vars influencing model choice
 
-| Var | Read at | Precedence |
-| --- | --- | --- |
-| `AGENT_MODEL` | `src/adapters/cli/index.ts:15`, `src/service/index.ts:40`, `:69` | 1st (CLI, service) |
-| `OPENROUTER_MODEL` | `src/adapters/cli/index.ts:15`, `src/service/index.ts:40`, `src/models/openrouter-provider.ts:78` | 2nd |
-| `DEFAULT_OPENROUTER_MODEL` | `src/models/openrouter-provider.ts:11` | 3rd (constant) |
-| `OPENROUTER_BASE_URL` | `src/models/openrouter-provider.ts:76`, `:145`, `src/service/index.ts:41` | endpoint |
-| `OPENROUTER_API_KEY` | `src/models/openrouter-provider.ts:68`, `:148`, `src/adapters/cli/index.ts:25` | credential, also selects the provider in the CLI |
-| `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` | `src/models/openrouter-provider.ts:182-183` | attribution headers |
-| `OPENROUTER_FALLBACK_MODELS` | `src/service/index.ts:50-56` | comma-separated `models` body field |
-| `AGENT_PROVIDER` | `src/service/index.ts:12` | `demo` \| `openrouter` \| `openai-compatible`, default `demo` |
-| `MODEL_BASE_URL` | `src/service/index.ts:61`, `:68` | openai-compatible endpoint |
-| `MODEL_API_KEY` / `OPENAI_API_KEY` | `src/service/index.ts:60` | openai-compatible credential |
-| `AGENT_MAX_OUTPUT_TOKENS` | `src/adapters/cli/index.ts:17` | output cap |
-| `AGENT_MAX_TURNS` | `src/adapters/cli/index.ts:21` | turn cap |
-| `PLATFORM_ALLOWED_MODEL_BASE_URLS` | `src/platform/mongodb-platform-service.ts:75` | operator allowlist |
-| `PLATFORM_SECRET_*` | `src/platform/catalogs.ts:284-287` | tenant credential |
-| `PLATFORM_AGENT_MODEL` | `examples/platform/setup-agent.ts:30`, `setup-web-search-agent.ts:9` | example scripts only |
-| `AGENT_HARNESS_LIVE_OPENROUTER(_MODEL)` | `tests/models/openrouter-provider.test.ts:229`, `:231` | opt-in live test |
+| Var                                          | Read at                                                                                           | Precedence                                                    |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `AGENT_MODEL`                                | `src/adapters/cli/index.ts:15`, `src/service/index.ts:40`, `:69`                                  | 1st (CLI, service)                                            |
+| `OPENROUTER_MODEL`                           | `src/adapters/cli/index.ts:15`, `src/service/index.ts:40`, `src/models/openrouter-provider.ts:78` | 2nd                                                           |
+| `DEFAULT_OPENROUTER_MODEL`                   | `src/models/openrouter-provider.ts:11`                                                            | 3rd (constant)                                                |
+| `OPENROUTER_BASE_URL`                        | `src/models/openrouter-provider.ts:76`, `:145`, `src/service/index.ts:41`                         | endpoint                                                      |
+| `OPENROUTER_API_KEY`                         | `src/models/openrouter-provider.ts:68`, `:148`, `src/adapters/cli/index.ts:25`                    | credential, also selects the provider in the CLI              |
+| `OPENROUTER_APP_URL` / `OPENROUTER_APP_NAME` | `src/models/openrouter-provider.ts:182-183`                                                       | attribution headers                                           |
+| `OPENROUTER_FALLBACK_MODELS`                 | `src/service/index.ts:50-56`                                                                      | comma-separated `models` body field                           |
+| `AGENT_PROVIDER`                             | `src/service/index.ts:12`                                                                         | `demo` \| `openrouter` \| `openai-compatible`, default `demo` |
+| `MODEL_BASE_URL`                             | `src/service/index.ts:61`, `:68`                                                                  | openai-compatible endpoint                                    |
+| `MODEL_API_KEY` / `OPENAI_API_KEY`           | `src/service/index.ts:60`                                                                         | openai-compatible credential                                  |
+| `AGENT_MAX_OUTPUT_TOKENS`                    | `src/adapters/cli/index.ts:17`                                                                    | output cap                                                    |
+| `AGENT_MAX_TURNS`                            | `src/adapters/cli/index.ts:21`                                                                    | turn cap                                                      |
+| `PLATFORM_ALLOWED_MODEL_BASE_URLS`           | `src/platform/mongodb-platform-service.ts:75`                                                     | operator allowlist                                            |
+| `PLATFORM_SECRET_*`                          | `src/platform/catalogs.ts:284-287`                                                                | tenant credential                                             |
+| `PLATFORM_AGENT_MODEL`                       | `examples/platform/setup-agent.ts:30`, `setup-web-search-agent.ts:9`                              | example scripts only                                          |
+| `AGENT_HARNESS_LIVE_OPENROUTER(_MODEL)`      | `tests/models/openrouter-provider.test.ts:229`, `:231`                                            | opt-in live test                                              |
 
 Precedence chain, verbatim, identical in both entry points
 (`src/adapters/cli/index.ts:15`, `src/service/index.ts:40`):
@@ -917,14 +914,16 @@ There is **no defaults/user/project/org/session stack.** The whole config module
 (`src/config/config.ts`) and offers an ordered array with last-write-wins deep merge:
 
 ```ts
-export type ConfigLayer = {          // :35
+export type ConfigLayer = {
+  // :35
   name: string;
   value: unknown;
 };
 ```
 
 ```ts
-export function mergeConfigLayers(layers: readonly ConfigLayer[]): HarnessConfig {   // :40
+export function mergeConfigLayers(layers: readonly ConfigLayer[]): HarnessConfig {
+  // :40
   let merged: Record<string, unknown> = {};
   for (const layer of layers) {
     const parsed = harnessConfigSchema.partial().parse(layer.value);
@@ -935,7 +934,7 @@ export function mergeConfigLayers(layers: readonly ConfigLayer[]): HarnessConfig
 ```
 
 ```ts
-export async function loadJsonConfig(path: string): Promise<ConfigLayer>            // :49
+export async function loadJsonConfig(path: string): Promise<ConfigLayer>; // :49
 ```
 
 Where model config sits in that stack: `harnessConfigSchema.model` at `src/config/config.ts:12`
@@ -953,20 +952,20 @@ plugin `providers` capability (`src/plugins/plugins.ts:57`, `:89-94`).
 
 Every concrete provider construction in `src/` and `examples/`:
 
-| Path:line | Constructs | Selection |
-| --- | --- | --- |
-| `src/adapters/cli/index.ts:26` | `new OpenRouterModelProvider` | `if (process.env.OPENROUTER_API_KEY)` |
-| `src/adapters/cli/index.ts:27` | `new ScriptedModelProvider` | else branch (echo stub) |
-| `src/service/index.ts:32` | `createAgentCoreDemoProvider()` | `AGENT_PROVIDER=demo` (default) |
-| `src/service/index.ts:37` | `createOpenRouterProvider(...)` | `AGENT_PROVIDER=openrouter` |
-| `src/service/index.ts:66` | `new OpenAICompatibleModelProvider` | `AGENT_PROVIDER=openai-compatible` |
-| `src/service/agent-core-service.ts:89` | `new ScriptedModelProvider` | demo factory |
-| `src/models/openrouter-provider.ts:81` | `new OpenAICompatibleModelProvider` | delegate |
-| `src/models/openrouter-provider.ts:137` | `new OpenRouterModelProvider` | `createOpenRouterProvider` factory |
-| `src/platform/model-resolver.ts:38` | `new OpenRouterModelProvider` in `RetryModelProvider` | `binding.provider === 'openrouter'` |
-| `src/platform/model-resolver.ts:47` | `new OpenAICompatibleModelProvider` in `RetryModelProvider` | else branch |
-| `src/services/provider-auth.ts:17` | `new OpenRouterModelProvider` | OpenRouter-only helper |
-| `examples/sdk/basic.ts:3`, `:6` | `new ScriptedModelProvider` | example |
+| Path:line                               | Constructs                                                  | Selection                             |
+| --------------------------------------- | ----------------------------------------------------------- | ------------------------------------- |
+| `src/adapters/cli/index.ts:26`          | `new OpenRouterModelProvider`                               | `if (process.env.OPENROUTER_API_KEY)` |
+| `src/adapters/cli/index.ts:27`          | `new ScriptedModelProvider`                                 | else branch (echo stub)               |
+| `src/service/index.ts:32`               | `createAgentCoreDemoProvider()`                             | `AGENT_PROVIDER=demo` (default)       |
+| `src/service/index.ts:37`               | `createOpenRouterProvider(...)`                             | `AGENT_PROVIDER=openrouter`           |
+| `src/service/index.ts:66`               | `new OpenAICompatibleModelProvider`                         | `AGENT_PROVIDER=openai-compatible`    |
+| `src/service/agent-core-service.ts:89`  | `new ScriptedModelProvider`                                 | demo factory                          |
+| `src/models/openrouter-provider.ts:81`  | `new OpenAICompatibleModelProvider`                         | delegate                              |
+| `src/models/openrouter-provider.ts:137` | `new OpenRouterModelProvider`                               | `createOpenRouterProvider` factory    |
+| `src/platform/model-resolver.ts:38`     | `new OpenRouterModelProvider` in `RetryModelProvider`       | `binding.provider === 'openrouter'`   |
+| `src/platform/model-resolver.ts:47`     | `new OpenAICompatibleModelProvider` in `RetryModelProvider` | else branch                           |
+| `src/services/provider-auth.ts:17`      | `new OpenRouterModelProvider`                               | OpenRouter-only helper                |
+| `examples/sdk/basic.ts:3`, `:6`         | `new ScriptedModelProvider`                                 | example                               |
 
 Only `src/platform/model-resolver.ts` is data-driven; everything else is env-driven branching.
 Note that `RetryModelProvider` is applied **only** on the platform path — CLI, service, and SDK
@@ -980,10 +979,10 @@ Chain: `AgentExecutionPlatform.openSession` resolves the deployment, then
 `src/platform/execution.ts:88`:
 
 ```ts
-    const provider = await this.options.models.resolve(
-      principal.tenantId,
-      resolved.version.definition.model,
-    );
+const provider = await this.options.models.resolve(
+  principal.tenantId,
+  resolved.version.definition.model,
+);
 ```
 
 `src/platform/model-resolver.ts:8`:
@@ -1106,14 +1105,14 @@ function safeModelHeaders(
 **No provider conformance suite exists.** There is no shared test that accepts a `ModelProvider`
 and exercises the contract. What exists:
 
-| Path | Scope |
-| --- | --- |
-| `tests/models/openai-compatible-provider.test.ts` | 3 tests, adapter-specific, injected `fetch` |
-| `tests/models/openrouter-provider.test.ts` | 7 tests (1 skipped live), adapter-specific |
-| `tests/platform/model-resolver.test.ts` | 2 tests, allowlist behaviour |
-| `tests/security/security.test.ts:29` | retry provider, no partial-output duplication |
-| `tests/core/session.test.ts` | 7 tests, session loop against `ScriptedModelProvider` |
-| `tests/parity/parity.test.ts` | see below |
+| Path                                              | Scope                                                 |
+| ------------------------------------------------- | ----------------------------------------------------- |
+| `tests/models/openai-compatible-provider.test.ts` | 3 tests, adapter-specific, injected `fetch`           |
+| `tests/models/openrouter-provider.test.ts`        | 7 tests (1 skipped live), adapter-specific            |
+| `tests/platform/model-resolver.test.ts`           | 2 tests, allowlist behaviour                          |
+| `tests/security/security.test.ts:29`              | retry provider, no partial-output duplication         |
+| `tests/core/session.test.ts`                      | 7 tests, session loop against `ScriptedModelProvider` |
+| `tests/parity/parity.test.ts`                     | see below                                             |
 
 `src/testing/parity-runner.ts` looks like a candidate but is **not** a provider suite. Its
 signature — `src/testing/parity-runner.ts:18`:
@@ -1123,7 +1122,7 @@ export async function runParityScenario(
   primaryFactory: () => AgentSession | Promise<AgentSession>,
   candidateFactory: () => AgentSession | Promise<AgentSession>,
   prompt: string,
-): Promise<ParityResult>
+): Promise<ParityResult>;
 ```
 
 It diffs normalized `AgentEvent` streams between two **sessions**, not two providers, and
@@ -1135,17 +1134,17 @@ concrete class with a stub `fetch`. Session tests hardcode `ScriptedModelProvide
 
 ### Coverage matrix
 
-| Case | Status | Evidence |
-| --- | --- | --- |
-| single valid tool call | **PRESENT** | `tests/models/openai-compatible-provider.test.ts:33`, `tests/models/openrouter-provider.test.ts:42` — both include fragmented arguments (`'{"val'` + `'ue":"ok"}'`) |
-| multiple parallel tool calls | **ABSENT** | no test supplies two `tool_calls` indices. `tests/core/session.test.ts:137` exercises parallel *tool execution* from a scripted provider, which never touches multi-index SSE assembly |
-| malformed / unparseable tool arguments | **PRESENT** | `tests/models/openrouter-provider.test.ts:107` asserts `/malformed JSON/` |
-| unknown tool name | **PRESENT at session level, ABSENT at provider level** | `src/core/agent-session.ts:406-410` returns `Unknown tool: ...` as a tool error; no test asserts it, and it is not a provider concern |
-| mid-stream cancellation | **ABSENT at provider level** | no test aborts a signal during `readSse`. `tests/core/session.test.ts:175` interrupts a scripted provider, so the `readSse` abort check at `src/models/openai-compatible-provider.ts:235` and the pre-flight at `:55` are **untested** |
-| stream truncated mid-tool-call | **ABSENT** | no test omits `finish_reason` and closes the stream. The `!completed` tail path (`:159-163`) and the `done`-with-partial-buffer path (`:248-256`) are both untested |
-| usage accounting accuracy | **PARTIAL** | single-chunk usage asserted in both adapter tests; multi-chunk / cumulative-usage double counting untested; `tests/services/services.test.ts:101` covers `BudgetTracker` in isolation |
-| HTTP error mapping (4xx vs 5xx) | **PARTIAL** | 503 asserted twice (`openai-compatible-provider.test.ts:110`, `openrouter-provider.test.ts:211`). **No 429 test, no 4xx test, no 402 test.** The retryable classification for 408/409/429 is unasserted |
-| context-window-exceeded error | **PARTIAL, session level only** | `tests/context/reactive-compaction.test.ts:5` drives `isPromptTooLong` via a thrown error; no provider-level test that a 413 or a vendor context message maps correctly |
+| Case                                   | Status                                                 | Evidence                                                                                                                                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| single valid tool call                 | **PRESENT**                                            | `tests/models/openai-compatible-provider.test.ts:33`, `tests/models/openrouter-provider.test.ts:42` — both include fragmented arguments (`'{"val'` + `'ue":"ok"}'`)                                                                    |
+| multiple parallel tool calls           | **ABSENT**                                             | no test supplies two `tool_calls` indices. `tests/core/session.test.ts:137` exercises parallel _tool execution_ from a scripted provider, which never touches multi-index SSE assembly                                                 |
+| malformed / unparseable tool arguments | **PRESENT**                                            | `tests/models/openrouter-provider.test.ts:107` asserts `/malformed JSON/`                                                                                                                                                              |
+| unknown tool name                      | **PRESENT at session level, ABSENT at provider level** | `src/core/agent-session.ts:406-410` returns `Unknown tool: ...` as a tool error; no test asserts it, and it is not a provider concern                                                                                                  |
+| mid-stream cancellation                | **ABSENT at provider level**                           | no test aborts a signal during `readSse`. `tests/core/session.test.ts:175` interrupts a scripted provider, so the `readSse` abort check at `src/models/openai-compatible-provider.ts:235` and the pre-flight at `:55` are **untested** |
+| stream truncated mid-tool-call         | **ABSENT**                                             | no test omits `finish_reason` and closes the stream. The `!completed` tail path (`:159-163`) and the `done`-with-partial-buffer path (`:248-256`) are both untested                                                                    |
+| usage accounting accuracy              | **PARTIAL**                                            | single-chunk usage asserted in both adapter tests; multi-chunk / cumulative-usage double counting untested; `tests/services/services.test.ts:101` covers `BudgetTracker` in isolation                                                  |
+| HTTP error mapping (4xx vs 5xx)        | **PARTIAL**                                            | 503 asserted twice (`openai-compatible-provider.test.ts:110`, `openrouter-provider.test.ts:211`). **No 429 test, no 4xx test, no 402 test.** The retryable classification for 408/409/429 is unasserted                                |
+| context-window-exceeded error          | **PARTIAL, session level only**                        | `tests/context/reactive-compaction.test.ts:5` drives `isPromptTooLong` via a thrown error; no provider-level test that a 413 or a vendor context message maps correctly                                                                |
 
 ## 9. Context and limits
 
@@ -1155,8 +1154,8 @@ There is no per-provider or per-model context window. It is a **global default c
 context manager** — `src/context/context-manager.ts:40`:
 
 ```ts
-    this.maxInputTokens = options.maxInputTokens ?? 100_000;
-    this.retainRecentMessages = options.retainRecentMessages ?? 8;
+this.maxInputTokens = options.maxInputTokens ?? 100_000;
+this.retainRecentMessages = options.retainRecentMessages ?? 8;
 ```
 
 Overridable per request (`src/context/context-manager.ts:44`:
@@ -1213,9 +1212,10 @@ Provider-configurable in two independent senses:
 const DEFAULT_LIMITS: AgentLimits = { maxTurns: 24, maxOutputTokens: 8_192 };
 ```
 
-  Overridable via `AGENT_MAX_OUTPUT_TOKENS` (CLI, `src/adapters/cli/index.ts:17`),
-  `definition.limits.maxOutputTokens` (platform, `src/platform/execution.ts:160-162`), or
-  `config.limits` (SDK).
+Overridable via `AGENT_MAX_OUTPUT_TOKENS` (CLI, `src/adapters/cli/index.ts:17`),
+`definition.limits.maxOutputTokens` (platform, `src/platform/execution.ts:160-162`), or
+`config.limits` (SDK).
+
 - **Wire field name:** `maxTokensField: 'max_tokens' | 'max_completion_tokens'`
   (`src/models/openai-compatible-provider.ts:15`), defaulting to `max_completion_tokens`
   (`:87`). The union is closed — a backend expecting some third name has no path.
@@ -1229,40 +1229,40 @@ Note the default direction: `DefaultPlatformModelResolver` does **not** set `max
 
 ### Direct imports of `src/models/openrouter-provider.ts` from outside `src/models/`
 
-| Path:line | Why coupled |
-| --- | --- |
-| `src/index.ts:22-27` | Public API re-exports `createOpenRouterProvider`, `DEFAULT_OPENROUTER_MODEL`, `listOpenRouterModels`, `OPENROUTER_BASE_URL`, `OpenRouterModelProvider` — deleting the module is a breaking SDK change |
-| `src/index.ts:29-32` | Public type re-exports `ListOpenRouterModelsOptions`, `OpenRouterModel`, `OpenRouterProviderOptions` |
-| `src/index.ts:221` | Re-exports `createOpenRouterProviderFromSecrets` |
-| `src/adapters/cli/index.ts:5-7` | Imports the class and default slug; OpenRouter is the CLI's only live backend |
-| `src/service/index.ts:5-7` | Imports the factory and default slug for the `AGENT_PROVIDER=openrouter` branch |
-| `src/platform/model-resolver.ts:2` | Imports `OPENROUTER_BASE_URL` and the class; the constant is load-bearing in the trust check at `:32` |
-| `src/services/provider-auth.ts:1` | Entire module exists only to build an OpenRouter provider from a `SecretProvider` |
+| Path:line                          | Why coupled                                                                                                                                                                                           |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts:22-27`               | Public API re-exports `createOpenRouterProvider`, `DEFAULT_OPENROUTER_MODEL`, `listOpenRouterModels`, `OPENROUTER_BASE_URL`, `OpenRouterModelProvider` — deleting the module is a breaking SDK change |
+| `src/index.ts:29-32`               | Public type re-exports `ListOpenRouterModelsOptions`, `OpenRouterModel`, `OpenRouterProviderOptions`                                                                                                  |
+| `src/index.ts:221`                 | Re-exports `createOpenRouterProviderFromSecrets`                                                                                                                                                      |
+| `src/adapters/cli/index.ts:5-7`    | Imports the class and default slug; OpenRouter is the CLI's only live backend                                                                                                                         |
+| `src/service/index.ts:5-7`         | Imports the factory and default slug for the `AGENT_PROVIDER=openrouter` branch                                                                                                                       |
+| `src/platform/model-resolver.ts:2` | Imports `OPENROUTER_BASE_URL` and the class; the constant is load-bearing in the trust check at `:32`                                                                                                 |
+| `src/services/provider-auth.ts:1`  | Entire module exists only to build an OpenRouter provider from a `SecretProvider`                                                                                                                     |
 
 ### References to an OpenRouter URL, slug format, or vendor/model string shape
 
-| Path:line | Why coupled |
-| --- | --- |
-| `src/platform/model-resolver.ts:26-28` | Defaults a missing `baseURL` to `OPENROUTER_BASE_URL`, so "no URL" implicitly means "hosted OpenRouter" |
-| `src/platform/model-resolver.ts:32` | Trust decision is expressed as "differs from OpenRouter's URL" rather than "is a custom endpoint" |
-| `src/platform/model-resolver.ts:75` | Header allowlist is three OpenRouter header names; a vendor-neutral endpoint gets no headers |
-| `src/platform/definitions.ts:13` | `provider` enum defaults to `'openrouter'`, so an omitted provider field means hosted |
-| `src/models/openai-compatible-provider.ts:125` | Reads `usage.cost`, an OpenRouter extension, in the shared adapter |
-| `src/core/agent-session.ts:651-658` | `isPromptTooLong` regex is tuned to OpenAI/OpenRouter error prose |
-| `examples/platform/setup-agent.ts:29-32` | Example agent definition hardcodes `provider: 'openrouter'` + `X-OpenRouter-Title` |
-| `examples/platform/setup-web-search-agent.ts:9`, `:45-48` | Same, plus an OpenRouter `:free` variant slug as the default model |
-| `README.md:14-20`, `:62-63` | Documents OpenRouter as the routing layer for "every live model" |
-| `.env.example:5-10`, `:27-28` | Presents `OPENROUTER_API_KEY` as "required for any live run" and `AGENT_PROVIDER` as `demo` or `openrouter` only |
-| `.env:4`, `:8` | Live key on disk plus a `:free` OpenRouter slug |
+| Path:line                                                 | Why coupled                                                                                                      |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `src/platform/model-resolver.ts:26-28`                    | Defaults a missing `baseURL` to `OPENROUTER_BASE_URL`, so "no URL" implicitly means "hosted OpenRouter"          |
+| `src/platform/model-resolver.ts:32`                       | Trust decision is expressed as "differs from OpenRouter's URL" rather than "is a custom endpoint"                |
+| `src/platform/model-resolver.ts:75`                       | Header allowlist is three OpenRouter header names; a vendor-neutral endpoint gets no headers                     |
+| `src/platform/definitions.ts:13`                          | `provider` enum defaults to `'openrouter'`, so an omitted provider field means hosted                            |
+| `src/models/openai-compatible-provider.ts:125`            | Reads `usage.cost`, an OpenRouter extension, in the shared adapter                                               |
+| `src/core/agent-session.ts:651-658`                       | `isPromptTooLong` regex is tuned to OpenAI/OpenRouter error prose                                                |
+| `examples/platform/setup-agent.ts:29-32`                  | Example agent definition hardcodes `provider: 'openrouter'` + `X-OpenRouter-Title`                               |
+| `examples/platform/setup-web-search-agent.ts:9`, `:45-48` | Same, plus an OpenRouter `:free` variant slug as the default model                                               |
+| `README.md:14-20`, `:62-63`                               | Documents OpenRouter as the routing layer for "every live model"                                                 |
+| `.env.example:5-10`, `:27-28`                             | Presents `OPENROUTER_API_KEY` as "required for any live run" and `AGENT_PROVIDER` as `demo` or `openrouter` only |
+| `.env:4`, `:8`                                            | Live key on disk plus a `:free` OpenRouter slug                                                                  |
 
 ### Assumes a hosted provider is reachable
 
-| Path:line | Why coupled |
-| --- | --- |
-| `src/models/openrouter-provider.ts:100-127` | `listModels` / `findModel` / `assertModelAvailable` require `GET /models` on a hosted catalog. **Not called from production code** (only `tests/models/openrouter-provider.test.ts` and `README.md:19-20`) — dormant, not active |
-| `src/tools/web/search-provider.ts:4` | `TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'` — `web_search` is hosted-only |
-| `src/platform/web-search-tool.ts:5` | Same constant duplicated for the platform tool |
-| `tests/models/openrouter-provider.test.ts:226-229` | Live network test, correctly gated behind `AGENT_HARNESS_LIVE_OPENROUTER` |
+| Path:line                                          | Why coupled                                                                                                                                                                                                                      |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/models/openrouter-provider.ts:100-127`        | `listModels` / `findModel` / `assertModelAvailable` require `GET /models` on a hosted catalog. **Not called from production code** (only `tests/models/openrouter-provider.test.ts` and `README.md:19-20`) — dormant, not active |
+| `src/tools/web/search-provider.ts:4`               | `TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search'` — `web_search` is hosted-only                                                                                                                                         |
+| `src/platform/web-search-tool.ts:5`                | Same constant duplicated for the platform tool                                                                                                                                                                                   |
+| `tests/models/openrouter-provider.test.ts:226-229` | Live network test, correctly gated behind `AGENT_HARNESS_LIVE_OPENROUTER`                                                                                                                                                        |
 
 Startup network calls: **none for models.** No health check, no catalog prefetch, no token probe at
 process start in any adapter, service, gateway, or platform path. Good news for air-gap, and worth
@@ -1270,19 +1270,19 @@ protecting.
 
 ### Would break in an air-gapped environment
 
-| Path:line | Why it breaks |
-| --- | --- |
-| `src/adapters/cli/index.ts:25-33` | Provider selection is `OPENROUTER_API_KEY ? OpenRouter : scripted echo`. With no internet, `npm run agent` cannot reach a local model at all — no env var, no flag, no code path. **This is the first thing that breaks.** |
-| `src/models/openai-compatible-provider.ts:46` | Blank `apiKey` throws. An unauthenticated local vLLM/Ollama needs a fabricated credential |
-| `src/platform/model-resolver.ts:24` | Missing secret throws before any request. Same problem, platform side |
-| `src/models/openai-compatible-provider.ts:62` | `Bearer`-only auth; no mTLS, no custom header scheme, no SigV4 |
-| `src/platform/model-resolver.ts:75` | Custom headers stripped, so a local gateway requiring `api-key:` or a tenant header cannot be reached |
-| `src/platform/model-resolver.ts:26-28` | A binding that omits `baseURL` silently targets the public internet instead of failing closed |
-| `src/models/openai-compatible-provider.ts:83` | Unconditional `stream_options`; a strict on-prem server that rejects unknown body fields fails every request |
-| `src/context/context-manager.ts:40` | 100_000-token default is wrong for most on-prem models (typically 8K–128K), and nothing derives it from the model |
-| `src/tools/web/search-provider.ts:4`, `src/platform/web-search-tool.ts:5` | `web_search` is unusable; `createWebTools` does register `web_fetch` only, and skips search without a key (`tests/tools/web-tools.test.ts:281`), so this degrades rather than crashes |
-| `examples/platform/setup-*.ts` | Every example agent definition is unusable as written |
-| `.env.example` | No documented on-prem or self-hosted configuration example exists |
+| Path:line                                                                 | Why it breaks                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/adapters/cli/index.ts:25-33`                                         | Provider selection is `OPENROUTER_API_KEY ? OpenRouter : scripted echo`. With no internet, `npm run agent` cannot reach a local model at all — no env var, no flag, no code path. **This is the first thing that breaks.** |
+| `src/models/openai-compatible-provider.ts:46`                             | Blank `apiKey` throws. An unauthenticated local vLLM/Ollama needs a fabricated credential                                                                                                                                  |
+| `src/platform/model-resolver.ts:24`                                       | Missing secret throws before any request. Same problem, platform side                                                                                                                                                      |
+| `src/models/openai-compatible-provider.ts:62`                             | `Bearer`-only auth; no mTLS, no custom header scheme, no SigV4                                                                                                                                                             |
+| `src/platform/model-resolver.ts:75`                                       | Custom headers stripped, so a local gateway requiring `api-key:` or a tenant header cannot be reached                                                                                                                      |
+| `src/platform/model-resolver.ts:26-28`                                    | A binding that omits `baseURL` silently targets the public internet instead of failing closed                                                                                                                              |
+| `src/models/openai-compatible-provider.ts:83`                             | Unconditional `stream_options`; a strict on-prem server that rejects unknown body fields fails every request                                                                                                               |
+| `src/context/context-manager.ts:40`                                       | 100_000-token default is wrong for most on-prem models (typically 8K–128K), and nothing derives it from the model                                                                                                          |
+| `src/tools/web/search-provider.ts:4`, `src/platform/web-search-tool.ts:5` | `web_search` is unusable; `createWebTools` does register `web_fetch` only, and skips search without a key (`tests/tools/web-tools.test.ts:281`), so this degrades rather than crashes                                      |
+| `examples/platform/setup-*.ts`                                            | Every example agent definition is unusable as written                                                                                                                                                                      |
+| `.env.example`                                                            | No documented on-prem or self-hosted configuration example exists                                                                                                                                                          |
 
 ## 11. Verdict
 
