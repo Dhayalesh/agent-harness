@@ -11,7 +11,8 @@ browser UI, Electron windows, and editor-specific UI remain consumer-owned.
 
 - Node.js 22 or newer
 - npm
-- `OPENROUTER_API_KEY` only when using the live OpenRouter provider
+- MongoDB, plus one `model_providers` record: the CLI and the service read their
+  model and credential from that record only
 
 Every live model is routed through [OpenRouter](https://openrouter.ai/models),
 so model ids are OpenRouter slugs in `vendor/model` form (for example
@@ -37,34 +38,82 @@ cp .env.example .env
 ```
 
 `.env` is gitignored and loaded automatically by the `agent`, `service`,
-`platform`, `demo:client`, and `test` scripts through Node's
-`--env-file-if-exists`. Real process environment variables always win over
-`.env` values. `OPENROUTER_API_KEY` is the only variable needed for a live CLI
-run; every other section is per-surface and optional.
+`demo:client`, and `test` scripts through Node's `--env-file-if-exists`. Real
+process environment variables always win over `.env` values.
+
+`PLATFORM_MONGODB_URI` is the single connection string, and its path segment is
+the database name (`mongodb://127.0.0.1:27017/trueai_agent_platform`).
+`PLATFORM_MODEL_PROVIDER` optionally names which record to use, and an empty
+value selects the enabled default record. Those two variables are the whole
+surface: the model, the endpoint, and the credential all come from one
+`model_providers` record. Nothing in the environment can supply or substitute
+any of them, and there is no fallback when the record is missing a field.
+
+Three scripts in `model_scripts/` write those records. Each talks to MongoDB
+directly, matches records by `name`, and takes its input from variables at the top
+of the file:
+
+```bash
+node model_scripts/seedModel.js     # add new records
+node model_scripts/editModel.js     # change one existing record
+node model_scripts/deleteModel.js   # remove one record
+```
+
+Each script does one thing and refuses the others' work: adding a name that
+exists, or editing or deleting one that does not, is an error rather than a silent
+insert or no-op. `deleteModel.js` additionally requires `CONFIRM = true`, since it
+destroys a stored credential. `contextWindow` and `maxOutputTokens` are required
+when adding, because the CLI spends them as the session's input budget and output
+ceiling.
+
+Because the credential sits on the record next to the `baseURL` it is sent to,
+write access to `model_providers` is equivalent to holding the key. Run MongoDB
+with authentication, give the runtime a least-privilege read-only user, restrict
+writes to operators, and enable encryption at rest.
 
 `npm run check` verifies formatting, TypeScript, deterministic integration
 tests, security boundaries, transport contracts, and cross-surface acceptance.
 
 ## Terminal
 
-Run the deterministic CLI without credentials:
+Configure the LLM once, in `model_scripts/seedModel.js`. An `openai-compatible`
+entry needs its endpoint in `baseURL`, which the canonical OpenRouter gateway does
+not:
 
-```bash
-npm run agent -- "Explain this repository"
+```js
+const MODELS = [
+  {
+    name: 'openrouter-default',
+    provider: 'openrouter',
+    model: 'anthropic/claude-sonnet-4.6',
+    apiKey: '<credential>',
+    contextWindow: 200000,
+    maxOutputTokens: 8192,
+    isDefault: true,
+  },
+];
 ```
 
-Run the same CLI with OpenRouter and local coding tools:
-
 ```bash
-OPENROUTER_API_KEY=... npm run agent -- "Find and fix the failing test"
+node model_scripts/seedModel.js
 ```
 
-`AGENT_MODEL` (or `OPENROUTER_MODEL`) overrides the routed model; it defaults to
-`DEFAULT_OPENROUTER_MODEL`:
+Then run the CLI with local coding tools:
 
 ```bash
-OPENROUTER_API_KEY=... AGENT_MODEL=openai/gpt-4.1-mini npm run agent -- "Summarize src/core"
+npm run agent -- "Find and fix the failing test"
 ```
+
+Switch models by editing the record with `editModel.js`, or by adding a second
+entry to `MODELS` and pointing `PLATFORM_MODEL_PROVIDER` at it by name:
+
+```bash
+node model_scripts/seedModel.js
+PLATFORM_MODEL_PROVIDER=fast npm run agent -- "Summarize src/core"
+```
+
+With no record, or a record missing `apiKey`, both entrypoints exit with a coded
+error instead of falling back to another model or another credential.
 
 Mutating tools request terminal approval. Filesystem operations are confined to
 the current workspace, edits require a prior read, and interruption propagates

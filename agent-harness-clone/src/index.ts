@@ -20,7 +20,6 @@ export type {
 } from './models/provider.js';
 export {
   createOpenRouterProvider,
-  DEFAULT_OPENROUTER_MODEL,
   listOpenRouterModels,
   OPENROUTER_BASE_URL,
   OpenRouterModelProvider,
@@ -232,85 +231,57 @@ export type {
   AgentCoreServiceOptions,
   RunningAgentCoreService,
 } from './service/agent-core-service.js';
-export { AgentPlatformControlPlane, hashApiKey } from './platform/control-plane.js';
 export {
-  agentDefinitionSchema,
-  dataSourceBindingSchema,
-  definitionChecksum,
-  mcpServerBindingSchema,
-  modelBindingSchema,
-  parseAgentDefinition,
-  skillBindingSchema,
-  toolBindingSchema,
-} from './platform/definitions.js';
+  modelProviderAuthSchema,
+  modelProviderCapabilitiesSchema,
+  modelProviderInputSchema,
+  modelProviderRecordSchema,
+  modelProviderUpdateSchema,
+  modelProviderWireSchema,
+  parseModelProviderInput,
+  parseModelProviderRecord,
+  parseModelProviderUpdate,
+} from './platform/model-provider-definitions.js';
 export type {
-  AgentDefinition,
-  AgentRecord,
-  AgentVersionRecord,
-  ApiKeyRecord,
-  AuditRecord,
-  DataSourceBinding,
-  DeploymentRecord,
-  McpServerBinding,
-  ModelBinding,
-  PlatformPrincipal,
-  PlatformRole,
-  SkillBinding,
-  ToolBinding,
-} from './platform/definitions.js';
-export { InMemoryPlatformStore } from './platform/in-memory-store.js';
-export { MongoPlatformStore } from './platform/mongodb-store.js';
-export type { MongoPlatformStoreOptions } from './platform/mongodb-store.js';
-export type { AgentListOptions, PlatformStore } from './platform/store.js';
+  ModelProviderAuth,
+  ModelProviderCapabilities,
+  ModelProviderInput,
+  ModelProviderRecord,
+  ModelProviderUpdate,
+  ModelProviderWire,
+} from './platform/model-provider-definitions.js';
 export {
-  EnvironmentPlatformSecretResolver,
-  InlineDataSourceConnector,
-  InMemoryPlatformSecretResolver,
-  registerBuiltinToolCatalog,
-  TrustedDataSourceCatalog,
-  TrustedMcpServerCatalog,
-  TrustedToolCatalog,
-} from './platform/catalogs.js';
+  MODEL_PROVIDERS_COLLECTION,
+  MongoModelProviderStore,
+  PLATFORM_MONGO_APP_NAME,
+} from './platform/model-provider-store.js';
 export type {
-  DataSourceConnector,
-  DataSourceDocument,
-  DataSourceQueryContext,
-  PlatformSecretResolver,
-  ToolFactory,
-  ToolFactoryContext,
-} from './platform/catalogs.js';
-export { AgentExecutionPlatform } from './platform/execution.js';
-export type { AgentExecutionContext, AgentExecutionPlatformOptions } from './platform/execution.js';
-export { DefaultPlatformModelResolver } from './platform/model-resolver.js';
+  ModelProviderListOptions,
+  MongoModelProviderStoreOptions,
+  StoredModelProviderRecord,
+} from './platform/model-provider-store.js';
+export { PlatformModelProviderRegistry } from './platform/model-provider-registry.js';
 export type {
-  DefaultPlatformModelResolverOptions,
-  PlatformModelResolver,
-} from './platform/model-resolver.js';
-export { registerWebSearchTool } from './platform/web-search-tool.js';
-export type { TavilyWebSearchOptions } from './platform/web-search-tool.js';
-export { MongoPlatformRuntimeStore, MongoTenantSessionStore } from './platform/mongodb-runtime.js';
-export type { MongoPlatformRuntimeStoreOptions } from './platform/mongodb-runtime.js';
-export { InMemoryPlatformRuntimeStore } from './platform/runtime-state.js';
+  ModelProviderLookup,
+  PlatformModelProviderRegistryOptions,
+} from './platform/model-provider-registry.js';
+export {
+  databaseNameFromUri,
+  modelProviderConfigFromEnvironment,
+  resolveModelProviderFromDatabase,
+} from './platform/model-provider-resolution.js';
 export type {
-  PlatformRunRecord,
-  PlatformRuntimeStore,
-  PlatformSessionRecord,
-  StoredPlatformEvent,
-} from './platform/runtime-state.js';
-export { AgentPlatformSessionManager } from './platform/session-manager.js';
+  ModelProviderEnvironmentConfig,
+  ResolvedModelProvider,
+} from './platform/model-provider-resolution.js';
+export {
+  assertRuntimeSupport,
+  RUNTIME_SUPPORT,
+  SUPPORTED_HEADER_NAMES,
+} from './platform/model-provider-support.js';
 export type {
-  PlatformAgentSessionFactory,
-  PlatformSessionHandle,
-  PublicPlatformSessionRecord,
-} from './platform/session-manager.js';
-export { startAgentPlatformServer } from './platform/api-server.js';
-export type {
-  AgentPlatformServerOptions,
-  RunningAgentPlatformServer,
-} from './platform/api-server.js';
-export { startMongoAgentPlatform } from './platform/mongodb-platform-service.js';
-export type {
-  MongoAgentPlatformOptions,
-  RunningMongoAgentPlatform,
-} from './platform/mongodb-platform-service.js';
-export { MongoCollectionDataSourceConnector } from './platform/catalogs.js';
+  RuntimeSupportCheckInput,
+  SupportedAuthKind,
+  SupportedProvider,
+  SupportedWireField,
+} from './platform/model-provider-support.js';

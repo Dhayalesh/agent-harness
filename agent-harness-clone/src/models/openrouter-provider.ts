@@ -5,18 +5,16 @@ import type { ModelProvider, ModelRequest, ModelStreamEvent } from './provider.j
 export const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 /**
- * Default routing slug. Every model id used by the harness is an OpenRouter
- * slug in `vendor/model` form, resolvable through `GET /models`.
+ * Every option is supplied by the caller. Nothing is read from the environment:
+ * the credential and the model come from the configured `model_providers`
+ * record, so an unrelated variable cannot substitute either one.
  */
-export const DEFAULT_OPENROUTER_MODEL = 'anthropic/claude-sonnet-4.6';
-
 export type OpenRouterProviderOptions = {
-  /** Falls back to `OPENROUTER_API_KEY`. */
-  apiKey?: string;
-  /** Falls back to `OPENROUTER_BASE_URL`, then the public gateway. */
+  apiKey: string;
+  /** OpenRouter slug in `vendor/model` form, resolvable through `GET /models`. */
+  defaultModel: string;
+  /** Defaults to the public gateway. */
   baseURL?: string;
-  /** Falls back to `OPENROUTER_MODEL`, then `DEFAULT_OPENROUTER_MODEL`. */
-  defaultModel?: string;
   /** Sent as `HTTP-Referer` for OpenRouter app attribution. */
   appUrl?: string;
   /** Sent as `X-OpenRouter-Title` for OpenRouter app attribution. */
@@ -42,6 +40,7 @@ export type OpenRouterModel = {
 };
 
 export type ListOpenRouterModelsOptions = {
+  /** Omitted lists only the models the gateway exposes anonymously. */
   apiKey?: string;
   baseURL?: string;
   fetch?: typeof fetch;
@@ -64,18 +63,22 @@ export class OpenRouterModelProvider implements ModelProvider {
   private readonly delegate: OpenAICompatibleModelProvider;
   private readonly fetchImplementation: typeof fetch;
 
-  constructor(options: OpenRouterProviderOptions = {}) {
-    const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY ?? '';
-    if (!apiKey.trim()) {
+  constructor(options: OpenRouterProviderOptions) {
+    if (!options.apiKey.trim()) {
       throw new AgentHarnessError(
-        'OpenRouter provider requires an API key: set OPENROUTER_API_KEY or pass apiKey',
+        'OpenRouter provider requires an API key: pass apiKey from the configured provider record',
         'MISSING_MODEL_CREDENTIAL',
       );
     }
-    this.apiKey = apiKey;
-    this.baseURL = options.baseURL ?? process.env.OPENROUTER_BASE_URL ?? OPENROUTER_BASE_URL;
-    this.defaultModel =
-      options.defaultModel ?? process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL;
+    if (!options.defaultModel.trim()) {
+      throw new AgentHarnessError(
+        'OpenRouter provider requires a model: pass defaultModel from the configured provider record',
+        'UNKNOWN_MODEL',
+      );
+    }
+    this.apiKey = options.apiKey;
+    this.baseURL = options.baseURL ?? OPENROUTER_BASE_URL;
+    this.defaultModel = options.defaultModel;
     this.fetchImplementation = options.fetch ?? globalThis.fetch;
     const routing = openRouterRouting(options);
     this.delegate = new OpenAICompatibleModelProvider({
@@ -132,7 +135,7 @@ export class OpenRouterModelProvider implements ModelProvider {
  * Preset factory kept for call sites that configure a provider inline.
  */
 export function createOpenRouterProvider(
-  options: OpenRouterProviderOptions = {},
+  options: OpenRouterProviderOptions,
 ): OpenRouterModelProvider {
   return new OpenRouterModelProvider(options);
 }
@@ -140,12 +143,8 @@ export function createOpenRouterProvider(
 export async function listOpenRouterModels(
   options: ListOpenRouterModelsOptions = {},
 ): Promise<OpenRouterModel[]> {
-  const baseURL = (
-    options.baseURL ??
-    process.env.OPENROUTER_BASE_URL ??
-    OPENROUTER_BASE_URL
-  ).replace(/\/$/, '');
-  const apiKey = options.apiKey ?? process.env.OPENROUTER_API_KEY;
+  const baseURL = (options.baseURL ?? OPENROUTER_BASE_URL).replace(/\/$/, '');
+  const apiKey = options.apiKey;
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const response = await fetchImplementation(`${baseURL}/models`, {
     method: 'GET',
@@ -179,8 +178,7 @@ export async function listOpenRouterModels(
 }
 
 function openRouterHeaders(options: OpenRouterProviderOptions): Record<string, string> {
-  const appUrl = options.appUrl ?? process.env.OPENROUTER_APP_URL;
-  const appName = options.appName ?? process.env.OPENROUTER_APP_NAME;
+  const { appUrl, appName } = options;
   return {
     ...(appUrl === undefined ? {} : { 'HTTP-Referer': appUrl }),
     ...(appName === undefined ? {} : { 'X-OpenRouter-Title': appName }),

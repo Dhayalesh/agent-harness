@@ -67,7 +67,9 @@ test('credentials, notifications, and update discovery stay optional adapters', 
   assert.equal(provider.name, 'openrouter');
   assert.equal(provider.defaultModel, 'openai/gpt-4.1-mini');
   await assert.rejects(
-    createOpenRouterProviderFromSecrets(new InMemorySecretProvider({})),
+    createOpenRouterProviderFromSecrets(new InMemorySecretProvider({}), {
+      model: 'openai/gpt-4.1-mini',
+    }),
     /Missing provider credential/,
   );
 

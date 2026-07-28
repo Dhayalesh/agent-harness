@@ -1,15 +1,10 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { OpenAICompatibleModelProvider } from '../models/openai-compatible-provider.js';
-import {
-  DEFAULT_OPENROUTER_MODEL,
-  createOpenRouterProvider,
-} from '../models/openrouter-provider.js';
 import type { PermissionMode } from '../permissions/rule-permission-handler.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
-import { createAgentCoreDemoProvider, startAgentCoreService } from './agent-core-service.js';
+import { resolveModelProviderFromDatabase } from '../platform/model-provider-resolution.js';
+import { startAgentCoreService } from './agent-core-service.js';
 
-const providerName = process.env.AGENT_PROVIDER ?? 'demo';
 const workspace = path.resolve(
   process.env.AGENT_WORKSPACE ?? path.join(process.cwd(), '.agent-core-demo', 'workspace'),
 );
@@ -18,6 +13,10 @@ const dataDirectory = path.resolve(
 );
 const permissionMode = parsePermissionMode(process.env.AGENT_PERMISSION_MODE ?? 'default');
 const port = parsePort(process.env.AGENT_SERVICE_PORT ?? '8787');
+
+// Resolved once, before the listener opens, so a misconfigured record fails at
+// startup instead of on the first session.
+const { provider, record, close: closeModelProvider } = await resolveModelProviderFromDatabase();
 
 const service = await startAgentCoreService({
   workspace,
@@ -28,57 +27,14 @@ const service = await startAgentCoreService({
     ? {}
     : { serviceKey: process.env.AGENT_SERVICE_KEY }),
   createPermissionHandler: () => new RulePermissionHandler({ mode: permissionMode }),
-  createProvider: () => {
-    if (providerName === 'demo') return createAgentCoreDemoProvider();
-    if (providerName === 'openrouter') {
-      if (!process.env.OPENROUTER_API_KEY) {
-        throw new Error('OPENROUTER_API_KEY is required when AGENT_PROVIDER=openrouter');
-      }
-      return createOpenRouterProvider({
-        apiKey: process.env.OPENROUTER_API_KEY,
-        defaultModel:
-          process.env.AGENT_MODEL ?? process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL,
-        ...(process.env.OPENROUTER_BASE_URL === undefined
-          ? {}
-          : { baseURL: process.env.OPENROUTER_BASE_URL }),
-        ...(process.env.OPENROUTER_APP_URL === undefined
-          ? {}
-          : { appUrl: process.env.OPENROUTER_APP_URL }),
-        ...(process.env.OPENROUTER_APP_NAME === undefined
-          ? {}
-          : { appName: process.env.OPENROUTER_APP_NAME }),
-        ...(process.env.OPENROUTER_FALLBACK_MODELS === undefined
-          ? {}
-          : {
-              fallbackModels: process.env.OPENROUTER_FALLBACK_MODELS.split(',')
-                .map((model) => model.trim())
-                .filter((model) => model.length > 0),
-            }),
-      });
-    }
-    if (providerName === 'openai-compatible') {
-      const apiKey = process.env.MODEL_API_KEY ?? process.env.OPENAI_API_KEY;
-      if (!apiKey || !process.env.AGENT_MODEL || !process.env.MODEL_BASE_URL) {
-        throw new Error(
-          'MODEL_API_KEY, MODEL_BASE_URL, and AGENT_MODEL are required for openai-compatible',
-        );
-      }
-      return new OpenAICompatibleModelProvider({
-        apiKey,
-        baseURL: process.env.MODEL_BASE_URL,
-        defaultModel: process.env.AGENT_MODEL,
-      });
-    }
-    throw new Error(
-      `Unsupported AGENT_PROVIDER: ${providerName} (expected demo, openrouter, or openai-compatible)`,
-    );
-  },
+  createProvider: () => provider,
 });
 
 process.stdout.write(
   [
     `Agent-core service listening at ${service.url}`,
-    `provider=${providerName}`,
+    `provider=${record.name} (${record.provider})`,
+    `model=${record.model}`,
     `workspace=${workspace}`,
     `permissionMode=${permissionMode}`,
   ].join('\n') + '\n',
@@ -89,6 +45,7 @@ const shutdown = async (): Promise<void> => {
   if (closing) return;
   closing = true;
   await service.close();
+  await closeModelProvider();
 };
 process.once('SIGINT', () => void shutdown());
 process.once('SIGTERM', () => void shutdown());

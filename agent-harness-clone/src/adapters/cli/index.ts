@@ -1,38 +1,30 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { createAgentSession } from '../../core/agent-session.js';
-import {
-  DEFAULT_OPENROUTER_MODEL,
-  OpenRouterModelProvider,
-} from '../../models/openrouter-provider.js';
-import { ScriptedModelProvider } from '../../models/scripted-provider.js';
+import { resolveModelProviderFromDatabase } from '../../platform/model-provider-resolution.js';
 import { LocalRuntimeHost } from '../../runtime/local-runtime-host.js';
 import { createBuiltinTools } from '../../tools/builtin/index.js';
 import { createWebTools } from '../../tools/web/index.js';
 import { InteractiveCliPermissionHandler } from './interactive-permissions.js';
 
 const prompt = process.argv.slice(2).join(' ').trim() || 'Hello';
-const model = process.env.AGENT_MODEL ?? process.env.OPENROUTER_MODEL ?? DEFAULT_OPENROUTER_MODEL;
-const maxOutputTokens = parsePositiveInteger(
-  'AGENT_MAX_OUTPUT_TOKENS',
-  process.env.AGENT_MAX_OUTPUT_TOKENS,
-);
 const maxTurns = parsePositiveInteger('AGENT_MAX_TURNS', process.env.AGENT_MAX_TURNS);
+// The configured record is the only source of a model and a credential; there
+// is no offline stub and no environment-supplied default.
+const { provider, record, close: closeModelProvider } = await resolveModelProviderFromDatabase();
+// Both token ceilings come from the record's stored capabilities, alongside the
+// model they apply to. The environment cannot raise or lower either one. The
+// input budget is what the window leaves once the reply is reserved, so a full
+// context plus a full reply cannot exceed `contextWindow`.
 const limits = {
-  ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+  maxOutputTokens: record.capabilities.maxOutputTokens,
+  maxInputTokens: record.capabilities.contextWindow - record.capabilities.maxOutputTokens,
   ...(maxTurns === undefined ? {} : { maxTurns }),
 };
-const provider = process.env.OPENROUTER_API_KEY
-  ? new OpenRouterModelProvider({ defaultModel: model })
-  : new ScriptedModelProvider([
-      [
-        {
-          type: 'text_delta',
-          delta: `The harness received: ${prompt}\nSet OPENROUTER_API_KEY to run a live agent (optionally AGENT_MODEL, default ${DEFAULT_OPENROUTER_MODEL}).`,
-        },
-        { type: 'completed', stopReason: 'end_turn' },
-      ],
-    ]);
+process.stderr.write(
+  `[model] ${record.name} -> ${record.provider} ${record.model} ` +
+    `(maxInputTokens=${limits.maxInputTokens}, maxOutputTokens=${limits.maxOutputTokens})\n`,
+);
 const systemPrompt = await resolveSystemPrompt();
 const runtime = new LocalRuntimeHost(process.cwd());
 const session = createAgentSession({
@@ -41,7 +33,7 @@ const session = createAgentSession({
   tools: [...createBuiltinTools(runtime), ...createWebTools()],
   permissionHandler: new InteractiveCliPermissionHandler(),
   ...(systemPrompt === undefined ? {} : { systemPrompt }),
-  ...(Object.keys(limits).length === 0 ? {} : { limits }),
+  limits,
 });
 
 /**
@@ -95,4 +87,5 @@ for await (const event of session.run({ prompt })) {
 }
 
 await session.close();
+await closeModelProvider();
 if (failed) process.exitCode = 1;

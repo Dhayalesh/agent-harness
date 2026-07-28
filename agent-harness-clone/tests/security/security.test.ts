@@ -12,11 +12,20 @@ import {
   type ModelStreamEvent,
 } from '../../src/index.js';
 
-test('workspace symlinks cannot escape the runtime boundary', async () => {
+test('workspace symlinks cannot escape the runtime boundary', async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), 'security-root-'));
   const outside = await mkdtemp(path.join(tmpdir(), 'security-outside-'));
   await writeFile(path.join(outside, 'secret.txt'), 'secret');
-  await symlink(outside, path.join(root, 'escape'));
+  try {
+    await symlink(outside, path.join(root, 'escape'));
+  } catch (error) {
+    // Creating a symlink on Windows needs elevation or Developer Mode.
+    if ((error as { code?: string }).code !== 'EPERM') throw error;
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+    t.skip('symlink creation is not permitted in this environment');
+    return;
+  }
   try {
     const runtime = new LocalRuntimeHost(root);
     await assert.rejects(runtime.readText('escape/secret.txt'), /outside the runtime workspace/);

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  DEFAULT_OPENROUTER_MODEL,
   listOpenRouterModels,
   OpenRouterModelProvider,
   type ModelRequest,
   type ModelStreamEvent,
 } from '../../src/index.js';
+
+const MODEL = 'anthropic/claude-sonnet-4.6';
 
 const request: ModelRequest = {
   messages: [
@@ -34,9 +35,21 @@ const request: ModelRequest = {
 
 test('OpenRouter provider requires a credential', () => {
   assert.throws(
-    () => new OpenRouterModelProvider({ apiKey: '  ' }),
+    () => new OpenRouterModelProvider({ apiKey: '  ', defaultModel: MODEL }),
     /OpenRouter provider requires an API key/,
   );
+});
+
+test('OpenRouter provider requires a model, with no environment fallback', () => {
+  process.env.OPENROUTER_MODEL = 'vendor/from-environment';
+  try {
+    assert.throws(
+      () => new OpenRouterModelProvider({ apiKey: 'openrouter-key', defaultModel: '  ' }),
+      /OpenRouter provider requires a model/,
+    );
+  } finally {
+    delete process.env.OPENROUTER_MODEL;
+  }
 });
 
 test('OpenRouter provider targets the gateway with attribution and routing', async () => {
@@ -107,6 +120,7 @@ test('OpenRouter provider targets the gateway with attribution and routing', asy
 test('OpenRouter provider rejects malformed streamed tool JSON', async () => {
   const provider = new OpenRouterModelProvider({
     apiKey: 'openrouter-key',
+    defaultModel: MODEL,
     fetch: async () =>
       sseResponse([
         {
@@ -134,6 +148,7 @@ test('OpenRouter provider omits tools when the session exposes none', async () =
   let body: Record<string, unknown> = {};
   const provider = new OpenRouterModelProvider({
     apiKey: 'openrouter-key',
+    defaultModel: MODEL,
     fetch: async (_input, init) => {
       body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return sseResponse([{ choices: [{ delta: { content: 'hi' }, finish_reason: 'stop' }] }]);
@@ -141,7 +156,7 @@ test('OpenRouter provider omits tools when the session exposes none', async () =
   });
   const events: ModelStreamEvent[] = [];
   for await (const event of provider.stream({ ...request, tools: [] })) events.push(event);
-  assert.equal(body.model, DEFAULT_OPENROUTER_MODEL);
+  assert.equal(body.model, MODEL);
   assert.equal('tools' in body, false);
   assert.deepEqual(events, [
     { type: 'text_delta', delta: 'hi' },
@@ -199,6 +214,7 @@ test('model catalog resolves availability from the OpenRouter models endpoint', 
 
   const provider = new OpenRouterModelProvider({
     apiKey: 'openrouter-key',
+    defaultModel: MODEL,
     fetch: fetchImplementation,
   });
   await provider.assertModelAvailable('anthropic/claude-sonnet-4.6');
@@ -211,6 +227,7 @@ test('model catalog resolves availability from the OpenRouter models endpoint', 
 test('OpenRouter provider surfaces HTTP status for retry policy', async () => {
   const provider = new OpenRouterModelProvider({
     apiKey: 'openrouter-key',
+    defaultModel: MODEL,
     fetch: async () => new Response('busy', { status: 503 }),
   });
   await assert.rejects(
@@ -228,9 +245,8 @@ test(
   { skip: !process.env.AGENT_HARNESS_LIVE_OPENROUTER },
   async () => {
     const provider = new OpenRouterModelProvider({
-      ...(process.env.AGENT_HARNESS_LIVE_OPENROUTER_MODEL === undefined
-        ? {}
-        : { defaultModel: process.env.AGENT_HARNESS_LIVE_OPENROUTER_MODEL }),
+      apiKey: process.env.OPENROUTER_API_KEY ?? '',
+      defaultModel: process.env.AGENT_HARNESS_LIVE_OPENROUTER_MODEL ?? MODEL,
     });
     await provider.assertModelAvailable();
     const events: ModelStreamEvent[] = [];

@@ -6,7 +6,8 @@
 #   docker compose down        # stop it (data is kept in the named volume)
 #   docker compose down -v     # stop and delete all data
 #
-# Matches MONGODB_URI=mongodb://127.0.0.1:27017 from .env / .env.example.
+# Matches PLATFORM_MONGODB_URI=mongodb://127.0.0.1:27017/trueai_agent_platform
+# from .env / .env.example.
 
 services:
   mongodb:

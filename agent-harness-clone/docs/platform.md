@@ -57,15 +57,29 @@ Each immutable `agent_versions` document contains:
 - turn, input, output, total-token, and cost limits;
 - arbitrary non-secret metadata.
 
-Secrets are never stored in an agent version. `secretRef` values are resolved at
-execution time through `PlatformSecretResolver`.
+A `model_providers` record carries its own credential in `apiKey`, alongside the
+`model` and the `baseURL` it is sent to. There is no separate secret store and no
+environment fallback, so a record without `apiKey` fails the run closed.
 
-The default environment resolver uses
-`PLATFORM_SECRET_<NORMALIZED_TENANT>__<SECRET_REF>`. Global fallback is disabled
-unless the operator explicitly sets `PLATFORM_ALLOW_GLOBAL_SECRETS=true`.
-Custom OpenRouter and OpenAI-compatible base URLs must also appear
-in the operator-controlled comma-separated `PLATFORM_ALLOWED_MODEL_BASE_URLS`.
-The canonical OpenRouter URL needs no allowlist entry.
+### Database hardening prerequisites
+
+One document now holds the credential, the endpoint, and the model, and nothing
+outside `model_providers` constrains any of them. Write access to that collection
+is therefore equivalent to holding every model credential the platform uses: a
+single write can change `baseURL` and send the existing `apiKey` to an endpoint of
+the writer's choosing. Before pointing this at anything beyond a local
+workstation:
+
+- run MongoDB with authentication and TLS, never an open `127.0.0.1` listener
+  reachable from other hosts;
+- give the runtime a least-privilege user with read-only access to
+  `model_providers`;
+- restrict writes to operators, and keep record reads off every client-facing API
+  surface, since every read returns a credential;
+- enable encryption at rest, and treat a `mongodump` of the collection as a
+  credential disclosure;
+- rotate by setting a new `apiKey` for the record's `id` in
+  `model_scripts/editModel.js`, which replaces the credential in place.
 
 ## MongoDB collections
 
@@ -76,6 +90,7 @@ The canonical OpenRouter URL needs no allowlist entry.
 | `agent_deployments` | Environment pointer, version ID, and monotonic revision         |
 | `platform_audit`    | Agent, version, deployment, rollback, and API-key audit history |
 | `platform_api_keys` | SHA-256 key hashes, tenant, roles, use, and revocation state    |
+| `model_providers`   | Model, `baseURL`, and `apiKey` per named provider record        |
 | `agent_sessions`    | Persisted model messages and agent/deployment metadata          |
 | `platform_sessions` | Ownership, hashed control token, environment, and lifecycle     |
 | `platform_runs`     | Durable run ID claim and completion state                       |
@@ -90,13 +105,17 @@ Requirements:
 
 - Node.js 22+
 - MongoDB or MongoDB Atlas
-- an OpenRouter or OpenAI-compatible model credential
+- an OpenRouter or OpenAI-compatible model credential, stored on a
+  `model_providers` record by `model_scripts/seedModel.js`
+
+Seed the provider record once, then start the service:
 
 ```bash
+node model_scripts/seedModel.js
+
 MONGODB_URI='mongodb://127.0.0.1:27017' \
 PLATFORM_BOOTSTRAP_API_KEY='replace-with-a-long-random-value' \
 PLATFORM_BOOTSTRAP_TENANT='tenant-a' \
-PLATFORM_SECRET_TENANT_A__OPENROUTER_API_KEY='...' \
 npm run platform
 ```
 
