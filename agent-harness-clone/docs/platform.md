@@ -79,7 +79,7 @@ workstation:
 - enable encryption at rest, and treat a `mongodump` of the collection as a
   credential disclosure;
 - rotate by setting a new `apiKey` for the record's `id` in
-  `model_scripts/editModel.js`, which replaces the credential in place.
+  `scripts/model/editModel.js`, which replaces the credential in place.
 
 ## MongoDB collections
 
@@ -106,12 +106,12 @@ Requirements:
 - Node.js 22+
 - MongoDB or MongoDB Atlas
 - an OpenRouter or OpenAI-compatible model credential, stored on a
-  `model_providers` record by `model_scripts/seedModel.js`
+  `model_providers` record by `scripts/model/seedModel.js`
 
 Seed the provider record once, then start the service:
 
 ```bash
-node model_scripts/seedModel.js
+node scripts/model/seedModel.js
 
 MONGODB_URI='mongodb://127.0.0.1:27017' \
 PLATFORM_BOOTSTRAP_API_KEY='replace-with-a-long-random-value' \

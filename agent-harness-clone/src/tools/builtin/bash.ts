@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { RuntimeHost } from '../../runtime/runtime-host.js';
-import type { Tool } from '../tool.js';
+import { evaluateShellCommand } from '../shell/index.js';
+import type { Tool, ToolPermissionCheck } from '../tool.js';
 
 const schema = z.object({
   command: z.string().min(1),
@@ -8,7 +9,18 @@ const schema = z.object({
   timeoutMs: z.number().int().positive().max(600_000).optional(),
 });
 
-export function createBashTool(runtime: RuntimeHost): Tool<z.infer<typeof schema>> {
+export type BashToolOptions = {
+  /**
+   * Auto-approve commands classified as read-only. Mirrors claude-code's
+   * read-only fast path. Set to `false` to prompt for every command.
+   */
+  autoApproveReadOnly?: boolean;
+};
+
+export function createBashTool(
+  runtime: RuntimeHost,
+  options: BashToolOptions = {},
+): Tool<z.infer<typeof schema>> {
   return {
     name: 'bash',
     description: 'Execute a shell command inside the workspace',
@@ -26,6 +38,15 @@ export function createBashTool(runtime: RuntimeHost): Tool<z.infer<typeof schema
     kind: 'execute',
     concurrencySafe: false,
     destructive: true,
+    checkPermissions(input, context): ToolPermissionCheck {
+      return evaluateShellCommand(input.command, 'bash', {
+        workspaceRoot: runtime.rootDirectory,
+        cwd: input.cwd === undefined ? context.workingDirectory : input.cwd,
+        ...(options.autoApproveReadOnly === undefined
+          ? {}
+          : { autoApproveReadOnly: options.autoApproveReadOnly }),
+      });
+    },
     async execute(input, context) {
       const result = await runtime.execute(input.command, {
         signal: context.signal,

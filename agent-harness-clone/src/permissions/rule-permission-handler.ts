@@ -45,10 +45,25 @@ export class RulePermissionHandler implements PermissionHandler {
       return rule.decision;
     }
 
-    if (this.mode === 'plan' && request.tool.kind !== 'read') return 'deny';
+    if (this.mode === 'plan' && !isReadOnly(request)) return 'deny';
+    // A tool that inspected its own input outranks the static `kind`: `bash` is
+    // always `kind: 'execute'`, but `git status` and `rm -rf` are not the same
+    // request. Rules above can still auto-approve either, which is the point of
+    // an allowlist.
+    if (request.toolCheck) return request.toolCheck.decision;
     if (request.tool.kind === 'read') return 'allow';
     return this.fallback;
   }
+}
+
+/**
+ * Plan mode blocks anything that can change state. A tool whose own check says
+ * `allow` is treated as read-only even when its `kind` is not, so `todo_write`
+ * and `enter_plan_mode` keep working while `bash rm -rf` does not.
+ */
+function isReadOnly(request: PermissionRequest): boolean {
+  if (request.tool.kind === 'read') return true;
+  return request.toolCheck?.decision === 'allow';
 }
 
 function stableInput(input: unknown): string {

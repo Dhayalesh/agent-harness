@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import { readFile } from 'node:fs/promises';
 import { createAgentSession } from '../../core/agent-session.js';
+import { resolveMcpServersFromDatabase } from '../../platform/mcp-server-resolution.js';
 import { resolveModelProviderFromDatabase } from '../../platform/model-provider-resolution.js';
 import { LocalRuntimeHost } from '../../runtime/local-runtime-host.js';
+import { PlanModePermissionHandler } from '../../permissions/plan-mode-permission-handler.js';
 import { createBuiltinTools } from '../../tools/builtin/index.js';
+import { createAskUserQuestionTool } from '../../tools/interactive/ask-user-question.js';
+import { createPlanModeTools, PlanModeController } from '../../tools/planning/plan-mode.js';
 import { createWebTools } from '../../tools/web/index.js';
 import { InteractiveCliPermissionHandler } from './interactive-permissions.js';
+import { InteractiveCliQuestionHandler } from './interactive-questions.js';
+import { streamSessionToStdout } from './stream-events.js';
 
 const prompt = process.argv.slice(2).join(' ').trim() || 'Hello';
 const maxTurns = parsePositiveInteger('AGENT_MAX_TURNS', process.env.AGENT_MAX_TURNS);
@@ -25,13 +31,38 @@ process.stderr.write(
   `[model] ${record.name} -> ${record.provider} ${record.model} ` +
     `(maxInputTokens=${limits.maxInputTokens}, maxOutputTokens=${limits.maxOutputTokens})\n`,
 );
+// MCP servers are additive: an empty `mcp_servers` collection leaves the session
+// with its builtin tools, so this resolves to nothing rather than failing. The
+// CLI passes no elicitation handler, so a record that asks for elicitation is
+// reported by the registry and connected without it.
+const mcp = await resolveMcpServersFromDatabase(undefined, {
+  logger: (message) => process.stderr.write(`${message}\n`),
+});
+for (const record of mcp.records) {
+  const target = record.transport === 'stdio' ? record.command : record.url;
+  process.stderr.write(`[mcp] ${record.name} -> ${record.transport} ${target ?? ''}\n`);
+}
+if (mcp.tools.length > 0) {
+  process.stderr.write(`[mcp] ${mcp.tools.length} tool(s) from ${mcp.records.length} server(s)\n`);
+}
 const systemPrompt = await resolveSystemPrompt();
 const runtime = new LocalRuntimeHost(process.cwd());
+const planMode = new PlanModeController();
+// Plan mode wraps the interactive handler so an active plan denies every
+// state-changing tool, regardless of what the user approves per call.
 const session = createAgentSession({
   provider,
   workingDirectory: process.cwd(),
-  tools: [...createBuiltinTools(runtime), ...createWebTools()],
-  permissionHandler: new InteractiveCliPermissionHandler(),
+  tools: [
+    ...createBuiltinTools(runtime),
+    ...createWebTools(),
+    ...createPlanModeTools(planMode),
+    createAskUserQuestionTool(new InteractiveCliQuestionHandler()),
+    // Remote tools last, and already namespaced `mcp__<server>__<tool>`, so a
+    // stored server cannot shadow a builtin.
+    ...mcp.tools,
+  ],
+  permissionHandler: new PlanModePermissionHandler(planMode, new InteractiveCliPermissionHandler()),
   ...(systemPrompt === undefined ? {} : { systemPrompt }),
   limits,
 });
@@ -59,33 +90,9 @@ function parsePositiveInteger(name: string, value: string | undefined): number |
   return parsed;
 }
 
-let failed = false;
-
-for await (const event of session.run({ prompt })) {
-  if (event.type === 'assistant.text.delta') process.stdout.write(event.delta);
-  if (event.type === 'tool.started') {
-    process.stderr.write(`\n[tool] ${event.call.name} ${JSON.stringify(event.call.input)}\n`);
-  }
-  if (event.type === 'tool.completed') {
-    process.stderr.write(
-      `[tool ${event.result.isError ? 'error' : 'done'}] ${event.result.content}\n`,
-    );
-  }
-  if (event.type === 'warning') {
-    process.stderr.write(`\n[warning ${event.code}] ${event.message}\n`);
-  }
-  if (event.type === 'error') {
-    failed = true;
-    process.stderr.write(`\n[error ${event.code}] ${event.message}\n`);
-  }
-  if (event.type === 'session.completed') {
-    process.stdout.write('\n');
-    if (event.reason !== 'end_turn') {
-      process.stderr.write(`[session ${event.reason}]\n`);
-    }
-  }
-}
+const failed = await streamSessionToStdout(session, prompt);
 
 await session.close();
+await mcp.close();
 await closeModelProvider();
 if (failed) process.exitCode = 1;

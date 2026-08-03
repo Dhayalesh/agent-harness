@@ -59,6 +59,9 @@ export type {
   ToolExecutionContext,
   ToolExecutionResult,
   ToolKind,
+  ToolPermissionCheck,
+  ToolPermissionCheckContext,
+  ToolPermissionDecision,
 } from './tools/tool.js';
 export { LocalRuntimeHost } from './runtime/local-runtime-host.js';
 export type {
@@ -74,11 +77,74 @@ export {
   createEditFileTool,
   createGlobTool,
   createGrepTool,
+  createPowerShellTool,
   createReadFileTool,
+  createTodoWriteTool,
   createWriteFileTool,
   FileSnapshotStore,
+  formatTodos,
+  isPowerShellAvailable,
+  TodoStore,
 } from './tools/builtin/index.js';
-export type { BuiltinToolOptions } from './tools/builtin/index.js';
+export type {
+  BashToolOptions,
+  BuiltinToolOptions,
+  PowerShellToolOptions,
+  TodoItem,
+  TodoStatus,
+} from './tools/builtin/index.js';
+export {
+  assessPowerShellReadOnly,
+  assessReadOnly,
+  containsDirectoryChange,
+  evaluateShellCommand,
+  expandTilde,
+  extractOutputRedirections,
+  findingsOfSeverity,
+  formatFindings,
+  getDestructiveCommandWarning,
+  hasUnescapedChar,
+  inspectBashCommand,
+  inspectCommandPaths,
+  inspectPowerShellCommand,
+  isDangerousRemovalPath,
+  parseCommand as parseShellCommand,
+  splitCommandSegments,
+  splitPipeline,
+  stripQuotedContent,
+  stripSafeWrappers,
+  tokenize,
+  worstSeverity,
+} from './tools/shell/index.js';
+export type {
+  CommandSegment,
+  FileOperationType,
+  FindingSeverity,
+  ParsedCommand,
+  PathSafetyOptions,
+  PowerShellInspection,
+  PowerShellReadOnlyAssessment,
+  ReadOnlyAssessment,
+  Redirection,
+  ShellFinding,
+  ShellFlavor,
+  ShellPermissionOptions,
+} from './tools/shell/index.js';
+export {
+  createAskUserQuestionTool,
+  FirstOptionQuestionHandler,
+  OTHER_OPTION_LABEL,
+} from './tools/interactive/ask-user-question.js';
+export type {
+  Question,
+  QuestionOption,
+  UserQuestionAnswer,
+  UserQuestionHandler,
+  UserQuestionRequest,
+} from './tools/interactive/ask-user-question.js';
+export { createPlanModeTools, PlanModeController } from './tools/planning/plan-mode.js';
+export type { PlanModeListener, PlanModeState } from './tools/planning/plan-mode.js';
+export { PlanModePermissionHandler } from './permissions/plan-mode-permission-handler.js';
 export {
   assertHostAllowed,
   createTavilySearchProvider,
@@ -285,3 +351,140 @@ export type {
   SupportedProvider,
   SupportedWireField,
 } from './platform/model-provider-support.js';
+export {
+  mcpServerAuthSchema,
+  mcpServerCapabilitiesSchema,
+  mcpServerInputSchema,
+  mcpServerRecordSchema,
+  mcpServerUpdateSchema,
+  mcpServerWireSchema,
+  parseMcpServerInput,
+  parseMcpServerRecord,
+  parseMcpServerUpdate,
+} from './platform/mcp-server-definitions.js';
+export type {
+  McpServerAuth,
+  McpServerCapabilities,
+  McpServerInput,
+  McpServerRecord,
+  McpServerTransport,
+  McpServerUpdate,
+  McpServerWire,
+} from './platform/mcp-server-definitions.js';
+export { MCP_SERVERS_COLLECTION, MongoMcpServerStore } from './platform/mcp-server-store.js';
+export type {
+  McpServerListOptions,
+  MongoMcpServerStoreOptions,
+  StoredMcpServerRecord,
+} from './platform/mcp-server-store.js';
+export { PlatformMcpServerRegistry } from './platform/mcp-server-registry.js';
+export type {
+  McpServerLookup,
+  PlatformMcpServerRegistryOptions,
+} from './platform/mcp-server-registry.js';
+export {
+  mcpServerConfigFromEnvironment,
+  resolveMcpServersFromDatabase,
+} from './platform/mcp-server-resolution.js';
+export type {
+  McpServerEnvironmentConfig,
+  ResolvedMcpServers,
+} from './platform/mcp-server-resolution.js';
+export {
+  assertMcpRuntimeSupport,
+  MCP_RUNTIME_SUPPORT,
+  RESERVED_HEADER_NAMES,
+} from './platform/mcp-server-support.js';
+export type {
+  McpRuntimeSupportCheckInput,
+  SupportedMcpAuthKind,
+  SupportedMcpTransport,
+  SupportedMcpWireField,
+} from './platform/mcp-server-support.js';
+export {
+  agentInputSchema,
+  agentLimitsSchema,
+  agentRecordSchema,
+  agentSkillSchema,
+  agentUpdateSchema,
+  parseAgentInput,
+  parseAgentRecord,
+  parseAgentUpdate,
+} from './platform/agent-definitions.js';
+export type {
+  AgentRecord,
+  AgentRecordInput,
+  AgentRecordLimits,
+  AgentSkill,
+  AgentUpdate,
+} from './platform/agent-definitions.js';
+export { assertMatches, InMemoryContentStore, locate, sha256Hex } from './content/content-store.js';
+export type { ContentLocation, ContentStore, LoadedContent } from './content/content-store.js';
+export { encodeS3Key, S3ContentStore, signS3Request } from './content/s3-content-store.js';
+export type {
+  S3ContentStoreOptions,
+  S3Credentials,
+  SignS3RequestInput,
+} from './content/s3-content-store.js';
+export { parseS3Uri, S3_URI_PATTERN } from './content/s3-uri.js';
+export type { S3Location } from './content/s3-uri.js';
+export {
+  parseSkillInput,
+  parseSkillRecord,
+  parseSkillUpdate,
+  skillInputSchema,
+  skillRecordSchema,
+  skillUpdateSchema,
+} from './platform/skill-definitions.js';
+export type { SkillRecord, SkillRecordInput, SkillUpdate } from './platform/skill-definitions.js';
+export { MongoSkillStore, SKILLS_COLLECTION } from './platform/skill-store.js';
+export type {
+  MongoSkillStoreOptions,
+  SkillListOptions,
+  StoredSkillRecord,
+} from './platform/skill-store.js';
+export { TempSkillDirectory } from './skills/temp-skill-directory.js';
+export {
+  SKILL_MAX_OBJECT_BYTES,
+  SKILL_REQUEST_TIMEOUT_MS,
+  skillContentConfigFromEnvironment,
+  SkillContentStores,
+} from './platform/skill-content.js';
+export type {
+  SkillContentEnvironmentConfig,
+  SkillContentOptions,
+} from './platform/skill-content.js';
+export { AGENTS_COLLECTION, MongoAgentStore } from './platform/agent-store.js';
+export type {
+  AgentListOptions,
+  MongoAgentStoreOptions,
+  StoredAgentRecord,
+} from './platform/agent-store.js';
+export { PlatformAgentRegistry } from './platform/agent-registry.js';
+export type {
+  AgentLookup,
+  AgentStores,
+  PlatformAgentRegistryOptions,
+  ResolvedAgent,
+  SkillLookup,
+} from './platform/agent-registry.js';
+export {
+  agentConfigFromEnvironment,
+  resolveAgentFromDatabase,
+} from './platform/agent-resolution.js';
+export type {
+  AgentEnvironmentConfig,
+  AgentResolutionOptions,
+  ResolvedAgentFromDatabase,
+} from './platform/agent-resolution.js';
+export {
+  AGENT_RUNTIME_SUPPORT,
+  assertAgentRuntimeSupport,
+  MCP_TOOL_PREFIX,
+  RESERVED_TOOL_NAMES,
+} from './platform/agent-support.js';
+export type {
+  AgentRuntimeSupportCheckInput,
+  HonouredAgentLimit,
+  SupportedAgentTool,
+} from './platform/agent-support.js';

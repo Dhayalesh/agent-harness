@@ -14,6 +14,7 @@ import { LocalRuntimeHost } from '../runtime/local-runtime-host.js';
 import { MetricsSink } from '../services/observability.js';
 import { FileSessionStore } from '../sessions/file-session-store.js';
 import { createBuiltinTools } from '../tools/builtin/index.js';
+import type { Tool } from '../tools/tool.js';
 
 export type AgentCoreServiceOptions = {
   workspace: string;
@@ -24,6 +25,11 @@ export type AgentCoreServiceOptions = {
   port?: number;
   serviceKey?: string;
   systemPrompt?: string;
+  /**
+   * Tools added to every session on top of the builtins. The entrypoint resolves
+   * them once, so the service does not reconnect an MCP server per session.
+   */
+  additionalTools?: readonly Tool[];
 };
 
 export type RunningAgentCoreService = {
@@ -54,7 +60,8 @@ export async function startAgentCoreService(
       createAgentSession({
         provider: await options.createProvider(),
         workingDirectory: workspace,
-        tools: createBuiltinTools(runtime),
+        // Additional tools last, so a supplied tool cannot shadow a builtin.
+        tools: [...createBuiltinTools(runtime), ...(options.additionalTools ?? [])],
         permissionHandler:
           options.createPermissionHandler?.() ?? new RulePermissionHandler({ fallback: 'ask' }),
         sessionStore,

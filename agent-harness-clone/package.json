@@ -29,9 +29,8 @@
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test",
     "agent": "tsx --env-file-if-exists=.env src/adapters/cli/index.ts",
-    "model:add": "node model_scripts/seedModel.js",
-    "model:edit": "node model_scripts/editModel.js",
-    "model:delete": "node model_scripts/deleteModel.js",
+    "agent:run": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts",
+    "agent:list": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts --list",
     "service": "tsx --env-file-if-exists=.env src/service/index.ts",
     "demo:client": "tsx --env-file-if-exists=.env examples/service/demo-client.ts"
   },

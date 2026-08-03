@@ -3,7 +3,7 @@
  * Edits one existing `model_providers` record. Edit the variables below, then
  * run:
  *
- *   node model_scripts/editModel.js
+ *   node scripts/model/editModel.js
  *
  * This talks to MongoDB directly and finds the record by `id`. It only updates: an
  * id that does not exist is refused, so a typo cannot silently create a second

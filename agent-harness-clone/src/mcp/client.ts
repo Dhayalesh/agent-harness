@@ -7,6 +7,7 @@ import {
   StdioClientTransport,
   type StdioServerParameters,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import {
   ElicitRequestSchema,
   type ElicitRequest,
@@ -51,6 +52,10 @@ export type McpElicitationHandler = (
 
 export type McpConnectionOptions = {
   elicitationHandler?: McpElicitationHandler;
+  /** Budget for the `initialize` handshake. Unset leaves the SDK default. */
+  connectTimeoutMs?: number;
+  /** Budget for every request after it. Unset leaves the SDK default. */
+  requestTimeoutMs?: number;
 };
 
 export class McpConnection {
@@ -58,6 +63,7 @@ export class McpConnection {
     readonly serverName: string,
     private readonly client: Client,
     private readonly transport: { close(): Promise<void> },
+    private readonly requestTimeoutMs?: number,
   ) {}
 
   static async connectStdio(
@@ -67,8 +73,8 @@ export class McpConnection {
   ): Promise<McpConnection> {
     const client = createClient(options);
     const transport = new StdioClientTransport(parameters);
-    await client.connect(transport);
-    return new McpConnection(serverName, client, transport);
+    await client.connect(transport, timeoutOptions(options.connectTimeoutMs));
+    return new McpConnection(serverName, client, transport, options.requestTimeoutMs);
   }
 
   static async connectHttp(
@@ -79,12 +85,15 @@ export class McpConnection {
   ): Promise<McpConnection> {
     const client = createClient(options);
     const transport = new StreamableHTTPClientTransport(url, transportOptions);
-    await client.connect(transport as unknown as Parameters<Client['connect']>[0]);
-    return new McpConnection(serverName, client, transport);
+    await client.connect(
+      transport as unknown as Parameters<Client['connect']>[0],
+      timeoutOptions(options.connectTimeoutMs),
+    );
+    return new McpConnection(serverName, client, transport, options.requestTimeoutMs);
   }
 
   async tools(): Promise<Tool[]> {
-    const discovered = await this.client.listTools();
+    const discovered = await this.client.listTools(undefined, this.requestOptions());
     return discovered.tools.map((remote): Tool<Record<string, unknown>> => ({
       name: `mcp__${normalize(this.serverName)}__${normalize(remote.name)}`,
       description: remote.description ?? `MCP tool ${remote.name} from ${this.serverName}`,
@@ -97,7 +106,7 @@ export class McpConnection {
         const result = await this.client.callTool(
           { name: remote.name, arguments: input },
           undefined,
-          { signal: context.signal },
+          this.requestOptions(context.signal),
         );
         return {
           content: formatMcpContent(result.content),
@@ -114,7 +123,7 @@ export class McpConnection {
   }
 
   async listResources(): Promise<McpResource[]> {
-    const response = await this.client.listResources();
+    const response = await this.client.listResources(undefined, this.requestOptions());
     return response.resources.map((resource) => ({
       server: this.serverName,
       uri: resource.uri,
@@ -125,10 +134,7 @@ export class McpConnection {
   }
 
   async readResource(uri: string, signal?: AbortSignal): Promise<McpResourceContent[]> {
-    const response = await this.client.readResource(
-      { uri },
-      signal === undefined ? undefined : { signal },
-    );
+    const response = await this.client.readResource({ uri }, this.requestOptions(signal));
     return response.contents.map((content) => ({
       uri: content.uri,
       ...(content.mimeType === undefined ? {} : { mimeType: content.mimeType }),
@@ -137,7 +143,7 @@ export class McpConnection {
   }
 
   async listPrompts(): Promise<McpPrompt[]> {
-    const response = await this.client.listPrompts();
+    const response = await this.client.listPrompts(undefined, this.requestOptions());
     return response.prompts.map((prompt) => ({
       server: this.serverName,
       name: prompt.name,
@@ -161,7 +167,7 @@ export class McpConnection {
   ): Promise<McpPromptResult> {
     const response = await this.client.getPrompt(
       { name, arguments: args },
-      signal === undefined ? undefined : { signal },
+      this.requestOptions(signal),
     );
     return {
       ...(response.description === undefined ? {} : { description: response.description }),
@@ -176,6 +182,22 @@ export class McpConnection {
     await this.client.close();
     await this.transport.close().catch(() => undefined);
   }
+
+  /**
+   * Per-request options: the caller's cancellation signal plus the connection's
+   * own budget. A caller that aborts still aborts; the budget only bounds a
+   * server that never answers.
+   */
+  private requestOptions(signal?: AbortSignal): RequestOptions {
+    return {
+      ...(signal === undefined ? {} : { signal }),
+      ...timeoutOptions(this.requestTimeoutMs),
+    };
+  }
+}
+
+function timeoutOptions(timeout: number | undefined): RequestOptions {
+  return timeout === undefined ? {} : { timeout };
 }
 
 function createClient(options: McpConnectionOptions): Client {

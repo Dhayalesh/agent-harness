@@ -9,6 +9,35 @@ export type ToolDescriptor = {
   inputSchema: Record<string, unknown>;
 };
 
+/**
+ * Mirrors `PermissionDecision` without importing from `../permissions`, which
+ * would create a cycle (the permission layer depends on tools).
+ */
+export type ToolPermissionDecision = 'allow' | 'deny' | 'ask';
+
+/**
+ * Per-invocation permission verdict produced by a tool.
+ *
+ * `kind` classifies a tool as a whole; this classifies a single set of inputs.
+ * `bash` is the motivating case: `git status` and `rm -rf /` share a tool but
+ * not a risk profile.
+ */
+export type ToolPermissionCheck = {
+  decision: ToolPermissionDecision;
+  /** Why this decision was reached. Surfaced to the user and in denials. */
+  reason?: string;
+  /**
+   * Informational note shown alongside an approval prompt. Never changes the
+   * decision on its own.
+   */
+  warning?: string;
+};
+
+export type ToolPermissionCheckContext = {
+  sessionId: string;
+  workingDirectory: string;
+};
+
 export type ToolExecutionContext = {
   sessionId: string;
   turnId: string;
@@ -32,5 +61,14 @@ export interface Tool<Input = unknown> {
   readonly kind: ToolKind;
   readonly concurrencySafe: boolean;
   readonly destructive?: boolean;
+  /**
+   * Optional per-invocation permission check, evaluated after input validation
+   * and before the session's `PermissionHandler`. A `deny` here is absolute:
+   * no rule, mode, or handler can override it.
+   */
+  checkPermissions?(
+    input: Input,
+    context: ToolPermissionCheckContext,
+  ): ToolPermissionCheck | Promise<ToolPermissionCheck>;
   execute(input: Input, context: ToolExecutionContext): Promise<ToolExecutionResult>;
 }

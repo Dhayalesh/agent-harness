@@ -2,6 +2,7 @@
 import path from 'node:path';
 import type { PermissionMode } from '../permissions/rule-permission-handler.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
+import { resolveMcpServersFromDatabase } from '../platform/mcp-server-resolution.js';
 import { resolveModelProviderFromDatabase } from '../platform/model-provider-resolution.js';
 import { startAgentCoreService } from './agent-core-service.js';
 
@@ -17,6 +18,12 @@ const port = parsePort(process.env.AGENT_SERVICE_PORT ?? '8787');
 // Resolved once, before the listener opens, so a misconfigured record fails at
 // startup instead of on the first session.
 const { provider, record, close: closeModelProvider } = await resolveModelProviderFromDatabase();
+// The same applies to MCP: the servers come from `mcp_servers` and are connected
+// once here, so every session shares them instead of re-spawning a process. The
+// service passes no elicitation handler, since there is no terminal to prompt.
+const mcp = await resolveMcpServersFromDatabase(undefined, {
+  logger: (message) => process.stderr.write(`${message}\n`),
+});
 
 const service = await startAgentCoreService({
   workspace,
@@ -28,6 +35,7 @@ const service = await startAgentCoreService({
     : { serviceKey: process.env.AGENT_SERVICE_KEY }),
   createPermissionHandler: () => new RulePermissionHandler({ mode: permissionMode }),
   createProvider: () => provider,
+  additionalTools: mcp.tools,
 });
 
 process.stdout.write(
@@ -35,6 +43,8 @@ process.stdout.write(
     `Agent-core service listening at ${service.url}`,
     `provider=${record.name} (${record.provider})`,
     `model=${record.model}`,
+    `mcp=${mcp.records.map((server) => server.name).join(',') || 'none'} ` +
+      `(${mcp.tools.length} tool(s))`,
     `workspace=${workspace}`,
     `permissionMode=${permissionMode}`,
   ].join('\n') + '\n',
@@ -45,6 +55,7 @@ const shutdown = async (): Promise<void> => {
   if (closing) return;
   closing = true;
   await service.close();
+  await mcp.close();
   await closeModelProvider();
 };
 process.once('SIGINT', () => void shutdown());

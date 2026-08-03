@@ -2,7 +2,7 @@
 /**
  * Deletes one `model_providers` record. Edit the variables below, then run:
  *
- *   node model_scripts/deleteModel.js
+ *   node scripts/model/deleteModel.js
  *
  * This talks to MongoDB directly and removes exactly one record, matched by `_id`.
  * An id that does not exist is refused rather than passing silently.

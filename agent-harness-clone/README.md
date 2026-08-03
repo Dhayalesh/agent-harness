@@ -49,14 +49,14 @@ surface: the model, the endpoint, and the credential all come from one
 `model_providers` record. Nothing in the environment can supply or substitute
 any of them, and there is no fallback when the record is missing a field.
 
-Three scripts in `model_scripts/` write those records. Each talks to MongoDB
+Three scripts in `scripts/model/` write those records. Each talks to MongoDB
 directly, matches records by `name`, and takes its input from variables at the top
 of the file:
 
 ```bash
-node model_scripts/seedModel.js     # add new records
-node model_scripts/editModel.js     # change one existing record
-node model_scripts/deleteModel.js   # remove one record
+node scripts/model/seedModel.js     # add new records
+node scripts/model/editModel.js     # change one existing record
+node scripts/model/deleteModel.js   # remove one record
 ```
 
 Each script does one thing and refuses the others' work: adding a name that
@@ -76,7 +76,7 @@ tests, security boundaries, transport contracts, and cross-surface acceptance.
 
 ## Terminal
 
-Configure the LLM once, in `model_scripts/seedModel.js`. An `openai-compatible`
+Configure the LLM once, in `scripts/model/seedModel.js`. An `openai-compatible`
 entry needs its endpoint in `baseURL`, which the canonical OpenRouter gateway does
 not:
 
@@ -95,7 +95,7 @@ const MODELS = [
 ```
 
 ```bash
-node model_scripts/seedModel.js
+node scripts/model/seedModel.js
 ```
 
 Then run the CLI with local coding tools:
@@ -108,7 +108,7 @@ Switch models by editing the record with `editModel.js`, or by adding a second
 entry to `MODELS` and pointing `PLATFORM_MODEL_PROVIDER` at it by name:
 
 ```bash
-node model_scripts/seedModel.js
+node scripts/model/seedModel.js
 PLATFORM_MODEL_PROVIDER=fast npm run agent -- "Summarize src/core"
 ```
 

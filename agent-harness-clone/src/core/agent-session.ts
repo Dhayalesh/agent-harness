@@ -16,7 +16,7 @@ import {
   type PermissionHandler,
 } from '../permissions/permission-handler.js';
 import { ToolRegistry } from '../tools/registry.js';
-import type { Tool, ToolExecutionContext } from '../tools/tool.js';
+import type { Tool, ToolExecutionContext, ToolPermissionCheck } from '../tools/tool.js';
 import type { SessionStore, StoredSession } from '../sessions/session-store.js';
 import type { CommandRegistry } from '../commands/commands.js';
 import type { ArtifactStore } from '../artifacts/artifact-store.js';
@@ -472,6 +472,37 @@ class AgentSessionImpl implements AgentSession {
       }
     }
 
+    // Per-invocation check owned by the tool. A `deny` here is absolute: no
+    // rule, mode, or handler can override it, because the tool is the only
+    // component that understands its own input.
+    let toolCheck: ToolPermissionCheck | undefined;
+    if (tool.checkPermissions) {
+      try {
+        toolCheck = await tool.checkPermissions(parsed.data, {
+          sessionId: this.id,
+          workingDirectory: this.workingDirectory,
+        });
+      } catch (error) {
+        const result = this.toolError(
+          call.id,
+          `Permission check failed for ${tool.name}: ${errorMessage(error)}`,
+        );
+        yield this.event({ type: 'tool.completed', turnId, result });
+        return result;
+      }
+      if (toolCheck.decision === 'deny') {
+        const result = this.toolError(
+          call.id,
+          toolCheck.reason ?? `Permission denied for ${tool.name}`,
+        );
+        yield this.event({ type: 'tool.completed', turnId, result });
+        for (const hook of this.hooks.list()) {
+          await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
+        }
+        return result;
+      }
+    }
+
     let decision = await this.permissions.evaluate({
       sessionId: this.id,
       turnId,
@@ -479,6 +510,7 @@ class AgentSessionImpl implements AgentSession {
       tool,
       input: parsed.data,
       workingDirectory: this.workingDirectory,
+      ...(toolCheck === undefined ? {} : { toolCheck }),
     });
 
     if (decision === 'ask') {
@@ -493,7 +525,7 @@ class AgentSessionImpl implements AgentSession {
         toolCallId: call.id,
         toolName: tool.name,
         input: structuredClone(parsed.data),
-        description: `${tool.kind} operation requested by ${tool.name}`,
+        description: describePermissionRequest(tool, toolCheck),
       });
       decision = await decisionPromise;
       yield this.event({
@@ -505,7 +537,12 @@ class AgentSessionImpl implements AgentSession {
     }
 
     if (decision === 'deny') {
-      const result = this.toolError(call.id, `Permission denied for ${tool.name}`);
+      const result = this.toolError(
+        call.id,
+        toolCheck?.reason === undefined
+          ? `Permission denied for ${tool.name}`
+          : `Permission denied for ${tool.name}: ${toolCheck.reason}`,
+      );
       yield this.event({ type: 'tool.completed', turnId, result });
       for (const hook of this.hooks.list()) {
         await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
@@ -646,6 +683,19 @@ class AgentSessionImpl implements AgentSession {
     };
     await this.sessionStore.save(stored);
   }
+}
+
+/**
+ * Builds the human-facing text for a permission prompt. The tool's own reason is
+ * more specific than its `kind`, and a destructive-command warning rides along
+ * without changing the decision.
+ */
+function describePermissionRequest(tool: Tool, toolCheck: ToolPermissionCheck | undefined): string {
+  const base =
+    toolCheck?.reason === undefined
+      ? `${tool.kind} operation requested by ${tool.name}`
+      : `${tool.name}: ${toolCheck.reason}`;
+  return toolCheck?.warning === undefined ? base : `${base}\n${toolCheck.warning}`;
 }
 
 function isPromptTooLong(error: unknown): boolean {

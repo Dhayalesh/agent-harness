@@ -2,7 +2,7 @@
 /**
  * Adds new `model_providers` records. Edit the variables below, then run:
  *
- *   node model_scripts/seedModel.js
+ *   node scripts/model/seedModel.js
  *
  * This talks to MongoDB directly. It only inserts: a name that already exists is
  * refused, so a run can never overwrite a record by accident. Use
