@@ -63,7 +63,12 @@ export type {
   ToolPermissionCheckContext,
   ToolPermissionDecision,
 } from './tools/tool.js';
-export { LocalRuntimeHost } from './runtime/local-runtime-host.js';
+export {
+  LocalRuntimeHost,
+  RUNTIME_ENVIRONMENT_ALLOWLIST,
+  scrubbedEnvironment,
+} from './runtime/local-runtime-host.js';
+export type { LocalRuntimeHostOptions } from './runtime/local-runtime-host.js';
 export type {
   RuntimeDirectoryEntry,
   RuntimeExecOptions,
@@ -250,7 +255,11 @@ export type { MessageChannel } from './transports/message-channel.js';
 export { RemoteRuntimeHost, RuntimeRpcServer } from './runtime/remote-runtime.js';
 export type { RuntimeRpcMessage } from './runtime/remote-runtime.js';
 export { SessionGateway } from './gateway/session-gateway.js';
-export type { GatewaySession, SessionGatewayOptions } from './gateway/session-gateway.js';
+export type {
+  GatewaySession,
+  SessionGatewayOptions,
+  SessionRequest,
+} from './gateway/session-gateway.js';
 export { DesktopAgentAdapter } from './adapters/desktop/desktop-adapter.js';
 export { buildIdePrompt, IdeAgentAdapter } from './adapters/ide/ide-adapter.js';
 export type { IdeContext } from './adapters/ide/ide-adapter.js';
@@ -297,6 +306,27 @@ export type {
   AgentCoreServiceOptions,
   RunningAgentCoreService,
 } from './service/agent-core-service.js';
+export {
+  AGENTCORE_HOST,
+  AGENTCORE_PORT,
+  AGENTCORE_SESSION_HEADER,
+  AGENTCORE_USER_HEADER,
+  agentCoreInvocationSchema,
+  normalizeInvocation,
+  startAgentCoreRuntimeServer,
+} from './adapters/server/agentcore-server.js';
+export type {
+  AgentCoreInvocation,
+  AgentCoreRuntimeServerOptions,
+  RunningAgentCoreRuntimeServer,
+} from './adapters/server/agentcore-server.js';
+export { referenceToolCatalogue, startAgentCoreRuntime } from './service/agentcore-runtime.js';
+export type {
+  AgentCoreRuntimeOptions,
+  RunningAgentCoreRuntime,
+} from './service/agentcore-runtime.js';
+export { AgentCache, rebindLocalTools } from './platform/agent-cache.js';
+export type { AgentCacheOptions } from './platform/agent-cache.js';
 export {
   modelProviderAuthSchema,
   modelProviderCapabilitiesSchema,

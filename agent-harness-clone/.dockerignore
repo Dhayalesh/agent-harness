@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.github
+tests
+examples
+docs
+backup-*
+.agent-core-demo
+.agentcore
+.env
+.env.*
+*.md
+docker-compose.yml

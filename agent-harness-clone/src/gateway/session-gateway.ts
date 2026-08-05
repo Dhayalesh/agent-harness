@@ -16,8 +16,27 @@ type ManagedSession = {
   runs: Map<string, Promise<AgentEvent[]>>;
 };
 
+/**
+ * What the caller asked for when opening a session.
+ *
+ * It exists so a host serving more than one stored agent can build the right
+ * one. A zero-argument factory could only ever produce a single configuration,
+ * which is what pinned the agent-core service to one agent: the record's system
+ * prompt, tools, and skills are per-agent, so the choice has to reach the
+ * factory. A zero-argument factory still satisfies this signature, so hosts that
+ * serve one agent are unaffected.
+ */
+export type SessionRequest = {
+  ownerId: string;
+  /**
+   * `agents.name`. Unset leaves the choice to the factory, which is the record
+   * marked `isDefault` for hosts that read the platform collections.
+   */
+  agentName?: string;
+};
+
 export type SessionGatewayOptions = {
-  createSession(): AgentSession | Promise<AgentSession>;
+  createSession(request: SessionRequest): AgentSession | Promise<AgentSession>;
   maxEventsPerSession?: number;
 };
 
@@ -29,8 +48,11 @@ export class SessionGateway {
     this.maxEvents = options.maxEventsPerSession ?? 20_000;
   }
 
-  async create(ownerId: string): Promise<GatewaySession> {
-    const session = await this.options.createSession();
+  async create(ownerId: string, agentName?: string): Promise<GatewaySession> {
+    const session = await this.options.createSession({
+      ownerId,
+      ...(agentName === undefined ? {} : { agentName }),
+    });
     const controlToken = randomBytes(24).toString('base64url');
     this.sessions.set(session.id, {
       session,

@@ -32,7 +32,7 @@ const MONGODB_URI = 'mongodb://127.0.0.1:27017/trueai_agent_platform';
  * The `_id` of the record to edit, as the 24-character hex string MongoDB shows.
  * `seedAgent.ts` prints the `_id` when it inserts a record.
  */
-const AGENT_ID = '6a68eb69acab70f9ed8ce811';
+const AGENT_ID = '6a6f8c0d29df311b3126dc19';
 
 /** Only the fields to change. Delete or comment out the lines to leave alone. */
 const CHANGES: {
@@ -58,7 +58,7 @@ const CHANGES: {
   // systemPrompt: 'You are an SAP ABAP reviewer...',
   // systemPromptFile: 'prompts/sap-abap-reviewer.md',
   // tools: ['read_file', 'grep'], // replaces the list
-  // skills: ['abap-review'], // names from the skills collection; replaces the list
+  skills: ['SAP-Custom-Object-Documentation'], // names from the skills collection; replaces the list
   // skills: [{ skill: 'abap-review', allowedTools: ['read_file'] }], // with override
   // mcpServers: ['abap-adt-api-local'], // names from mcp_servers; replaces the list
   // maxTurns: 24,

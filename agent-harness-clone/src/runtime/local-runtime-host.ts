@@ -11,14 +11,32 @@ import type {
   RuntimeHost,
 } from './runtime-host.js';
 
+export type LocalRuntimeHostOptions = {
+  /**
+   * The environment every spawned command receives. Defaults to `process.env`,
+   * which is what a terminal user expects: their own shell already holds these
+   * values, so a command run through the agent sees what the same command typed
+   * by hand would see.
+   *
+   * A hosted deployment is the opposite case, and should pass a narrowed copy.
+   * The process environment there holds `PLATFORM_MONGODB_URI` and the
+   * credentials that read skill buckets, and a shell tool is reachable by any
+   * agent record naming it, so `env` in one command would put all of it in the
+   * transcript. `scrubbedEnvironment` builds that copy.
+   */
+  env?: NodeJS.ProcessEnv;
+};
+
 export class LocalRuntimeHost implements RuntimeHost {
   readonly kind = 'local-node';
   readonly rootDirectory: string;
   private readonly rootRealPathPromise: Promise<string>;
+  private readonly environment: NodeJS.ProcessEnv;
 
-  constructor(rootDirectory: string) {
+  constructor(rootDirectory: string, options: LocalRuntimeHostOptions = {}) {
     this.rootDirectory = path.resolve(rootDirectory);
     this.rootRealPathPromise = realpath(this.rootDirectory);
+    this.environment = options.env ?? process.env;
   }
 
   async resolvePath(inputPath: string, allowMissing = false): Promise<string> {
@@ -94,7 +112,7 @@ export class LocalRuntimeHost implements RuntimeHost {
         cwd,
         shell: true,
         detached: process.platform !== 'win32',
-        env: process.env,
+        env: this.environment,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let stdout = '';
@@ -194,4 +212,56 @@ function isNotFound(error: unknown): boolean {
   return (
     error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
   );
+}
+
+/**
+ * The variables a spawned command keeps when the caller narrows its environment.
+ *
+ * These are the ones a command needs to run at all rather than ones it is being
+ * told: an interpreter that cannot find its own installation fails in a way that
+ * reads as a broken tool. Everything outside this list is dropped, which is the
+ * point — the platform's own configuration and credentials are all outside it.
+ */
+export const RUNTIME_ENVIRONMENT_ALLOWLIST: readonly string[] = [
+  'PATH',
+  'Path',
+  'HOME',
+  'USERPROFILE',
+  'LANG',
+  'LC_ALL',
+  'TZ',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+  'SystemRoot',
+  'windir',
+  'COMSPEC',
+  'PATHEXT',
+  'SHELL',
+  'TERM',
+  'NODE_PATH',
+];
+
+/**
+ * Copies the allowlisted variables out of `source`, dropping everything else.
+ *
+ * Allowlist rather than denylist: a new secret added to the deployment's
+ * environment is excluded by default, where a denylist would leak it until
+ * somebody remembered to extend the list.
+ *
+ * `additional` is for variables a specific deployment's tools genuinely need,
+ * such as a proxy setting. Names are copied only when `source` actually holds
+ * them, so an absent variable stays absent rather than becoming an empty string
+ * that a script would read as configured.
+ */
+export function scrubbedEnvironment(
+  source: NodeJS.ProcessEnv = process.env,
+  additional: readonly string[] = [],
+): NodeJS.ProcessEnv {
+  const scrubbed: NodeJS.ProcessEnv = {};
+  for (const name of [...RUNTIME_ENVIRONMENT_ALLOWLIST, ...additional]) {
+    const value = source[name];
+    if (value !== undefined) scrubbed[name] = value;
+  }
+  return scrubbed;
 }

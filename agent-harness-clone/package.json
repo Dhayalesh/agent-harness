@@ -14,7 +14,8 @@
   },
   "bin": {
     "agent-harness": "./dist/adapters/cli/index.js",
-    "agent-harness-service": "./dist/service/index.js"
+    "agent-harness-service": "./dist/service/index.js",
+    "agent-harness-agentcore": "./dist/service/agentcore.js"
   },
   "files": [
     "dist",
@@ -32,6 +33,7 @@
     "agent:run": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts",
     "agent:list": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts --list",
     "service": "tsx --env-file-if-exists=.env src/service/index.ts",
+    "agentcore": "tsx --env-file-if-exists=.env src/service/agentcore.ts",
     "demo:client": "tsx --env-file-if-exists=.env examples/service/demo-client.ts"
   },
   "engines": {
