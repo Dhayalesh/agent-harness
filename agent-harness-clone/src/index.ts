@@ -1,3 +1,16 @@
+/**
+ * The library surface of a headless agent runtime.
+ *
+ * One mode, one contract: a payload describes the agent, the model, the MCP servers,
+ * and the skills, and `invokeHeadless` runs it. There is no CLI, no session gateway,
+ * no database, and no stored configuration — see `src/headless/payload.ts` for the
+ * whole of what a run is told.
+ *
+ * Everything below `headless/` is exported because it is the entry point. Everything
+ * else is exported because a payload can reach it: the record schemas a payload is
+ * validated against, the registries that assemble it, the tools it may name, and the
+ * pieces a session is built from.
+ */
 export { createAgentSession, resumeAgentSession } from './core/agent-session.js';
 export type { AgentLimits, AgentSession, AgentSessionConfig } from './core/agent-session.js';
 export type { AgentEvent, EventPayload } from './core/events.js';
@@ -33,7 +46,6 @@ export { RetryModelProvider } from './models/retry-provider.js';
 export type { RetryProviderOptions } from './models/retry-provider.js';
 export { ScriptedModelProvider } from './models/scripted-provider.js';
 export type { ScriptedStep } from './models/scripted-provider.js';
-export { ModelProviderRegistry } from './models/registry.js';
 export { OpenAICompatibleModelProvider } from './models/openai-compatible-provider.js';
 export type { OpenAICompatibleProviderOptions } from './models/openai-compatible-provider.js';
 export {
@@ -136,21 +148,6 @@ export type {
   ShellPermissionOptions,
 } from './tools/shell/index.js';
 export {
-  createAskUserQuestionTool,
-  FirstOptionQuestionHandler,
-  OTHER_OPTION_LABEL,
-} from './tools/interactive/ask-user-question.js';
-export type {
-  Question,
-  QuestionOption,
-  UserQuestionAnswer,
-  UserQuestionHandler,
-  UserQuestionRequest,
-} from './tools/interactive/ask-user-question.js';
-export { createPlanModeTools, PlanModeController } from './tools/planning/plan-mode.js';
-export type { PlanModeListener, PlanModeState } from './tools/planning/plan-mode.js';
-export { PlanModePermissionHandler } from './permissions/plan-mode-permission-handler.js';
-export {
   assertHostAllowed,
   createTavilySearchProvider,
   createWebFetchTool,
@@ -198,12 +195,6 @@ export type { AgentHook, BeforeToolResult, HookContext, StopHookResult } from '.
 export { FileSessionStore } from './sessions/file-session-store.js';
 export { InMemorySessionStore } from './sessions/session-store.js';
 export type { SessionStore, StoredSession } from './sessions/session-store.js';
-export { parseCommand, serializeEvent } from './transports/jsonl.js';
-export type { JsonlCommand } from './transports/jsonl.js';
-export { startAgentSseServer } from './adapters/server/sse-server.js';
-export type { AgentServerOptions, RunningAgentServer } from './adapters/server/sse-server.js';
-export { harnessConfigSchema, loadJsonConfig, mergeConfigLayers } from './config/config.js';
-export type { ConfigLayer, HarnessConfig } from './config/config.js';
 export { CommandRegistry } from './commands/commands.js';
 export type {
   AgentCommand,
@@ -218,16 +209,6 @@ export {
   SkillRegistry,
 } from './skills/skills.js';
 export type { Skill } from './skills/skills.js';
-export { PluginLoader } from './plugins/plugins.js';
-export type {
-  AgentHarnessPlugin,
-  LoadedPlugin,
-  PluginCapability,
-  PluginContext,
-  PluginLoaderContext,
-  PluginLoaderOptions,
-  PluginManifest,
-} from './plugins/plugins.js';
 export { McpConnection } from './mcp/client.js';
 export type {
   McpConnectionOptions,
@@ -238,39 +219,8 @@ export type {
   McpResourceContent,
 } from './mcp/client.js';
 export const AGENT_PROTOCOL_VERSION = 1 as const;
-export { createHarnessMcpServer, runHarnessMcpStdioServer } from './mcp/server.js';
-export type { HarnessMcpServerOptions } from './mcp/server.js';
-export { TaskManager } from './tasks/task-manager.js';
-export type {
-  StartAgentTask,
-  StartShellTask,
-  TaskKind,
-  TaskManagerOptions,
-  TaskRecord,
-  TaskStatus,
-} from './tasks/task-manager.js';
-export { createTaskTools } from './tasks/task-tools.js';
-export { createInMemoryChannelPair } from './transports/message-channel.js';
-export type { MessageChannel } from './transports/message-channel.js';
-export { RemoteRuntimeHost, RuntimeRpcServer } from './runtime/remote-runtime.js';
-export type { RuntimeRpcMessage } from './runtime/remote-runtime.js';
-export { SessionGateway } from './gateway/session-gateway.js';
-export type {
-  GatewaySession,
-  SessionGatewayOptions,
-  SessionRequest,
-} from './gateway/session-gateway.js';
-export { DesktopAgentAdapter } from './adapters/desktop/desktop-adapter.js';
-export { buildIdePrompt, IdeAgentAdapter } from './adapters/ide/ide-adapter.js';
-export type { IdeContext } from './adapters/ide/ide-adapter.js';
-export { CliAgentAdapter } from './adapters/cli/cli-adapter.js';
-export type { CliRenderer } from './adapters/cli/cli-adapter.js';
-export { startGatewayServer } from './adapters/server/gateway-server.js';
-export type { GatewayServerOptions } from './adapters/server/gateway-server.js';
 export { FileArtifactStore, InMemoryArtifactStore } from './artifacts/artifact-store.js';
 export type { Artifact, ArtifactStore } from './artifacts/artifact-store.js';
-export { EnvironmentSecretProvider, InMemorySecretProvider } from './services/secrets.js';
-export type { SecretProvider } from './services/secrets.js';
 export {
   CompositeEventSink,
   MetricsSink,
@@ -280,53 +230,8 @@ export {
 export type { EventSink, HarnessMetrics } from './services/observability.js';
 export { BudgetTracker, SessionRateLimiter } from './services/limits.js';
 export type { BudgetLimits, RateLimitOptions } from './services/limits.js';
-export { runDiagnostics } from './services/diagnostics.js';
-export type { DiagnosticCheck, DiagnosticResult } from './services/diagnostics.js';
-export { exportTranscriptJson, exportTranscriptMarkdown } from './sessions/transcript.js';
 export { formatProjectContext, LocalProjectContextProvider } from './context/project-context.js';
 export type { ProjectContext, ProjectContextProvider } from './context/project-context.js';
-export { AgentTeamCoordinator, createTeamTool } from './tasks/team-coordinator.js';
-export type {
-  TeamAgentDefinition,
-  TeamAgentResult,
-  TeamCoordinatorOptions,
-  TeamRunResult,
-} from './tasks/team-coordinator.js';
-export { createOpenRouterProviderFromSecrets } from './services/provider-auth.js';
-export { checkForUpdate, compareVersions } from './services/version-service.js';
-export type { VersionInfo, VersionSource } from './services/version-service.js';
-export { runParityScenario } from './testing/parity-runner.js';
-export type { ParityDifference, ParityResult } from './testing/parity-runner.js';
-export { runJsonlAdapter } from './adapters/jsonl/jsonl-adapter.js';
-export {
-  createAgentCoreDemoProvider,
-  startAgentCoreService,
-} from './service/agent-core-service.js';
-export type {
-  AgentCoreServiceOptions,
-  RunningAgentCoreService,
-} from './service/agent-core-service.js';
-export {
-  AGENTCORE_HOST,
-  AGENTCORE_PORT,
-  AGENTCORE_SESSION_HEADER,
-  AGENTCORE_USER_HEADER,
-  agentCoreInvocationSchema,
-  normalizeInvocation,
-  startAgentCoreRuntimeServer,
-} from './adapters/server/agentcore-server.js';
-export type {
-  AgentCoreInvocation,
-  AgentCoreRuntimeServerOptions,
-  RunningAgentCoreRuntimeServer,
-} from './adapters/server/agentcore-server.js';
-export { referenceToolCatalogue, startAgentCoreRuntime } from './service/agentcore-runtime.js';
-export type {
-  AgentCoreRuntimeOptions,
-  RunningAgentCoreRuntime,
-} from './service/agentcore-runtime.js';
-export { AgentCache, rebindLocalTools } from './platform/agent-cache.js';
-export type { AgentCacheOptions } from './platform/agent-cache.js';
 export {
   modelProviderAuthSchema,
   modelProviderCapabilitiesSchema,
@@ -346,30 +251,11 @@ export type {
   ModelProviderUpdate,
   ModelProviderWire,
 } from './platform/model-provider-definitions.js';
-export {
-  MODEL_PROVIDERS_COLLECTION,
-  MongoModelProviderStore,
-  PLATFORM_MONGO_APP_NAME,
-} from './platform/model-provider-store.js';
-export type {
-  ModelProviderListOptions,
-  MongoModelProviderStoreOptions,
-  StoredModelProviderRecord,
-} from './platform/model-provider-store.js';
 export { PlatformModelProviderRegistry } from './platform/model-provider-registry.js';
 export type {
   ModelProviderLookup,
   PlatformModelProviderRegistryOptions,
 } from './platform/model-provider-registry.js';
-export {
-  databaseNameFromUri,
-  modelProviderConfigFromEnvironment,
-  resolveModelProviderFromDatabase,
-} from './platform/model-provider-resolution.js';
-export type {
-  ModelProviderEnvironmentConfig,
-  ResolvedModelProvider,
-} from './platform/model-provider-resolution.js';
 export {
   assertRuntimeSupport,
   RUNTIME_SUPPORT,
@@ -401,25 +287,11 @@ export type {
   McpServerUpdate,
   McpServerWire,
 } from './platform/mcp-server-definitions.js';
-export { MCP_SERVERS_COLLECTION, MongoMcpServerStore } from './platform/mcp-server-store.js';
-export type {
-  McpServerListOptions,
-  MongoMcpServerStoreOptions,
-  StoredMcpServerRecord,
-} from './platform/mcp-server-store.js';
 export { PlatformMcpServerRegistry } from './platform/mcp-server-registry.js';
 export type {
   McpServerLookup,
   PlatformMcpServerRegistryOptions,
 } from './platform/mcp-server-registry.js';
-export {
-  mcpServerConfigFromEnvironment,
-  resolveMcpServersFromDatabase,
-} from './platform/mcp-server-resolution.js';
-export type {
-  McpServerEnvironmentConfig,
-  ResolvedMcpServers,
-} from './platform/mcp-server-resolution.js';
 export {
   assertMcpRuntimeSupport,
   MCP_RUNTIME_SUPPORT,
@@ -450,12 +322,6 @@ export type {
 } from './platform/agent-definitions.js';
 export { assertMatches, InMemoryContentStore, locate, sha256Hex } from './content/content-store.js';
 export type { ContentLocation, ContentStore, LoadedContent } from './content/content-store.js';
-export { encodeS3Key, S3ContentStore, signS3Request } from './content/s3-content-store.js';
-export type {
-  S3ContentStoreOptions,
-  S3Credentials,
-  SignS3RequestInput,
-} from './content/s3-content-store.js';
 export { parseS3Uri, S3_URI_PATTERN } from './content/s3-uri.js';
 export type { S3Location } from './content/s3-uri.js';
 export {
@@ -467,29 +333,9 @@ export {
   skillUpdateSchema,
 } from './platform/skill-definitions.js';
 export type { SkillRecord, SkillRecordInput, SkillUpdate } from './platform/skill-definitions.js';
-export { MongoSkillStore, SKILLS_COLLECTION } from './platform/skill-store.js';
-export type {
-  MongoSkillStoreOptions,
-  SkillListOptions,
-  StoredSkillRecord,
-} from './platform/skill-store.js';
 export { TempSkillDirectory } from './skills/temp-skill-directory.js';
-export {
-  SKILL_MAX_OBJECT_BYTES,
-  SKILL_REQUEST_TIMEOUT_MS,
-  skillContentConfigFromEnvironment,
-  SkillContentStores,
-} from './platform/skill-content.js';
-export type {
-  SkillContentEnvironmentConfig,
-  SkillContentOptions,
-} from './platform/skill-content.js';
-export { AGENTS_COLLECTION, MongoAgentStore } from './platform/agent-store.js';
-export type {
-  AgentListOptions,
-  MongoAgentStoreOptions,
-  StoredAgentRecord,
-} from './platform/agent-store.js';
+export { SKILL_MAX_OBJECT_BYTES, SkillContentStores } from './platform/skill-content.js';
+export type { SkillContentOptions } from './platform/skill-content.js';
 export { PlatformAgentRegistry } from './platform/agent-registry.js';
 export type {
   AgentLookup,
@@ -498,15 +344,6 @@ export type {
   ResolvedAgent,
   SkillLookup,
 } from './platform/agent-registry.js';
-export {
-  agentConfigFromEnvironment,
-  resolveAgentFromDatabase,
-} from './platform/agent-resolution.js';
-export type {
-  AgentEnvironmentConfig,
-  AgentResolutionOptions,
-  ResolvedAgentFromDatabase,
-} from './platform/agent-resolution.js';
 export {
   AGENT_RUNTIME_SUPPORT,
   assertAgentRuntimeSupport,
@@ -518,3 +355,33 @@ export type {
   HonouredAgentLimit,
   SupportedAgentTool,
 } from './platform/agent-support.js';
+export {
+  headlessAgentSchema,
+  headlessLimitsSchema,
+  headlessMcpServerSchema,
+  headlessModelProviderSchema,
+  headlessPermissionRuleSchema,
+  headlessSkillSchema,
+  invocationPayloadSchema,
+  parseInvocationPayload,
+} from './headless/payload.js';
+export type {
+  HeadlessAgentSpec,
+  HeadlessMcpServerSpec,
+  HeadlessModelProviderSpec,
+  HeadlessPermissionRule,
+  HeadlessSkillSpec,
+  InvocationPayload,
+  InvocationPayloadInput,
+} from './headless/payload.js';
+export { resolveInlineAgent } from './headless/inline-agent.js';
+export type { InlineAgentOptions } from './headless/inline-agent.js';
+export {
+  headlessToolCatalogue,
+  invokeHeadless,
+  parsePayload,
+  streamHeadless,
+} from './headless/invoke.js';
+export type { HeadlessResult, HeadlessRunOptions, HeadlessToolSummary } from './headless/invoke.js';
+export { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './headless/server.js';
+export type { HeadlessServerOptions, RunningHeadlessServer } from './headless/server.js';

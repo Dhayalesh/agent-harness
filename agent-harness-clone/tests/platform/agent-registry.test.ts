@@ -12,7 +12,6 @@ import {
   assertAgentRuntimeSupport,
   InMemoryContentStore,
   parseS3Uri,
-  skillContentConfigFromEnvironment,
   parseAgentInput,
   PlatformAgentRegistry,
   type AgentLookup,
@@ -289,13 +288,26 @@ test('a referenced skill is downloaded to a temp directory and removed on close'
 
 test('the temp directory is removed even when resolution fails after writing it', async () => {
   // A skill downloads, then the MCP reference fails. The directory must still go.
-  const directories: string[] = [];
+  //
+  // Compared against a snapshot taken just before rather than against an empty list:
+  // the temp directory is shared OS state this test does not own, so a leftover from an
+  // unrelated process — or from an earlier run of this suite that was interrupted —
+  // would otherwise fail it permanently and for the wrong reason. What is being
+  // asserted is that *this* attempt added nothing, which is the actual claim.
+  const before = skillDirectories();
   const failing = registry(withSkill({ mcpServerIds: [MCP_SERVER_ID] }));
   await assert.rejects(failing.resolveById(RECORD_ID), { code: 'MCP_SERVER_NOT_FOUND' });
-  // Nothing agent-harness-skills-* should be left behind by that attempt.
-  const leaked = readdirSync(tmpdir()).filter((entry) => entry.startsWith('agent-harness-skills-'));
-  assert.deepEqual(leaked, directories);
+  assert.deepEqual(
+    [...skillDirectories()].filter((entry) => !before.has(entry)),
+    [],
+  );
 });
+
+function skillDirectories(): Set<string> {
+  return new Set(
+    readdirSync(tmpdir()).filter((entry) => entry.startsWith('agent-harness-skills-')),
+  );
+}
 
 test('a rewritten document takes effect on the next run: the pointer pins nothing', async () => {
   // The cost of keeping the whole skill in the bucket. The record carries no digest,
@@ -402,49 +414,13 @@ test('the https forms the console shows address the same object as s3://', () =>
   assert.throws(() => parseS3Uri(`${SKILL_URI}?versionId=1`, 'test'), { code: 'S3_URI_INVALID' });
 });
 
-test('the credential for skill reads is required, and reported by variable name', () => {
-  assert.throws(
-    () => skillContentConfigFromEnvironment({}),
-    (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'SKILL_CONTENT_NOT_CONFIGURED');
-      assert.match((error as Error).message, /PLATFORM_CONTENT_S3_REGION is not set/);
-      return true;
-    },
-  );
-  assert.throws(() =>
-    skillContentConfigFromEnvironment({ PLATFORM_CONTENT_S3_REGION: 'us-east-1' }),
-  );
-  assert.throws(() =>
-    skillContentConfigFromEnvironment({
-      PLATFORM_CONTENT_S3_REGION: 'us-east-1',
-      AWS_ACCESS_KEY_ID: 'AKIATEST',
-    }),
-  );
-  // Blank is absent, not an empty credential to be sent.
-  assert.throws(() =>
-    skillContentConfigFromEnvironment({
-      PLATFORM_CONTENT_S3_REGION: 'us-east-1',
-      AWS_ACCESS_KEY_ID: 'AKIATEST',
-      AWS_SECRET_ACCESS_KEY: '   ',
-    }),
-  );
-  assert.deepEqual(
-    skillContentConfigFromEnvironment({
-      PLATFORM_CONTENT_S3_REGION: 'us-east-1',
-      AWS_ACCESS_KEY_ID: 'AKIATEST',
-      AWS_SECRET_ACCESS_KEY: 'secret',
-    }),
-    { region: 'us-east-1', accessKeyId: 'AKIATEST', secretAccessKey: 'secret' },
-  );
-});
-
-test('a skill cannot be read when no credential is configured', async () => {
-  // The reader is normally injected here. Without it, the environment is what has to
-  // supply the credential, and an empty one fails at resolution naming the variables.
+test('a skill cannot be read when no content store was supplied', async () => {
+  // Skill bodies travel on the invocation payload and are served from memory, so the
+  // reader is always injected. There is no bucket to fall back to, and a record that
+  // references a skill without one fails at resolution naming the agent and the skill.
   const bare = new PlatformAgentRegistry(stores(withSkill()), {
     localTools: LOCAL_TOOLS,
     logger: () => {},
-    environment: {},
   });
   await assert.rejects(bare.resolveById(RECORD_ID), (error: unknown) => {
     assert.equal((error as { code?: string }).code, 'SKILL_CONTENT_NOT_CONFIGURED');

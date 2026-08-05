@@ -2,7 +2,7 @@
   "name": "@trueai/agent-harness",
   "version": "0.1.0",
   "private": true,
-  "description": "UI-independent agent runtime for terminal, web, desktop, IDE, and SDK consumers",
+  "description": "Headless agent runtime: one payload in, one run out, no stored configuration",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,9 +13,8 @@
     }
   },
   "bin": {
-    "agent-harness": "./dist/adapters/cli/index.js",
-    "agent-harness-service": "./dist/service/index.js",
-    "agent-harness-agentcore": "./dist/service/agentcore.js"
+    "agent-harness": "./dist/headless/main.js",
+    "agent-harness-payload": "./dist/headless/cli.js"
   },
   "files": [
     "dist",
@@ -25,27 +24,24 @@
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx --env-file-if-exists=.env --test tests/**/*.test.ts",
+    "test": "tsx --test tests/**/*.test.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "npm run format:check && npm run typecheck && npm test",
-    "agent": "tsx --env-file-if-exists=.env src/adapters/cli/index.ts",
-    "agent:run": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts",
-    "agent:list": "tsx --env-file-if-exists=.env src/adapters/cli/agent.ts --list",
-    "service": "tsx --env-file-if-exists=.env src/service/index.ts",
-    "agentcore": "tsx --env-file-if-exists=.env src/service/agentcore.ts",
-    "demo:client": "tsx --env-file-if-exists=.env examples/service/demo-client.ts"
+    "start": "tsx src/headless/main.ts",
+    "payload": "tsx src/headless/cli.ts",
+    "export-payload": "tsx --env-file-if-exists=.env scripts/headless/exportPayload.ts"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "mongodb": "^7.5.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "mongodb": "^7.5.0",
     "prettier": "^3.9.5",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0"

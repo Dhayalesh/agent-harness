@@ -69,15 +69,15 @@ export type PlatformAgentRegistryOptions = {
    * resolve anyway, with the capability left unadvertised.
    */
   elicitationHandler?: McpElicitationHandler;
-  /** Injected in tests, and passed through to the content reader. */
-  fetchImplementation?: typeof fetch;
   /**
-   * Replaces the S3 reader every skill would otherwise be read through. Only the test
-   * suite passes one; a run always reads the bucket its skill records name.
+   * Where the skill documents this agent references are read from.
+   *
+   * Supplied by the caller rather than built here, because a skill body arrives on
+   * the invocation payload and is served from an `InMemoryContentStore` keyed by the
+   * address each synthesized record carries (`src/headless/inline-agent.ts`). Needed
+   * only when the record references a skill; a record with none resolves without it.
    */
   contentStore?: ContentStore;
-  /** Injected in tests. Defaults to `process.env`. */
-  environment?: NodeJS.ProcessEnv;
 };
 
 /**
@@ -143,10 +143,6 @@ export class PlatformAgentRegistry {
       logger: this.logger,
     });
     this.skillContent = new SkillContentStores({
-      ...(options.environment === undefined ? {} : { environment: options.environment }),
-      ...(options.fetchImplementation === undefined
-        ? {}
-        : { fetchImplementation: options.fetchImplementation }),
       ...(options.contentStore === undefined ? {} : { contentStore: options.contentStore }),
     });
     this.mcpServers = new PlatformMcpServerRegistry(stores.mcpServers, {

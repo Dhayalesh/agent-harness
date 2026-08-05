@@ -10,3 +10,10 @@ coverage/
 # Local mongodump output. Contains raw collection data, including
 # platform_secrets.value in plaintext. Never commit.
 backup-*/
+
+# Headless invocation payloads. A payload inlines the model credential and every
+# MCP credential the agent references, so an exported one is as sensitive as .env.
+# The checked-in example under examples/headless/ has placeholders and is exempt.
+payload.json
+payload.*.json
+!examples/headless/payload.json

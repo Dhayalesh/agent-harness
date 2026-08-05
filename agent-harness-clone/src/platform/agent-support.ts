@@ -18,15 +18,17 @@ export const AGENT_RUNTIME_SUPPORT = {
    * - builtin (`src/tools/builtin/index.ts`): `read_file`, `glob`, `grep`,
    *   `write_file`, `edit_file`, `bash`, `powershell`, `todo_write`
    * - web (`src/tools/web/index.ts`): `web_search`, `web_fetch`
-   * - planning (`src/tools/planning/plan-mode.ts`): `enter_plan_mode`,
-   *   `exit_plan_mode`
-   * - interactive (`src/tools/interactive/ask-user-question.ts`):
-   *   `ask_user_question`
    *
-   * A host need not offer all of them: `powershell` is gated on the platform and
-   * `ask_user_question` needs a terminal to answer it. Membership here means the
-   * name is spelled correctly, not that the running host has it; resolution
-   * checks the host's actual set and reports what is missing.
+   * The plan-mode and `ask_user_question` tools are deliberately absent. Both need
+   * someone watching: plan mode is a review step before a human approves, and a
+   * question suspends the turn until one is answered. A payload is answered by
+   * nobody, so offering either would produce a run that stalls or that silently
+   * picks an option on the caller's behalf.
+   *
+   * A host need not offer all of these: `powershell` is gated on the platform, and
+   * `web_search` needs a search credential. Membership here means the name is
+   * spelled correctly, not that the running host has it; resolution checks the
+   * host's actual set and reports what is missing.
    */
   tools: [
     'read_file',
@@ -39,9 +41,6 @@ export const AGENT_RUNTIME_SUPPORT = {
     'todo_write',
     'web_search',
     'web_fetch',
-    'enter_plan_mode',
-    'exit_plan_mode',
-    'ask_user_question',
   ] as const,
   /**
    * Every stored limit is acted on: the three become `AgentSessionConfig.limits`

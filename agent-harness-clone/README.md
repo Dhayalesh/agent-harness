@@ -1,25 +1,28 @@
-# Agent Harness Clone
+# Agent Harness
 
-A UI-independent TypeScript agent runtime for Node.js. Terminal, HTTP/SSE,
-JSONL, desktop, IDE, remote-runtime, and embedded SDK consumers all use the
-same `AgentSession` API and versioned, serializable event protocol.
+A headless TypeScript agent runtime for Node.js. One mode, one contract: post a
+payload, get a run.
 
-This repository contains the harness layer only. Rendering, terminal UI,
-browser UI, Electron windows, and editor-specific UI remain consumer-owned.
+Everything a run needs travels on the request — the system prompt, the model and its
+credential, the tools, the MCP servers, and the skills. The process opens no database,
+reads no bucket, and holds no stored configuration, so any instance can serve any
+request and a replica can be added or removed without draining.
+
+```
+POST /invocations   payload in, result or SSE event stream out
+GET  /ping          health probe
+```
+
+That is the whole surface. There is no CLI agent, no session gateway, no desktop or
+IDE adapter, and no `agents` collection: an earlier version of this repository had all
+of them, and they are gone rather than deprecated.
 
 ## Requirements
 
 - Node.js 22 or newer
 - npm
-- MongoDB, plus one `model_providers` record: the CLI and the service read their
-  model and credential from that record only
 
-Every live model is routed through [OpenRouter](https://openrouter.ai/models),
-so model ids are OpenRouter slugs in `vendor/model` form (for example
-`anthropic/claude-sonnet-4.6`, `openai/gpt-4.1-mini`, `google/gemini-2.5-pro`).
-`listOpenRouterModels()` resolves the live catalog from the gateway, and
-`OpenRouterModelProvider#assertModelAvailable()` fails fast on an unroutable
-slug.
+No MongoDB. No AWS credentials. Nothing to seed before the first run.
 
 ## Install and verify
 
@@ -29,6 +32,75 @@ npm run check
 npm run build
 ```
 
+`npm run check` verifies formatting, TypeScript, and the test suite. The tests need no
+credentials: a local HTTP server plays the model, so a full turn runs for real —
+executing tools and writing files — with nothing external.
+
+## The payload
+
+```json
+{
+  "prompt": "Summarise what changed in this repository.",
+  "agent": {
+    "name": "reviewer",
+    "systemPrompt": "You are a concise analyst.",
+    "tools": ["read_file", "glob", "grep", "bash"],
+    "limits": { "maxTurns": 12 }
+  },
+  "modelProvider": {
+    "name": "openrouter",
+    "provider": "openrouter",
+    "model": "anthropic/claude-sonnet-4.6",
+    "apiKey": "sk-or-..."
+  },
+  "permissionRules": [{ "tool": "read_file", "decision": "allow" }],
+  "permissionFallback": "deny"
+}
+```
+
+`agent`, `modelProvider`, and `prompt` are required; everything else has a default.
+`mcpServers` and `skills` are inlined the same way — a stdio or HTTP server with its
+credential, and a skill's whole `SKILL.md` including front matter. Omitting
+`agent.tools` offers every tool the host built.
+
+Every object is strict: an unrecognised key is a rejected payload, not a silently
+ignored one, because a misspelled `systemPrompt` that runs anyway is worse than one
+that fails. The full annotated contract is
+[src/headless/payload.ts](./src/headless/payload.ts), and a working file is
+[examples/headless/payload.json](./examples/headless/payload.json).
+
+Note the shape of the trust boundary. A payload chooses the system prompt, the model
+endpoint its credential is sent to, the MCP servers — including stdio ones that spawn
+processes — and the permission mode. Anyone who can post one has code execution on the
+host. Stored records at least had an operator script in front of them; a payload has
+whatever the transport put there.
+
+## Run it
+
+Three ways, same code underneath.
+
+```bash
+# A payload file, printed as one result
+npm run payload -- payload.json
+
+# The same, streaming events as JSON lines
+npm run payload -- payload.json --stream
+
+# The server
+npm start
+```
+
+```bash
+curl -X POST http://127.0.0.1:8080/invocations \
+  -H 'content-type: application/json' \
+  -H 'x-agent-service-key: <key>' \
+  --data-binary @payload.json
+```
+
+Add `Accept: text/event-stream` or `?stream=true` for SSE. Streaming is a transport
+choice rather than a payload field, so a body cannot contradict the `Accept` its caller
+sent.
+
 ## Configuration
 
 Copy the annotated template and fill in what you need:
@@ -37,250 +109,152 @@ Copy the annotated template and fill in what you need:
 cp .env.example .env
 ```
 
-`.env` is gitignored and loaded automatically by the `agent`, `service`,
-`demo:client`, and `test` scripts through Node's `--env-file-if-exists`. Real
-process environment variables always win over `.env` values.
+Nothing in it configures an agent. Every variable is optional, and what they set is
+where the process listens and what it will allow a payload to do:
 
-`PLATFORM_MONGODB_URI` is the single connection string, and its path segment is
-the database name (`mongodb://127.0.0.1:27017/trueai_agent_platform`).
-`PLATFORM_MODEL_PROVIDER` optionally names which record to use, and an empty
-value selects the enabled default record. Those two variables are the whole
-surface: the model, the endpoint, and the credential all come from one
-`model_providers` record. Nothing in the environment can supply or substitute
-any of them, and there is no fallback when the record is missing a field.
+| Variable                                    | Effect                                                        |
+| ------------------------------------------- | ------------------------------------------------------------- |
+| `AGENT_SERVICE_HOST` / `AGENT_SERVICE_PORT` | Where the listener binds. Defaults `0.0.0.0:8080`.            |
+| `AGENT_SERVICE_KEY`                         | Required in `x-agent-service-key` when set.                   |
+| `AGENT_WORKSPACE`                           | Parent of the per-invocation workspace.                       |
+| `AGENT_PERMISSION_CEILING`                  | `plan`, `deny`, or `none`. Caps what any payload may ask for. |
+| `AGENT_SHELL_ENV_ALLOWLIST`                 | Extra variables spawned commands may see.                     |
+| `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.          |
 
-Three scripts in `scripts/model/` write those records. Each talks to MongoDB
-directly, matches records by `name`, and takes its input from variables at the top
-of the file:
+Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns
+on stderr at startup when it is, and that is appropriate only behind a front door that
+authenticates for you — an AgentCore runtime, an API gateway, or a loopback bind.
 
-```bash
-node scripts/model/seedModel.js     # add new records
-node scripts/model/editModel.js     # change one existing record
-node scripts/model/deleteModel.js   # remove one record
-```
+`AGENT_PERMISSION_CEILING` is how a shared deployment takes back the permission
+decision: a payload can set `permissionMode: "bypass"`, and the ceiling overrides it.
 
-Each script does one thing and refuses the others' work: adding a name that
-exists, or editing or deleting one that does not, is an error rather than a silent
-insert or no-op. `deleteModel.js` additionally requires `CONFIRM = true`, since it
-destroys a stored credential. `contextWindow` and `maxOutputTokens` are required
-when adding, because the CLI spends them as the session's input budget and output
-ceiling.
+## Deploy on AWS
 
-Because the credential sits on the record next to the `baseURL` it is sent to,
-write access to `model_providers` is equivalent to holding the key. Run MongoDB
-with authentication, give the runtime a least-privilege read-only user, restrict
-writes to operators, and enable encryption at rest.
-
-`npm run check` verifies formatting, TypeScript, deterministic integration
-tests, security boundaries, transport contracts, and cross-surface acceptance.
-
-## Terminal
-
-Configure the LLM once, in `scripts/model/seedModel.js`. An `openai-compatible`
-entry needs its endpoint in `baseURL`, which the canonical OpenRouter gateway does
-not:
-
-```js
-const MODELS = [
-  {
-    name: 'openrouter-default',
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4.6',
-    apiKey: '<credential>',
-    contextWindow: 200000,
-    maxOutputTokens: 8192,
-    isDefault: true,
-  },
-];
-```
+The image serves the AgentCore Runtime contract on 8080, so it drops in with no
+adapter. ARM64 is required by the runtime, so the platform is pinned rather than left
+to the builder — an amd64 image builds and pushes without complaint and then fails to
+start.
 
 ```bash
-node scripts/model/seedModel.js
+docker buildx build --platform linux/arm64 -t agent-harness:latest .
 ```
 
-Then run the CLI with local coding tools:
+The container needs no environment beyond what it ships with. Set
+`AGENT_PERMISSION_CEILING` and `AGENT_SERVICE_KEY` for a deployment more than one
+caller reaches.
+
+Each invocation gets its own workspace directory named for the session, so concurrent
+payloads cannot read each other's files. Directories are not deleted: a run's output is
+often the files it wrote, and the path comes back on the result so the caller can
+collect them. Sweep `AGENT_WORKSPACE`, or mount it on a volume with its own lifecycle.
+
+## Migrating from stored agents
+
+If you have agents in a MongoDB `agents` collection from a previous version,
+`scripts/headless/exportPayload.ts` converts one into a payload file. It reads the four
+old collections, downloads the skill documents its skills reference, and writes the lot
+out self-contained:
 
 ```bash
-npm run agent -- "Find and fix the failing test"
+npm run export-payload -- --agent sap-documentation-agent --out payload.json
+npm run payload -- payload.json
 ```
 
-Switch models by editing the record with `editModel.js`, or by adding a second
-entry to `MODELS` and pointing `PLATFORM_MODEL_PROVIDER` at it by name:
+It is the only thing left in the repository that opens a database, and it is
+deliberately standalone so deleting it removes the last MongoDB dependency in one step.
+The AWS variables are needed for the export and never again — the exported payload
+carries the documents.
 
-```bash
-node scripts/model/seedModel.js
-PLATFORM_MODEL_PROVIDER=fast npm run agent -- "Summarize src/core"
-```
-
-With no record, or a record missing `apiKey`, both entrypoints exit with a coded
-error instead of falling back to another model or another credential.
-
-Mutating tools request terminal approval. Filesystem operations are confined to
-the current workspace, edits require a prior read, and interruption propagates
-to active model streams and process trees.
-
-After a build, the executable entrypoint is:
-
-```bash
-node dist/adapters/cli/index.js "Describe the harness"
-```
+The output holds the model credential and every MCP credential in cleartext, because
+that is what a payload is. `payload.json` and `payload.*.json` are gitignored; treat one
+like a `.env`.
 
 ## SDK
 
+The runtime is usable directly, without the HTTP layer:
+
 ```ts
-import {
-  AllowAllPermissionHandler,
-  createAgentSession,
-  createBuiltinTools,
-  LocalRuntimeHost,
-  ScriptedModelProvider,
-} from '@trueai/agent-harness';
+import { invokeHeadless, streamHeadless } from '@trueai/agent-harness';
 
-const runtime = new LocalRuntimeHost(process.cwd());
-const provider = new ScriptedModelProvider([
-  [
-    { type: 'text_delta', delta: 'Hello from the harness.' },
-    { type: 'completed', stopReason: 'end_turn' },
-  ],
-]);
+const result = await invokeHeadless(payload);
+console.log(result.status, result.output, result.usage);
 
-const session = createAgentSession({
-  provider,
-  workingDirectory: process.cwd(),
-  tools: createBuiltinTools(runtime),
-  permissionHandler: new AllowAllPermissionHandler(),
-});
-
-for await (const event of session.run({ prompt: 'Say hello' })) {
+for await (const event of streamHeadless(payload)) {
   console.log(event.type, event);
 }
-
-await session.close();
 ```
 
-The control surface also supports `interrupt(reason)`,
-`respondToPermission(requestId, decision)`, persistent resume through
-`resumeAgentSession`, and clean resource release through `close()`.
+`invokeHeadless` returns the answer with what it cost: the concatenated assistant text,
+the messages, per-tool call and error counts, the stop reason, token usage, and the
+workspace path. A failure _inside_ the turn comes back as `status: 'error'` on a result
+that still carries the partial output, because a run that spent tokens and then hit a
+model error has produced something worth seeing. Only a payload the runner could not act
+on throws.
 
-## Web tools
+`streamHeadless` yields `AgentEvent` verbatim — a versioned, serializable protocol, the
+same one the SSE endpoint frames.
 
-`createWebTools()` adds two opt-in network tools alongside the workspace tools.
-They are a separate factory from `createBuiltinTools`, so existing
-workspace-only sessions keep exactly the tools they had.
+## Tools
 
-```ts
-import { createBuiltinTools, createWebTools, LocalRuntimeHost } from '@trueai/agent-harness';
+`read_file`, `glob`, `grep`, `write_file`, `edit_file`, `bash`, `powershell`,
+`todo_write`, `web_fetch`, `web_search`. A payload names the subset it wants.
 
-const runtime = new LocalRuntimeHost(process.cwd());
-const tools = [...createBuiltinTools(runtime), ...createWebTools()];
-```
+Filesystem operations are confined to the workspace, edits require a prior read, and
+shell commands are inspected before they run. `web_fetch` and `web_search` refuse
+non-public hosts, URLs with embedded credentials, and non-http(s) schemes, and report
+cross-site redirects to the model rather than following them.
 
-- `web_fetch` retrieves one http(s) URL and returns readable text. HTML is
-  converted without extra dependencies, `http` is upgraded to `https`, responses
-  are cached for 15 minutes, and content is bounded by bytes, characters, and a
-  request timeout. Pass a `summarize` hook to reduce pages with a model instead
-  of returning the extracted text.
-- `web_search` returns bounded, cited hits through a pluggable
-  `WebSearchProvider`. It registers only when a provider is available; the
-  default Tavily backend activates when `TAVILY_API_KEY` is set.
+Plan mode and `ask_user_question` are deliberately absent. Both need someone watching:
+plan mode is a review step before a human approves, and a question suspends the turn
+until one is answered. A payload is answered by nobody, so offering either would
+produce a run that stalls or that silently picks an option on the caller's behalf. For
+the same reason `permissionFallback` is `allow` or `deny` and never `ask`.
 
-Both report `kind: 'network'`, so the default and rule permission handlers ask
-before running them, and `plan` mode denies them. Results carry an explicit
-untrusted-content notice.
+Skills arrive on the payload as documents and are written to a temporary directory in
+the layout a local skill directory uses, so a payload skill is an ordinary skill file
+rather than a special case. The directory is removed when the run ends, on the failure
+path as much as the success one.
 
-Security boundaries enforced before any request leaves the process: non-public
-hosts refused (loopback, link-local, private ranges, IP literals, and
-`.local`/`.internal`-style names), URLs with embedded credentials refused,
-non-http(s) schemes refused, and cross-site redirects reported to the model
-rather than followed. `allowedHosts`, `blockedHosts`, and `allowPrivateHosts`
-let an operator narrow or widen that policy.
+## Architecture
 
-## Other consumers
+The invocation path is four files:
 
-- `runJsonlAdapter` provides line-delimited commands and events for automation.
-- `startAgentSseServer` is the minimal stateless HTTP/SSE example.
-- `SessionGateway` plus `startGatewayServer` adds authenticated ownership,
-  control tokens, permission responses, interruption, replay, idempotent run
-  IDs, and artifact transfer.
-- `DesktopAgentAdapter` and `IdeAgentAdapter` translate surface context into the
-  shared gateway protocol.
-- `RemoteRuntimeHost` exposes only capabilities implemented by a trusted
-  `RuntimeRpcServer`.
+- [`payload.ts`](./src/headless/payload.ts) — the contract, as zod schemas
+- [`inline-agent.ts`](./src/headless/inline-agent.ts) — payload to assembled agent
+- [`invoke.ts`](./src/headless/invoke.ts) — the run, buffered or streamed
+- [`server.ts`](./src/headless/server.ts) — the HTTP surface
 
-See [examples/sdk/basic.ts](./examples/sdk/basic.ts) and
-[examples/server/basic.ts](./examples/server/basic.ts).
+`inline-agent.ts` is the interesting one. Rather than building a session directly, it
+completes the payload's blocks into the record shapes `PlatformAgentRegistry` already
+validates and synthesizes the references they use to point at each other. The agent is
+then assembled by the same code path a stored agent went through, which is why the
+support gates, the limit derivation against the provider's context window, the skill
+front-matter parsing, and the `mcp__<server>__<tool>` namespacing all still apply. One
+assembly path, not two that drift.
 
-## Standalone agent-core service demo
+See [CLEAN_ROOM.md](./CLEAN_ROOM.md) for the provenance rules. The former
+`claude-code` tree is a behavioral reference only: it is not imported, linked,
+packaged, or required at runtime.
 
-Run the harness as an independent API service without a frontend:
+## Limits worth knowing on AgentCore
 
-```bash
-# terminal 1
-npm run service
+These are the runtime's, not this application's, and two of them shape how you invoke
+it:
 
-# terminal 2
-npm run demo:client -- "Demonstrate the API"
-```
+| Limit                            | Value                    |
+| -------------------------------- | ------------------------ |
+| Request timeout, non-streaming   | 15 minutes               |
+| Streaming (SSE) maximum duration | 60 minutes               |
+| Maximum payload size             | 100 MB                   |
+| Idle session timeout             | 15 minutes, configurable |
+| Maximum session duration         | 8 hours                  |
+| Hardware per session             | 2 vCPU / 8 GB            |
+| Session storage                  | 1 GB                     |
 
-The deterministic demo exercises session creation, SSE streaming, a remote
-permission response, a real workspace tool, event replay, persistence, and
-session close. See the [service demo runbook](./docs/agent-core-service-demo.md)
-for endpoints, environment configuration, security notes, and OpenRouter mode.
+A run that will take longer than 15 minutes has to be invoked as a stream, which buys 60. The server reports `HealthyBusy` on `/ping` while a run is in flight, which keeps
+the session alive across a long turn instead of letting the idle timeout reclaim it.
 
-## MongoDB agent platform
-
-The platform layer stores tenant-scoped agents, immutable executable versions,
-deployments, API-key hashes, sessions, run claims, events, skills, data bindings,
-policies, and limits in MongoDB. It executes deployed agents synchronously in
-the API process; queue and worker dispatch are intentionally deferred.
-
-```bash
-MONGODB_URI='mongodb://127.0.0.1:27017' \
-PLATFORM_BOOTSTRAP_API_KEY='replace-me' \
-PLATFORM_BOOTSTRAP_TENANT='tenant-a' \
-PLATFORM_SECRET_TENANT_A__OPENROUTER_API_KEY='...' \
-npm run platform
-```
-
-See the [MongoDB platform runbook](./docs/platform.md) for the complete data
-model, API workflow, provider configuration, authentication, capability trust
-boundary, and future worker handoff.
-
-The [Web Research Agent demo](./docs/web-search-agent-demo.md) shows how a
-versioned agent retrieves its model, search tool, skill, permissions, and limits
-from MongoDB, then answers a live question with cited Tavily sources.
-Its [live acceptance result](./docs/web-search-agent-live-result.md) records the
-successful Atlas/OpenRouter/Tavily trajectory and model fallback evidence.
-
-## Included harness capabilities
-
-- provider-neutral streaming model contract, an OpenRouter adapter with live
-  model-catalog resolution and routing fallbacks, a generic OpenAI-compatible
-  adapter, retry policy, and a deterministic scripted provider;
-- schema-validated tools with serial/explicitly-safe parallel execution;
-- workspace-scoped read, glob, grep, write, edit, and shell tools;
-- allow/ask/deny permission rules and plan/default/bypass/deny modes;
-- opt-in `web_fetch` and `web_search` network tools with SSRF-resistant URL
-  policy, redirect containment, bounded results, and pluggable search backends;
-- context budgeting, reactive prompt-too-long compaction, usage events, large
-  result artifacts, file-backed sessions, resume, and transcript exports;
-- typed hooks, layered configuration, commands, skills, trusted plugins, and
-  explicit plugin capability grants;
-- MCP client/server integration over stdio or streamable HTTP;
-- background shell/subagent tasks, quotas, cancellation, and team coordination;
-- optional secrets, metrics, structured logs, notifications, diagnostics,
-  budgets, rate limiting, and version discovery.
-
-## Architecture and migration evidence
-
-- [Migration plan](./MIGRATION_PLAN.md)
-- [Completion audit](./COMPLETION_AUDIT.md)
-- [Platform completion audit](./PLATFORM_COMPLETION_AUDIT.md)
-- [Feature parity checklist](./PARITY_CHECKLIST.md)
-- [Event protocol](./docs/protocols/events.md)
-- [Threat model](./docs/security/threat-model.md)
-- [Compatibility and rollout](./docs/migration-compatibility.md)
-- [Clean-room rules](./CLEAN_ROOM.md)
-
-The former `claude-code` tree is a behavioral reference only. It is not imported,
-linked, packaged, or required at runtime.
+There is no fire-and-forget mode. A payload is answered by the invocation that sent it,
+so work that needs longer than the streaming window has to be split by the caller — or
+this application needs a job store, which would mean giving it persistence it currently
+does not have.

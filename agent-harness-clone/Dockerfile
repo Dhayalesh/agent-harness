@@ -26,10 +26,10 @@ RUN npm prune --omit=dev
 FROM --platform=linux/arm64 node:22-bookworm-slim AS runtime
 WORKDIR /app
 
-# git is here because agent records commonly name the shell tool and prompts ask
-# for repository state. Add any other binary an mcp_servers record's `command`
-# needs: a stdio server whose command is missing fails at agent resolution, so it
-# takes down the first session that names it rather than logging a warning.
+# git is here because payloads commonly name the shell tool and prompts ask for
+# repository state. Add any other binary a payload's stdio MCP server `command`
+# needs: a stdio server whose command is missing fails at agent assembly, so it
+# fails the invocation that named it rather than logging a warning.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -37,18 +37,18 @@ RUN apt-get update \
 ENV NODE_ENV=production \
     AGENT_SERVICE_HOST=0.0.0.0 \
     AGENT_SERVICE_PORT=8080 \
-    AGENT_WORKSPACE=/var/agent/workspace \
-    AGENT_DATA_DIR=/var/agent/data
+    AGENT_WORKSPACE=/var/agent/workspace
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./package.json
 
-# `node` is the unprivileged user the base image already ships. The workspace and
-# data directories are created here so they are owned by it rather than by root,
-# which is what the runtime would otherwise leave them as on first write.
-RUN mkdir -p /var/agent/workspace /var/agent/data && chown -R node:node /var/agent
+# `node` is the unprivileged user the base image already ships. The workspace is
+# created here so it is owned by it rather than by root, which is what the runtime
+# would otherwise leave it as on first write. Each invocation gets its own
+# directory beneath it, so concurrent payloads cannot read each other's files.
+RUN mkdir -p /var/agent/workspace && chown -R node:node /var/agent
 USER node
 
 EXPOSE 8080
-CMD ["node", "dist/service/agentcore.js"]
+CMD ["node", "dist/headless/main.js"]

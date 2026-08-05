@@ -1,22 +1,15 @@
-import assert from 'node:assert/strict';
+﻿import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createAgentSession,
-  createAskUserQuestionTool,
-  createPlanModeTools,
   createTodoWriteTool,
   DefaultPermissionHandler,
-  FirstOptionQuestionHandler,
   formatTodos,
-  PlanModeController,
-  PlanModePermissionHandler,
-  RulePermissionHandler,
   ScriptedModelProvider,
   TodoStore,
   type AgentEvent,
   type Tool,
   type ToolExecutionContext,
-  type UserQuestionHandler,
 } from '../../src/index.js';
 
 function context(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
@@ -96,183 +89,6 @@ test('todo lists render with status markers', () => {
   ]);
   assert.equal(rendered, '[x] Done\n[~] Working on active\n[ ] Later');
   assert.equal(formatTodos([]), '(no tasks)');
-});
-
-test('ask_user_question delegates to the handler and reports the answers', async () => {
-  const tool = createAskUserQuestionTool(new FirstOptionQuestionHandler());
-  const result = await tool.execute(
-    {
-      questions: [
-        {
-          question: 'Which system should the deployment target?',
-          header: 'System',
-          options: [
-            { label: 'DEV', description: 'Development client 100' },
-            { label: 'QA', description: 'Quality client 200' },
-          ],
-        },
-      ],
-    },
-    context(),
-  );
-  assert.match(result.content, /Which system should the deployment target\? -> DEV/);
-});
-
-test('ask_user_question rejects duplicate questions, duplicate labels, and a manual Other', async () => {
-  const tool = createAskUserQuestionTool(new FirstOptionQuestionHandler());
-  const options = [
-    { label: 'A', description: 'a' },
-    { label: 'B', description: 'b' },
-  ];
-
-  await assert.rejects(
-    tool.execute(
-      {
-        questions: [
-          { question: 'Same?', header: 'H', options },
-          { question: 'Same?', header: 'H', options },
-        ],
-      },
-      context(),
-    ),
-    /Question texts must be unique/,
-  );
-
-  await assert.rejects(
-    tool.execute(
-      {
-        questions: [
-          {
-            question: 'Dup labels?',
-            header: 'H',
-            options: [
-              { label: 'A', description: 'a' },
-              { label: 'A', description: 'a2' },
-            ],
-          },
-        ],
-      },
-      context(),
-    ),
-    /Option labels must be unique/,
-  );
-
-  await assert.rejects(
-    tool.execute(
-      {
-        questions: [
-          {
-            question: 'Manual other?',
-            header: 'H',
-            options: [
-              { label: 'A', description: 'a' },
-              { label: 'Other', description: 'something else' },
-            ],
-          },
-        ],
-      },
-      context(),
-    ),
-    /added automatically/,
-  );
-});
-
-test('ask_user_question fails loudly when the handler skips a question', async () => {
-  const silent: UserQuestionHandler = {
-    async ask() {
-      return [];
-    },
-  };
-  const tool = createAskUserQuestionTool(silent);
-  await assert.rejects(
-    tool.execute(
-      {
-        questions: [
-          {
-            question: 'Answered?',
-            header: 'H',
-            options: [
-              { label: 'A', description: 'a' },
-              { label: 'B', description: 'b' },
-            ],
-          },
-        ],
-      },
-      context(),
-    ),
-    /No answer returned/,
-  );
-});
-
-test('plan mode tools transition state and gate the exit behind approval', async () => {
-  const controller = new PlanModeController();
-  const [enter, exit] = createPlanModeTools(controller) as [Tool, Tool];
-  assert.equal(enter.name, 'enter_plan_mode');
-  assert.equal(exit.name, 'exit_plan_mode');
-
-  // exit_plan_mode is denied outside plan mode.
-  const beforeEntry = await exit.checkPermissions?.(
-    { plan: 'x' },
-    {
-      sessionId: 'session',
-      workingDirectory: process.cwd(),
-    },
-  );
-  assert.equal(beforeEntry?.decision, 'deny');
-
-  await enter.execute({}, context());
-  assert.equal(controller.active, true);
-
-  const duringPlan = await exit.checkPermissions?.(
-    { plan: 'x' },
-    {
-      sessionId: 'session',
-      workingDirectory: process.cwd(),
-    },
-  );
-  assert.equal(duringPlan?.decision, 'ask');
-
-  const result = await exit.execute({ plan: '## Step 1\nDo the thing' }, context());
-  assert.match(result.content, /Approved plan/);
-  assert.match(result.content, /Do the thing/);
-  assert.equal(controller.active, false);
-  assert.equal(controller.exitedOnce, true);
-  assert.equal(controller.snapshot().plan, '## Step 1\nDo the thing');
-});
-
-test('plan mode denies state-changing tools even when a rule would allow them', async () => {
-  const controller = new PlanModeController();
-  const inner = new RulePermissionHandler({
-    rules: [{ tool: 'bash', decision: 'allow' }],
-  });
-  const handler = new PlanModePermissionHandler(controller, inner);
-  const bash: Tool = {
-    name: 'bash',
-    description: 'x',
-    inputSchema: { parse: (v: unknown) => v } as never,
-    jsonSchema: {},
-    kind: 'execute',
-    concurrencySafe: false,
-    async execute() {
-      return { content: '' };
-    },
-  };
-  const request = {
-    sessionId: 's',
-    turnId: 't',
-    toolCallId: 'c',
-    tool: bash,
-    input: { command: 'npm install' },
-    workingDirectory: process.cwd(),
-  };
-
-  assert.equal(await handler.evaluate(request), 'allow');
-  controller.enter();
-  assert.equal(await handler.evaluate(request), 'deny');
-  // A command the tool itself classified as harmless stays available.
-  assert.equal(await handler.evaluate({ ...request, toolCheck: { decision: 'allow' } }), 'allow');
-  controller.exit();
-  assert.equal(await handler.evaluate(request), 'allow');
 });
 
 test('a tool-level deny is absolute and short-circuits the permission handler', async () => {

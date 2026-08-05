@@ -1,0 +1,33 @@
+{
+  "prompt": "List the files in the working directory, then summarise what you found in two sentences.",
+  "agent": {
+    "name": "payload-demo",
+    "systemPrompt": "You are a concise analyst. Use the provided tools and report results plainly.",
+    "tools": ["read_file", "glob", "grep", "bash"],
+    "limits": { "maxTurns": 12 }
+  },
+  "modelProvider": {
+    "name": "openrouter",
+    "provider": "openrouter",
+    "model": "anthropic/claude-sonnet-4",
+    "apiKey": "sk-or-REPLACE_ME",
+    "capabilities": {
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true,
+      "supportsStreaming": true,
+      "supportsReasoning": false,
+      "reportsCost": true
+    }
+  },
+  "mcpServers": [],
+  "skills": [],
+  "permissionMode": "default",
+  "permissionRules": [
+    { "tool": "read_file", "decision": "allow" },
+    { "tool": "glob", "decision": "allow" },
+    { "tool": "grep", "decision": "allow" },
+    { "tool": "bash", "decision": "allow", "inputPattern": "ls*" }
+  ],
+  "permissionFallback": "deny"
+}
