@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
-import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, StructuredLogSink } from '../services/observability.js';
 import { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './server.js';
 
@@ -44,42 +43,25 @@ const shellEnvironmentExtras = (process.env.AGENT_SHELL_ENV_ALLOWLIST ?? '')
   .map((name) => name.trim())
   .filter((name) => name.length > 0);
 /**
- * Where the log goes.
+ * Written to stdout, which is the log AgentCore already collects.
  *
- * Unset, lines are written to stdout and AgentCore forwards them to the stream it
- * names, which is one stream per runtime session and not something this process can
- * influence. Setting `AGENT_LOG_GROUP` sends them to a group this deployment owns
- * instead, laid out one stream per session — the grouping an operator actually reads
- * by, and the reason for writing directly rather than through stdout.
+ * There is no log group to configure here. AgentCore forwards this process's stdout
+ * into a stream it names itself — `<date>/[runtime-logs]<runtime session id>` — and
+ * that name is the runtime's to choose, not something an application inside the
+ * container can redirect. Since the id in it is the runtime session, those streams are
+ * already one per session: invocations sharing a `runtimeSessionId` share a stream,
+ * and a caller that omits it gets a new session, and so a new stream, every time.
  *
- * These are exclusive by choice: duplicating every line into both destinations
- * doubles ingest cost for a second copy nobody queries.
- */
-const logGroupName = process.env.AGENT_LOG_GROUP?.trim();
-// `AWS_REGION` is what the SDK itself reads. `PLATFORM_CONTENT_S3_REGION` is accepted
-// after it because a deployment already configured for S3 skill reads has named its
-// region once, and making it name the same value twice to get logs is a trap rather
-// than a decision.
-const region = process.env.AWS_REGION?.trim() || process.env.PLATFORM_CONTENT_S3_REGION?.trim();
-const cloudWatch = logGroupName
-  ? new CloudWatchLogWriter({
-      logGroupName,
-      ...(region ? { region } : {}),
-    })
-  : undefined;
-
-/**
+ * Grouping is therefore decided by the caller reusing its session id, and the work
+ * this process does is to make that grouping legible: every line carries `sessionId`,
+ * so one session reads as one story whichever stream it lands in.
+ *
  * `logSink` covers both the invocation lifecycle and session AgentEvents. It is not
  * also passed as `eventSink`, because the session would then write every event twice.
- *
- * The writer is attached as the sink's `write` callback rather than replacing it, so
- * redaction and oversized-line chunking still happen upstream and are identical
- * whichever destination is in use.
  */
-const logSink = new StructuredLogSink(
-  cloudWatch ? cloudWatch.write : (line) => process.stdout.write(`${line}\n`),
-  { context: {} },
-);
+const logSink = new StructuredLogSink((line) => process.stdout.write(`${line}\n`), {
+  context: {},
+});
 
 const running = await startHeadlessServer({
   host,
@@ -95,43 +77,10 @@ const running = await startHeadlessServer({
   logSink,
 });
 
-/**
- * Names the credential variables the SDK will not find, on stderr, at startup.
- *
- * Written to stderr rather than through `logSink`, because when this fires the log
- * sink is the broken component and anything sent through it is lost — which is the
- * failure mode itself: a log group configured with credentials under the wrong names
- * receives nothing and reports nothing, so it reads as "logging does not work".
- *
- * Only the ambient names are checked. A container using a task role, an SSO profile,
- * or any other provider in the chain has none of these set and is correctly quiet.
- */
-if (cloudWatch) {
-  const misnamed = [
-    ['AWS_ACCESS_KEY', 'AWS_ACCESS_KEY_ID'],
-    ['AWS_SECRET', 'AWS_SECRET_ACCESS_KEY'],
-  ].filter(([wrong, right]) => process.env[wrong!] && !process.env[right!]);
-  if (misnamed.length > 0) {
-    process.stderr.write(
-      `${JSON.stringify({
-        timestamp: new Date().toISOString(),
-        level: 'warn',
-        component: 'agent-harness',
-        event: 'cloudwatch.credentials.misnamed',
-        logGroupName,
-        message:
-          'AGENT_LOG_GROUP is set but the AWS SDK reads different variable names, so log ' +
-          'delivery will fail with a credentials error. Rename these, or use a task role.',
-        rename: Object.fromEntries(misnamed),
-      })}\n`,
-    );
-  }
-}
-
-// Structured rather than a plain banner: stdout is now a JSON-lines stream, and six
-// bare lines of text would arrive as six unparseable CloudWatch records interleaved
-// with the run's own logs. As one record it is queryable like everything else, and it
-// is the line to look for first when confirming a container came up.
+// Structured rather than a plain banner: stdout is a JSON-lines stream, and six bare
+// lines of text would arrive as six unparseable CloudWatch records interleaved with
+// the run's own logs. As one record it is queryable like everything else, and it is
+// the line to look for first when confirming a container came up.
 emitLog(logSink, {
   event: 'runtime.started',
   url: running.url,
@@ -139,8 +88,6 @@ emitLog(logSink, {
   streaming: 'Accept: text/event-stream, or ?stream=true',
   authenticated: serviceKey !== undefined,
   permissionCeiling: permissionCeiling ?? 'none',
-  logDestination: logGroupName ? `cloudwatch:${logGroupName}` : 'stdout',
-  ...(logGroupName && region ? { region } : {}),
   shellEnvExtras: shellEnvironmentExtras,
   pid: process.pid,
   nodeVersion: process.version,
@@ -159,11 +106,6 @@ const shutdown = async (): Promise<void> => {
       error: describeError(error),
     });
     throw error;
-  } finally {
-    // In `finally` so the shutdown-failure record above is sent too: queued lines
-    // live in memory, and an unflushed buffer at exit loses exactly the lines
-    // explaining why the process is exiting.
-    await cloudWatch?.close().catch(() => undefined);
   }
 };
 process.once('SIGINT', () => void shutdown());
