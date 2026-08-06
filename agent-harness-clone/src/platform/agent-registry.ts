@@ -3,6 +3,7 @@ import type { AgentLimits } from '../core/agent-session.js';
 import { AgentHarnessError } from '../core/errors.js';
 import type { McpConnection, McpElicitationHandler } from '../mcp/client.js';
 import type { ModelProvider } from '../models/provider.js';
+import type { LogContext, LogSink } from '../services/observability.js';
 import type { Skill } from '../skills/skills.js';
 import { createSkillTool, parseSkill, SkillRegistry } from '../skills/skills.js';
 import type { Tool } from '../tools/tool.js';
@@ -54,6 +55,10 @@ export type AgentStores = {
 export type PlatformAgentRegistryOptions = {
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
+  /** Structured model/MCP lifecycle records produced while resolving this agent. */
+  logSink?: LogSink;
+  /** Correlation fields copied onto structured model/MCP lifecycle records. */
+  logContext?: LogContext;
   /**
    * Every local tool the running host offers, by the `name` each factory sets.
    * A record may name any subset of these; naming one the host did not offer is
@@ -141,12 +146,16 @@ export class PlatformAgentRegistry {
     this.logger = options.logger ?? ((message) => console.warn(message));
     this.modelProviders = new PlatformModelProviderRegistry(stores.modelProviders, {
       logger: this.logger,
+      ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+      ...(options.logContext === undefined ? {} : { logContext: options.logContext }),
     });
     this.skillContent = new SkillContentStores({
       ...(options.contentStore === undefined ? {} : { contentStore: options.contentStore }),
     });
     this.mcpServers = new PlatformMcpServerRegistry(stores.mcpServers, {
       logger: this.logger,
+      ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+      ...(options.logContext === undefined ? {} : { logContext: options.logContext }),
       ...(options.elicitationHandler === undefined
         ? {}
         : { elicitationHandler: options.elicitationHandler }),

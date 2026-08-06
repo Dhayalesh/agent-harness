@@ -14,6 +14,7 @@ import {
   type ElicitResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { Tool } from '../tools/tool.js';
 
 export type McpResource = {
@@ -56,6 +57,10 @@ export type McpConnectionOptions = {
   connectTimeoutMs?: number;
   /** Budget for every request after it. Unset leaves the SDK default. */
   requestTimeoutMs?: number;
+  /** Receives connection, discovery, request, call, and close lifecycle records. */
+  logSink?: LogSink;
+  /** Correlation fields copied onto every MCP lifecycle record. */
+  logContext?: LogContext;
 };
 
 export class McpConnection {
@@ -64,6 +69,8 @@ export class McpConnection {
     private readonly client: Client,
     private readonly transport: { close(): Promise<void> },
     private readonly requestTimeoutMs?: number,
+    private readonly logSink?: LogSink,
+    private readonly logContext: LogContext = {},
   ) {}
 
   static async connectStdio(
@@ -71,10 +78,44 @@ export class McpConnection {
     parameters: StdioServerParameters,
     options: McpConnectionOptions = {},
   ): Promise<McpConnection> {
-    const client = createClient(options);
+    const started = Date.now();
+    emitMcp(options, {
+      event: 'mcp.connection.started',
+      serverName,
+      transport: 'stdio',
+      command: parameters.command,
+      args: parameters.args ?? [],
+    });
+    const client = createClient(serverName, options);
     const transport = new StdioClientTransport(parameters);
-    await client.connect(transport, timeoutOptions(options.connectTimeoutMs));
-    return new McpConnection(serverName, client, transport, options.requestTimeoutMs);
+    try {
+      await client.connect(transport, timeoutOptions(options.connectTimeoutMs));
+      emitMcp(options, {
+        event: 'mcp.connection.completed',
+        serverName,
+        transport: 'stdio',
+        durationMs: Date.now() - started,
+      });
+      return new McpConnection(
+        serverName,
+        client,
+        transport,
+        options.requestTimeoutMs,
+        options.logSink,
+        options.logContext,
+      );
+    } catch (error) {
+      emitMcp(options, {
+        level: 'error',
+        event: 'mcp.connection.failed',
+        serverName,
+        transport: 'stdio',
+        durationMs: Date.now() - started,
+        error: describeError(error),
+      });
+      await transport.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   static async connectHttp(
@@ -83,17 +124,52 @@ export class McpConnection {
     transportOptions: StreamableHTTPClientTransportOptions = {},
     options: McpConnectionOptions = {},
   ): Promise<McpConnection> {
-    const client = createClient(options);
+    const started = Date.now();
+    emitMcp(options, {
+      event: 'mcp.connection.started',
+      serverName,
+      transport: 'http',
+      url: url.toString(),
+    });
+    const client = createClient(serverName, options);
     const transport = new StreamableHTTPClientTransport(url, transportOptions);
-    await client.connect(
-      transport as unknown as Parameters<Client['connect']>[0],
-      timeoutOptions(options.connectTimeoutMs),
-    );
-    return new McpConnection(serverName, client, transport, options.requestTimeoutMs);
+    try {
+      await client.connect(
+        transport as unknown as Parameters<Client['connect']>[0],
+        timeoutOptions(options.connectTimeoutMs),
+      );
+      emitMcp(options, {
+        event: 'mcp.connection.completed',
+        serverName,
+        transport: 'http',
+        durationMs: Date.now() - started,
+      });
+      return new McpConnection(
+        serverName,
+        client,
+        transport,
+        options.requestTimeoutMs,
+        options.logSink,
+        options.logContext,
+      );
+    } catch (error) {
+      emitMcp(options, {
+        level: 'error',
+        event: 'mcp.connection.failed',
+        serverName,
+        transport: 'http',
+        durationMs: Date.now() - started,
+        error: describeError(error),
+      });
+      await transport.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async tools(): Promise<Tool[]> {
-    const discovered = await this.client.listTools(undefined, this.requestOptions());
+    const discovered = await this.request('tools/list', {}, () =>
+      this.client.listTools(undefined, this.requestOptions()),
+    );
     return discovered.tools.map((remote): Tool<Record<string, unknown>> => ({
       name: `mcp__${normalize(this.serverName)}__${normalize(remote.name)}`,
       description: remote.description ?? `MCP tool ${remote.name} from ${this.serverName}`,
@@ -103,17 +179,23 @@ export class McpConnection {
       concurrencySafe: remote.annotations?.readOnlyHint ?? false,
       destructive: remote.annotations?.destructiveHint ?? false,
       execute: async (input, context) => {
-        const result = await this.client.callTool(
-          { name: remote.name, arguments: input },
-          undefined,
-          this.requestOptions(context.signal),
+        const request = { name: remote.name, arguments: input };
+        const result = await this.request(
+          'tools/call',
+          request,
+          () => this.client.callTool(request, undefined, this.requestOptions(context.signal)),
+          {
+            toolCallId: context.toolCallId,
+            remoteTool: remote.name,
+          },
         );
         return {
           content: formatMcpContent(result.content),
+          isError: result.isError === true,
           metadata: {
             server: this.serverName,
             remoteTool: remote.name,
-            isError: result.isError ?? false,
+            isError: result.isError === true,
             structuredContent: result.structuredContent,
             _meta: result._meta,
           },
@@ -123,7 +205,9 @@ export class McpConnection {
   }
 
   async listResources(): Promise<McpResource[]> {
-    const response = await this.client.listResources(undefined, this.requestOptions());
+    const response = await this.request('resources/list', {}, () =>
+      this.client.listResources(undefined, this.requestOptions()),
+    );
     return response.resources.map((resource) => ({
       server: this.serverName,
       uri: resource.uri,
@@ -134,7 +218,10 @@ export class McpConnection {
   }
 
   async readResource(uri: string, signal?: AbortSignal): Promise<McpResourceContent[]> {
-    const response = await this.client.readResource({ uri }, this.requestOptions(signal));
+    const request = { uri };
+    const response = await this.request('resources/read', request, () =>
+      this.client.readResource(request, this.requestOptions(signal)),
+    );
     return response.contents.map((content) => ({
       uri: content.uri,
       ...(content.mimeType === undefined ? {} : { mimeType: content.mimeType }),
@@ -143,7 +230,9 @@ export class McpConnection {
   }
 
   async listPrompts(): Promise<McpPrompt[]> {
-    const response = await this.client.listPrompts(undefined, this.requestOptions());
+    const response = await this.request('prompts/list', {}, () =>
+      this.client.listPrompts(undefined, this.requestOptions()),
+    );
     return response.prompts.map((prompt) => ({
       server: this.serverName,
       name: prompt.name,
@@ -165,9 +254,12 @@ export class McpConnection {
     args: Record<string, string> = {},
     signal?: AbortSignal,
   ): Promise<McpPromptResult> {
-    const response = await this.client.getPrompt(
-      { name, arguments: args },
-      this.requestOptions(signal),
+    const request = { name, arguments: args };
+    const response = await this.request(
+      'prompts/get',
+      request,
+      () => this.client.getPrompt(request, this.requestOptions(signal)),
+      { promptName: name },
     );
     return {
       ...(response.description === undefined ? {} : { description: response.description }),
@@ -179,8 +271,34 @@ export class McpConnection {
   }
 
   async close(): Promise<void> {
-    await this.client.close();
-    await this.transport.close().catch(() => undefined);
+    const started = Date.now();
+    this.log({ event: 'mcp.connection.close.started', serverName: this.serverName });
+    try {
+      await this.client.close();
+      await this.transport.close().catch((error: unknown) => {
+        this.log({
+          level: 'warn',
+          event: 'mcp.transport.close.failed',
+          serverName: this.serverName,
+          error: describeError(error),
+        });
+      });
+      this.log({
+        event: 'mcp.connection.close.completed',
+        serverName: this.serverName,
+        durationMs: Date.now() - started,
+      });
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'mcp.connection.close.failed',
+        serverName: this.serverName,
+        durationMs: Date.now() - started,
+        error: describeError(error),
+      });
+      await this.transport.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   /**
@@ -194,13 +312,65 @@ export class McpConnection {
       ...timeoutOptions(this.requestTimeoutMs),
     };
   }
+
+  private async request<Result>(
+    operation: string,
+    request: unknown,
+    run: () => Promise<Result>,
+    fields: Record<string, unknown> = {},
+  ): Promise<Result> {
+    const started = Date.now();
+    this.log({
+      event: 'mcp.request.started',
+      serverName: this.serverName,
+      operation,
+      request,
+      ...fields,
+    });
+    try {
+      const response = await run();
+      const remoteError =
+        response !== null &&
+        typeof response === 'object' &&
+        'isError' in response &&
+        response.isError === true;
+      this.log({
+        ...(remoteError ? { level: 'error' as const } : {}),
+        event: 'mcp.request.completed',
+        serverName: this.serverName,
+        operation,
+        request,
+        response,
+        remoteError,
+        durationMs: Date.now() - started,
+        ...fields,
+      });
+      return response;
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'mcp.request.failed',
+        serverName: this.serverName,
+        operation,
+        request,
+        durationMs: Date.now() - started,
+        error: describeError(error),
+        ...fields,
+      });
+      throw error;
+    }
+  }
+
+  private log(entry: Parameters<LogSink['log']>[0]): void {
+    emitLog(this.logSink, { ...this.logContext, ...entry });
+  }
 }
 
 function timeoutOptions(timeout: number | undefined): RequestOptions {
   return timeout === undefined ? {} : { timeout };
 }
 
-function createClient(options: McpConnectionOptions): Client {
+function createClient(serverName: string, options: McpConnectionOptions): Client {
   const client = new Client(
     { name: 'agent-harness', version: '0.1.0' },
     {
@@ -210,11 +380,50 @@ function createClient(options: McpConnectionOptions): Client {
   );
   const elicitationHandler = options.elicitationHandler;
   if (elicitationHandler) {
-    client.setRequestHandler(ElicitRequestSchema, async (request) =>
-      elicitationHandler(request.params),
-    );
+    client.setRequestHandler(ElicitRequestSchema, async (request) => {
+      const started = Date.now();
+      emitMcp(options, {
+        event: 'mcp.elicitation.started',
+        serverName,
+        request: request.params,
+      });
+      try {
+        const response = await elicitationHandler(request.params);
+        emitMcp(options, {
+          event: 'mcp.elicitation.completed',
+          serverName,
+          request: request.params,
+          response,
+          durationMs: Date.now() - started,
+        });
+        return response;
+      } catch (error) {
+        emitMcp(options, {
+          level: 'error',
+          event: 'mcp.elicitation.failed',
+          serverName,
+          request: request.params,
+          durationMs: Date.now() - started,
+          error: describeError(error),
+        });
+        throw error;
+      }
+    });
   }
   return client;
+}
+
+function emitMcp(options: McpConnectionOptions, entry: Parameters<LogSink['log']>[0]): void {
+  emitLog(options.logSink, { ...(options.logContext ?? {}), ...entry });
+}
+
+function describeError(error: unknown): { name: string; message: string; stack?: string } {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  return {
+    name: error.name,
+    message: error.message,
+    ...(error.stack === undefined ? {} : { stack: error.stack }),
+  };
 }
 
 function normalize(name: string): string {

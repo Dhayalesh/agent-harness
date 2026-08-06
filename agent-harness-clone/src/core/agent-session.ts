@@ -20,7 +20,12 @@ import type { Tool, ToolExecutionContext, ToolPermissionCheck } from '../tools/t
 import type { SessionStore, StoredSession } from '../sessions/session-store.js';
 import type { CommandRegistry } from '../commands/commands.js';
 import type { ArtifactStore } from '../artifacts/artifact-store.js';
-import type { EventSink } from '../services/observability.js';
+import {
+  emitLog,
+  type EventSink,
+  type LogContext,
+  type LogSink,
+} from '../services/observability.js';
 import { BudgetTracker, type BudgetLimits, type SessionRateLimiter } from '../services/limits.js';
 import { formatProjectContext, type ProjectContextProvider } from '../context/project-context.js';
 
@@ -47,6 +52,10 @@ export type AgentSessionConfig = {
   artifactStore?: ArtifactStore;
   maxInlineToolResultChars?: number;
   eventSink?: EventSink;
+  /** Detailed model and AgentEvent records; failures are always fail-open. */
+  logSink?: LogSink;
+  /** Correlation fields copied onto every structured record. */
+  logContext?: LogContext;
   budget?: BudgetLimits;
   rateLimiter?: SessionRateLimiter;
   projectContextProvider?: ProjectContextProvider;
@@ -108,6 +117,8 @@ class AgentSessionImpl implements AgentSession {
   private readonly artifactStore: ArtifactStore | undefined;
   private readonly maxInlineToolResultChars: number;
   private readonly eventSink: EventSink | undefined;
+  private readonly logSink: LogSink | undefined;
+  private readonly logContext: LogContext;
   private readonly budget: BudgetTracker;
   private readonly rateLimiter: SessionRateLimiter | undefined;
   private readonly projectContextProvider: ProjectContextProvider | undefined;
@@ -136,6 +147,8 @@ class AgentSessionImpl implements AgentSession {
     this.artifactStore = config.artifactStore;
     this.maxInlineToolResultChars = config.maxInlineToolResultChars ?? 100_000;
     this.eventSink = config.eventSink;
+    this.logSink = config.logSink;
+    this.logContext = config.logContext ?? {};
     this.budget = new BudgetTracker(config.budget);
     this.rateLimiter = config.rateLimiter;
     this.projectContextProvider = config.projectContextProvider;
@@ -189,6 +202,7 @@ class AgentSessionImpl implements AgentSession {
         const textParts: string[] = [];
         const toolCalls: ToolCallBlock[] = [];
         let stopReason: StopReason = 'end_turn';
+        let modelStarted: number | undefined;
 
         try {
           const prepared = await this.contextManager.prepare({
@@ -232,6 +246,26 @@ class AgentSessionImpl implements AgentSession {
           for (const hook of this.hooks.list()) {
             await hook.beforeModel?.({ sessionId: this.id, turnId }, modelRequest);
           }
+          modelStarted = Date.now();
+          this.log({
+            event: 'model.request.started',
+            sessionId: this.id,
+            turnId,
+            turn,
+            provider: this.config.provider.name,
+            model: this.config.model,
+            request: {
+              messages: modelRequest.messages,
+              tools: modelRequest.tools,
+              ...(modelRequest.model === undefined ? {} : { model: modelRequest.model }),
+              ...(modelRequest.systemPrompt === undefined
+                ? {}
+                : { systemPrompt: modelRequest.systemPrompt }),
+              ...(modelRequest.maxOutputTokens === undefined
+                ? {}
+                : { maxOutputTokens: modelRequest.maxOutputTokens }),
+            },
+          });
           for await (const modelEvent of this.config.provider.stream(modelRequest)) {
             this.throwIfAborted();
             switch (modelEvent.type) {
@@ -271,7 +305,35 @@ class AgentSessionImpl implements AgentSession {
                 break;
             }
           }
+          this.log({
+            event: 'model.request.completed',
+            sessionId: this.id,
+            turnId,
+            turn,
+            provider: this.config.provider.name,
+            model: this.config.model,
+            stopReason,
+            text: textParts.join(''),
+            toolCalls,
+            durationMs: Date.now() - modelStarted,
+          });
         } catch (error) {
+          this.log({
+            level:
+              this.activeController.signal.aborted ||
+              error instanceof AgentAbortError ||
+              isPromptTooLong(error)
+                ? 'warn'
+                : 'error',
+            event: 'model.request.failed',
+            sessionId: this.id,
+            turnId,
+            turn,
+            provider: this.config.provider.name,
+            model: this.config.model,
+            ...(modelStarted === undefined ? {} : { durationMs: Date.now() - modelStarted }),
+            error: describeError(error),
+          });
           if (this.activeController.signal.aborted || error instanceof AgentAbortError) {
             yield this.event({
               type: 'turn.completed',
@@ -550,6 +612,16 @@ class AgentSessionImpl implements AgentSession {
       return result;
     }
 
+    const toolStarted = Date.now();
+    this.log({
+      event: 'tool.execution.started',
+      sessionId: this.id,
+      turnId,
+      toolCallId: call.id,
+      toolName: tool.name,
+      toolKind: tool.kind,
+      input: parsed.data,
+    });
     yield this.event({ type: 'tool.started', turnId, call });
     const queuedProgress: AgentEvent[] = [];
     const context: ToolExecutionContext = {
@@ -595,16 +667,41 @@ class AgentSessionImpl implements AgentSession {
         type: 'tool_result',
         toolCallId: call.id,
         content,
-        isError: false,
+        isError: output.isError ?? false,
         ...(output.metadata === undefined && Object.keys(artifactMetadata).length === 0
           ? {}
           : { metadata: { ...output.metadata, ...artifactMetadata } }),
       };
+      this.log({
+        ...(result.isError ? { level: 'error' as const } : {}),
+        event: 'tool.execution.completed',
+        sessionId: this.id,
+        turnId,
+        toolCallId: call.id,
+        toolName: tool.name,
+        toolKind: tool.kind,
+        input: parsed.data,
+        result,
+        durationMs: Date.now() - toolStarted,
+      });
       yield this.event({ type: 'tool.completed', turnId, result });
       return result;
     } catch (error) {
       for (const progressEvent of queuedProgress) yield progressEvent;
       const result = this.toolError(call.id, errorMessage(error));
+      this.log({
+        level: 'error',
+        event: 'tool.execution.failed',
+        sessionId: this.id,
+        turnId,
+        toolCallId: call.id,
+        toolName: tool.name,
+        toolKind: tool.kind,
+        input: parsed.data,
+        result,
+        durationMs: Date.now() - toolStarted,
+        error: describeError(error),
+      });
       yield this.event({ type: 'tool.completed', turnId, result });
       for (const hook of this.hooks.list()) {
         await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
@@ -660,7 +757,20 @@ class AgentSessionImpl implements AgentSession {
     } catch {
       // Observability is never an execution dependency.
     }
+    this.log({
+      level: event.type === 'error' ? 'error' : event.type === 'warning' ? 'warn' : 'info',
+      event: event.type,
+      timestamp: event.timestamp,
+      sessionId: event.sessionId,
+      sequence: event.sequence,
+      ...eventCorrelation(event),
+      data: event,
+    });
     return event;
+  }
+
+  private log(entry: Parameters<LogSink['log']>[0]): void {
+    emitLog(this.logSink, { ...this.logContext, ...entry });
   }
 
   private now(): string {
@@ -705,4 +815,29 @@ function isPromptTooLong(error: unknown): boolean {
     status === 413 ||
     /prompt.{0,20}(too long|context|large)|context.{0,20}(window|length|limit)/i.test(error.message)
   );
+}
+
+function eventCorrelation(event: AgentEvent): Record<string, unknown> {
+  const turnId = 'turnId' in event ? event.turnId : undefined;
+  const toolCallId =
+    event.type === 'tool.requested' || event.type === 'tool.started'
+      ? event.call.id
+      : event.type === 'tool.completed'
+        ? event.result.toolCallId
+        : event.type === 'tool.progress' || event.type === 'permission.requested'
+          ? event.toolCallId
+          : undefined;
+  return {
+    ...(turnId === undefined ? {} : { turnId }),
+    ...(toolCallId === undefined ? {} : { toolCallId }),
+  };
+}
+
+function describeError(error: unknown): { name: string; message: string; stack?: string } {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  return {
+    name: error.name,
+    message: error.message,
+    ...(error.stack === undefined ? {} : { stack: error.stack }),
+  };
 }

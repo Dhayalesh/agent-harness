@@ -17,6 +17,7 @@ import {
 } from '../platform/model-provider-definitions.js';
 import type { ModelProviderLookup } from '../platform/model-provider-registry.js';
 import { parseSkillRecord, type SkillRecord } from '../platform/skill-definitions.js';
+import type { LogContext, LogSink } from '../services/observability.js';
 import type { McpServerCapabilities } from '../platform/mcp-server-definitions.js';
 import type { Tool } from '../tools/tool.js';
 import type {
@@ -109,6 +110,8 @@ export type InlineAgentOptions = {
   elicitationHandler?: McpElicitationHandler;
   /** Defaults to `console.warn`, as in `PlatformAgentRegistry`. */
   logger?: (message: string) => void;
+  logSink?: LogSink;
+  logContext?: LogContext;
 };
 
 /**
@@ -157,6 +160,8 @@ export async function resolveInlineAgent(
   const registry = new PlatformAgentRegistry(stores, {
     localTools: options.localTools,
     contentStore: new InMemoryContentStore(documents),
+    ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+    ...(options.logContext === undefined ? {} : { logContext: options.logContext }),
     ...(options.elicitationHandler === undefined
       ? {}
       : { elicitationHandler: options.elicitationHandler }),

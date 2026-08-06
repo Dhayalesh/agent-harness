@@ -13,6 +13,7 @@ import {
   parseInvocationPayload,
   resolveInlineAgent,
   startHeadlessServer,
+  StructuredLogSink,
   streamHeadless,
   type InvocationPayloadInput,
 } from '../../src/index.js';
@@ -152,6 +153,57 @@ test('a payload runs a full turn with no database, no S3, and no env vars', asyn
   assert.match(messages[0]?.content ?? '', /You write files when asked\./);
 });
 
+test('structured logs cover the full invocation, model, and tool lifecycle', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-logged', 'write_file', { path: 'logged.txt', content: 'logged' }),
+    textChunk('Logged.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-logged-'));
+  const lines: string[] = [];
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const result = await invokeHeadless(payload(endpoint.baseURL), {
+    invocationId: 'invocation-logged',
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+    logSink: new StructuredLogSink((line) => lines.push(line)),
+  });
+  const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const events = records.map((record) => String(record.event));
+
+  assert.equal(result.sessionId, 'invocation-logged');
+  assert.equal(events[0], 'invocation.started');
+  assert.ok(events.includes('invocation.payload.validated'));
+  assert.ok(events.includes('agent.resolution.started'));
+  assert.ok(events.includes('model.request.started'));
+  assert.ok(events.includes('model.attempt.started'));
+  assert.ok(events.includes('tool.requested'));
+  assert.ok(events.includes('tool.execution.started'));
+  assert.ok(events.includes('tool.execution.completed'));
+  assert.ok(events.includes('invocation.cleanup.completed'));
+  assert.equal(events.at(-1), 'invocation.completed');
+  assert.ok(
+    events.indexOf('invocation.cleanup.completed') < events.indexOf('invocation.completed'),
+  );
+  assert.ok(records.every((record) => record.invocationId === 'invocation-logged'));
+
+  const start = records[0] as {
+    payload: { modelProvider: { apiKey: string }; prompt: string };
+  };
+  assert.match(start.payload.prompt, /^Write hello\.txt with the text/);
+  assert.equal(start.payload.modelProvider.apiKey, '[redacted]');
+  assert.doesNotMatch(lines.join('\n'), /test-key/);
+
+  const completed = records.at(-1) as {
+    result: { usage: { inputTokens: number; outputTokens: number } };
+  };
+  assert.equal(completed.result.usage.inputTokens, 120);
+  assert.equal(completed.result.usage.outputTokens, 30);
+});
+
 test('the event stream is the same protocol the other transports emit', async (t) => {
   const endpoint = await scriptedEndpoint([textChunk('Done.')]);
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-stream-'));
@@ -276,22 +328,37 @@ test('a payload naming a real tool this host did not build is refused too', asyn
 });
 
 test('an unrecognised payload field fails rather than running without it', async () => {
+  const lines: string[] = [];
   await assert.rejects(
     async () =>
-      invokeHeadless({
-        prompt: 'Go.',
-        agent: { name: 'a', system_prompt: 'p' },
-        modelProvider: {
-          name: 'local-fake',
-          provider: 'openai-compatible',
-          model: 'fake-model',
-          baseURL: 'http://127.0.0.1:1/v1',
-          apiKey: 'test-key',
+      invokeHeadless(
+        {
+          prompt: 'Go.',
+          agent: { name: 'a', system_prompt: 'p' },
+          modelProvider: {
+            name: 'local-fake',
+            provider: 'openai-compatible',
+            model: 'fake-model',
+            baseURL: 'http://127.0.0.1:1/v1',
+            apiKey: 'test-key',
+          },
         },
-      }),
+        {
+          invocationId: 'invalid-invocation',
+          logSink: new StructuredLogSink((line) => lines.push(line)),
+        },
+      ),
     (error: unknown) =>
       error instanceof AgentHarnessError && error.code === 'HEADLESS_PAYLOAD_INVALID',
   );
+  const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(
+    records.map((record) => record.event),
+    ['invocation.started', 'invocation.failed'],
+  );
+  assert.equal(records[1]?.phase, 'validation');
+  assert.equal(records[1]?.invocationId, 'invalid-invocation');
+  assert.doesNotMatch(lines.join('\n'), /test-key/);
 });
 
 test('the host permission ceiling overrides a payload that asks for bypass', async (t) => {
@@ -321,12 +388,14 @@ test('the host permission ceiling overrides a payload that asks for bypass', asy
 test('the server accepts a payload on POST /invocations and enforces its key', async (t) => {
   const endpoint = await scriptedEndpoint([textChunk('Served.')]);
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-server-'));
+  const logLines: string[] = [];
   const running = await startHeadlessServer({
     host: '127.0.0.1',
     port: 0,
     serviceKey: 'secret',
     workspaceRoot,
     builtinToolOptions: { powershell: false },
+    logSink: new StructuredLogSink((line) => logLines.push(line)),
   });
   t.after(async () => {
     await running.close();
@@ -345,7 +414,12 @@ test('the server accepts a payload on POST /invocations and enforces its key', a
 
   const authorized = await fetch(`${running.url}/invocations`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-agent-service-key': 'secret' },
+    headers: {
+      'content-type': 'application/json',
+      'x-agent-service-key': 'secret',
+      'x-amzn-bedrock-agentcore-runtime-session-id': 'runtime-session-1',
+      'x-amzn-trace-id': 'Root=trace-1',
+    },
     body,
   });
   assert.equal(authorized.status, 200);
@@ -366,6 +440,24 @@ test('the server accepts a payload on POST /invocations and enforces its key', a
   // Unchanged between probes: a timestamp that advanced every time would read as a
   // status that never settles, and the idle session timeout would never fire.
   assert.equal(again.time_of_last_update, health.time_of_last_update);
+
+  const logs = logLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const invocationStart = logs.find(
+    (entry) =>
+      entry.event === 'invocation.started' && entry.runtimeSessionId === 'runtime-session-1',
+  );
+  assert.ok(invocationStart);
+  assert.equal(invocationStart.traceId, 'Root=trace-1');
+  assert.equal(invocationStart.requestId, invocationStart.invocationId);
+  assert.ok(
+    logs.some(
+      (entry) =>
+        entry.event === 'http.request.completed' &&
+        entry.invocationId === invocationStart.invocationId &&
+        entry.statusCode === 200,
+    ),
+  );
+  assert.doesNotMatch(logLines.join('\n'), /x-agent-service-key:secret/);
 });
 
 test('a malformed payload is a 400 from the server, not a 500', async (t) => {

@@ -1,0 +1,264 @@
+# Agent Console
+
+Agent Console is a React + Express control plane for agents hosted on Amazon Bedrock
+AgentCore Runtime. It manages the existing `trueai_agent_platform` records in MongoDB,
+resolves their referenced model provider, MCP servers, and skills, invokes the deployed
+runtime, and renders saved chats and runs in the browser.
+
+```text
+browser -> Express API -> MongoDB
+                       -> S3 (referenced skill documents)
+                       -> bedrock-agentcore:InvokeAgentRuntime
+```
+
+There is no local invocation transport. Every run uses the global
+`AGENTCORE_RUNTIME_ARN`; the complete resolved agent definition is sent in the payload.
+The runtime image is in [agent-harness-clone](../agent-harness-clone).
+
+## Data model
+
+The console reads and writes the historical platform collections in place:
+
+- `agents` stores the agent definition and string ObjectId references:
+  `modelProviderId`, ordered `mcpServerIds`, and ordered `skills[].skillId` entries.
+- `model_providers` stores model configuration and its API credential.
+- `mcp_servers` stores stdio or HTTP MCP configuration and its credentials,
+  environment, and headers.
+- `skills` stores skill metadata and an S3 URI for the full skill document.
+
+It adds two console collections in the same database:
+
+- `chats` stores conversation messages and a stable AgentCore runtime session ID.
+- `runs` stores invocation status, output, usage, tool counts, timing, and AgentCore
+  metadata. A chat-originated run also has a `chatId`.
+
+The intended database is `trueai_agent_platform`. A pathless MongoDB URI falls back to
+that database rather than MongoDB's implicit `test` database. `MONGODB_DB_NAME` overrides
+the database in the URI. The server does not copy records into a dedicated console
+schema and does not reject the historical reference layout.
+
+### Invocation resolution
+
+For each invocation the API:
+
+1. Loads the enabled agent and dereferences its model provider, MCP servers, and skills.
+2. Validates that referenced resources are present, enabled, and compatible with the
+   deployed harness.
+3. Downloads every referenced skill document from S3, preserving stored skill and MCP
+   order, and inlines the documents in the harness payload.
+4. Creates a `running` run row and makes one `InvokeAgentRuntime` call.
+5. Saves the returned result or the translated invocation error.
+
+Skill URIs may use `s3://...` or an uncredentialed AWS S3 HTTPS object URL. Set
+`PLATFORM_CONTENT_S3_REGION` when an invoked agent references a skill. S3 uses the
+standard AWS credential chain and each document is limited to 2,000,000 bytes and
+characters.
+
+Model credentials come only from the referenced `model_providers` record. Agents do not
+carry inline API keys and there is no environment-key fallback. The deployed harness
+currently accepts the `openrouter` and `openai-compatible` provider adapters with bearer
+authentication.
+
+## Run it
+
+Requirements:
+
+- Node.js 22 or newer.
+- Access to the `trueai_agent_platform` MongoDB database.
+- A deployed AgentCore runtime and AWS credentials allowed to call
+  `bedrock-agentcore:InvokeAgentRuntime` on it.
+- `s3:GetObject` access to referenced skill objects when skills are used.
+
+Copy `server/.env.example` to `server/.env`, then run:
+
+```bash
+cd agent-console
+npm run install:all
+npm run dev
+```
+
+Development runs the API on `http://127.0.0.1:4000` and Vite on
+`http://localhost:5173`; Vite proxies API requests to Express.
+
+For a single-process production build:
+
+```bash
+npm run build
+npm start
+```
+
+Express then serves `client/dist` and `/api` from `http://127.0.0.1:4000` by default.
+Run `npm test` for the server test suite. `npm run seed` is optional and writes example
+records into the configured database, so check the resolved database before using it.
+
+To build the supplied runtime image for AgentCore's architecture:
+
+```bash
+cd ../agent-harness-clone
+docker buildx build --platform linux/arm64 -t agent-harness:latest .
+```
+
+Push the image to ECR and deploy it through AgentCore, then configure its runtime ARN in
+the console. Leave `AGENT_SERVICE_KEY` unset in that deployment: AgentCore authenticates
+the SDK invocation and does not forward that custom local-service header.
+
+## Configuration
+
+| Variable | Purpose |
+| --- | --- |
+| `HOST` | API bind address; defaults to `127.0.0.1`. |
+| `PORT` | Express port; defaults to `4000`. |
+| `CORS_ORIGIN` | Comma-separated browser origins; defaults to the Vite origin. |
+| `MONGODB_URI` | MongoDB or Atlas connection URI. Prefer an explicit `trueai_agent_platform` path. |
+| `MONGODB_DB_NAME` | Optional database override; a pathless URI otherwise uses `trueai_agent_platform`. |
+| `PLATFORM_CREATED_BY` | Provenance stamped on records created by this console. |
+| `PLATFORM_CONTENT_S3_REGION` | Region used to fetch referenced skill documents; needed only for agents with skills. |
+| `AGENTCORE_RUNTIME_ARN` | Required global AgentCore runtime ARN used for every invocation. |
+| `AGENTCORE_QUALIFIER` | Optional runtime endpoint qualifier; unset uses `DEFAULT`. |
+| `AWS_REGION` | Deliberate region override; otherwise the runtime ARN supplies its region. |
+| `AWS_PROFILE` | Optional shared-configuration profile for the standard AWS credential chain. |
+| `AGENTCORE_TIMEOUT_MS` | SDK request timeout; defaults to 900,000 ms. |
+| `AGENT_RUNTIME_TOOLS` | Comma-separated tool catalogue actually deployed in the runtime image. |
+
+An ambient environment variable wins over the value in `server/.env` because Node's
+`--env-file-if-exists` does not replace an existing value. Startup prints the resolved,
+redacted MongoDB target and database so this is visible before any write.
+
+`/api/health` reports the MongoDB connection, resolved database, AgentCore configuration
+and AWS credential readiness, and whether the optional skill-content region is set.
+
+## API
+
+All success responses are JSON. Invalid request bodies return a structured `400`; a
+referenced resource that cannot be deleted returns `409`.
+
+### Discovery and dashboard
+
+| Method | Path | Response |
+| --- | --- | --- |
+| `GET` | `/api/health` | Database, AgentCore, credential, and skill-content readiness. |
+| `GET` | `/api/catalogue` | `{ tools, modelProviders, mcpServers, skills }`; resources are enabled and secrets are safe. |
+| `GET` | `/api/dashboard` | `{ dashboard: { counts, recentRuns, recentChats } }`; large run output and chat messages are omitted. |
+| `GET` | `/api/agents/meta/tools` | Runtime tool catalogue and supported model provider names. |
+
+Dashboard counts include `agents`, `modelProviders`, `mcpServers`, `skills`, and `chats`.
+
+### Agents and runs
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET`, `POST` | `/api/agents` | List or create agents. List supports `q` and `enabled`. |
+| `GET`, `PATCH`, `DELETE` | `/api/agents/:id` | Read, update, or delete an agent. Detail includes resolved references plus run/chat counts. |
+| `POST` | `/api/agents/:id/preview` | Build the target and recursively redacted payload without invoking. |
+| `POST` | `/api/agents/:id/invoke` | Invoke and return `{ run, events }`. |
+| `GET` | `/api/runs` | List runs; supports `agentId`, `chatId`, `status`, `runtimeSessionId`, `limit`, and `sort=oldest`. List omits output and truncates prompt previews to 240 characters. |
+| `GET`, `DELETE` | `/api/runs/:id` | Read a full run or delete its history row. |
+
+Preview and invoke accept `{ prompt, runtimeSessionId?, permissionMode?, includeEvents? }`.
+Agent deletion preserves existing chats and runs by default, matching their role as
+history snapshots. `withRuns=true` also removes its runs; `withHistory=true` removes
+both chats and runs before deleting the agent.
+
+### Model providers, MCP servers, and skills
+
+Each resource exposes list/create at its collection route and read/update/delete at
+`/:id`:
+
+| Resource | Collection route | List response | Detail response |
+| --- | --- | --- | --- |
+| Model providers | `/api/model-providers` | `{ modelProviders, total }` | `{ modelProvider, referencedByCount }` |
+| MCP servers | `/api/mcp-servers` | `{ mcpServers, total }` | `{ mcpServer, referencedByCount }` |
+| Skills | `/api/skills` | `{ skills, total }` | `{ skill, referencedByCount }` |
+
+Lists accept `q` and `enabled`. A model provider, MCP server, or skill cannot be deleted
+while an agent references it.
+
+Secret values are never returned by these APIs:
+
+- Model-provider responses omit `apiKey` and header values and instead return
+  `hasApiKey`, `hasHeaders`, and `headerNames`.
+- MCP responses omit `apiKey`, environment values, and header values and instead return
+  `hasApiKey`, `hasEnv`, `envKeys`, `hasHeaders`, and `headerNames`.
+- Agent payload previews recursively redact credentials and secret maps.
+
+Provider and HTTP MCP endpoints must use HTTP(S) and cannot contain URL userinfo, query
+parameters, or fragments; credentials belong in the explicit auth/header fields. If a
+legacy record already contains those unsafe URL components, list/detail responses strip
+them and set `baseURLRedacted` or `urlRedacted` until the record is corrected.
+
+PATCH requests deliberately distinguish "unchanged" from "clear":
+
+- Omit a field to leave it unchanged.
+- For `apiKey`, `""` preserves the stored value and `null` requests a clear. The merged
+  record must still be valid, so a bearer-authenticated provider or HTTP MCP server
+  cannot be left without the required key.
+- For `env` and `headers`, an object replaces the map. An empty value for an existing
+  key preserves that key's stored value; omitted keys are removed. `{}` or `null` clears
+  the map, while `""` preserves the entire map.
+- `baseURL` may be cleared with `""` or `null` where the provider remains valid.
+- Transport-specific fields such as MCP `command`, `args`, `url`, and `wire` may be sent
+  as `null` when switching modes so stale values are removed.
+
+### Chats
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET`, `POST` | `/api/chats` | List chats or create one with `{ agentId, title? }`. List supports `agentId` and `limit`. |
+| `GET`, `PATCH`, `DELETE` | `/api/chats/:id` | Read messages, rename with `{ title }`, or delete. `withRuns=true` also deletes linked runs. |
+| `POST` | `/api/chats/:id/messages` | Send `{ content, permissionMode?, includeEvents? }`; returns `{ chat, run, events }`. |
+
+AgentCore affinity is not treated as transcript storage. Each chat keeps one runtime
+session ID, but every message also sends a bounded replay prompt assembled from persisted
+user and assistant messages. The first turn is sent unchanged. Later turns include the
+most recent complete prior messages that fit within 2,000,000 characters, exclude error
+messages, and finish with the new user message. This preserves useful conversation
+context even when the runtime starts with no transcript.
+
+## AgentCore behavior
+
+One runtime deployment serves every stored agent. `AGENTCORE_RUNTIME_ARN` is global;
+there is no per-agent runtime ARN. The region is derived from that ARN unless an AWS
+region override is explicitly configured.
+
+Each user invocation produces one AWS SDK request with `maxAttempts: 1`. There is no
+automatic retry because repeating an agent turn can duplicate side effects and spend
+tokens twice. A caller may choose to retry after reviewing the recorded failure.
+
+A run row is created before AgentCore is called. A result returned by the harness, including a
+turn-level `status: "error"`, is persisted as a completed runtime result. An AWS transport,
+authorization, throttling, timeout, or service failure is translated to an API error and
+recorded on the run.
+
+The non-streaming timeout defaults to AgentCore's 15-minute cap. Streaming is not
+implemented by this console.
+
+## Troubleshooting
+
+- **Unexpected database:** check the first startup line and your ambient
+  `MONGODB_URI`/`MONGODB_DB_NAME`; shell variables override `server/.env`.
+- **Runtime not found:** confirm the ARN and qualifier, then check that the SDK region is
+  the ARN's region. A deliberate `AWS_REGION` override can point at the wrong region.
+- **Skill cannot load:** set `PLATFORM_CONTENT_S3_REGION`, verify the URI names an AWS S3
+  object, and grant the console's AWS identity `s3:GetObject`.
+- **A Node launcher receives an HTTP URL as its entry/package:** this occurs when a
+  stdio MCP record puts an endpoint URL where `node` expects a local module or where
+  `npx`, `npm`, `yarn`, or `pnpm` expects a package/command. Configure an endpoint as
+  `transport: "http"` with `url`, or pass the real package and every launcher option as
+  separate arguments. A URL may still be a normal application argument after a valid
+  package entry.
+
+## Security
+
+The API has no authentication or multi-tenancy. It binds to loopback by default. CORS is
+not access control; before exposing the service, put authenticated authorization and TLS
+in front of it. Anyone who reaches the API can modify shared platform definitions and
+invoke tools in AgentCore with the runtime deployment's IAM identity.
+
+Model and MCP secrets are hidden from list, detail, catalogue, and preview responses, but
+they are stored in plaintext in MongoDB and are loaded into invocation payloads. Use
+encryption at rest or a secrets manager before storing production credentials. Prompts,
+outputs, and chat messages are also persisted and may contain sensitive data.
+
+Grant the console only the MongoDB, `bedrock-agentcore:InvokeAgentRuntime`, and optional
+S3 permissions it needs. Restrict the runtime role separately according to the enabled
+tools and MCP integrations.

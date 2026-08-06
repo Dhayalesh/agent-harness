@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { McpConnection } from '../../src/index.js';
+import { McpConnection, type HarnessLogEntry } from '../../src/index.js';
 
 test('discovers and calls MCP tools and resources over stdio', async () => {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const fixture = path.resolve(here, '../fixtures/mcp-server.mjs');
   let elicited = false;
+  const activities: HarnessLogEntry[] = [];
   const connection = await McpConnection.connectStdio(
     'fixture',
     {
@@ -16,6 +17,8 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
       stderr: 'pipe',
     },
     {
+      logSink: { log: (entry) => activities.push(structuredClone(entry)) },
+      logContext: { invocationId: 'invocation-1' },
       elicitationHandler(request) {
         elicited = true;
         assert.equal(request.message, 'Confirm fixture');
@@ -75,4 +78,20 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
   } finally {
     await connection.close();
   }
+
+  const events = activities.map((entry) => entry.event);
+  assert.equal(events[0], 'mcp.connection.started');
+  assert.ok(events.includes('mcp.connection.completed'));
+  assert.ok(events.includes('mcp.elicitation.started'));
+  assert.ok(events.includes('mcp.elicitation.completed'));
+  assert.equal(events.at(-1), 'mcp.connection.close.completed');
+  const call = activities.find(
+    (entry) => entry.event === 'mcp.request.completed' && entry.operation === 'tools/call',
+  );
+  assert.ok(call);
+  assert.equal(call.invocationId, 'invocation-1');
+  assert.equal(call.remoteTool, 'echo');
+  assert.equal(call.toolCallId, 'call');
+  assert.equal(call.remoteError, false);
+  assert.ok(Number(call.durationMs) >= 0);
 });

@@ -14,7 +14,12 @@ import type { ModelUsage, StopReason } from '../models/provider.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
 import type { ResolvedAgent } from '../platform/agent-registry.js';
 import { LocalRuntimeHost, scrubbedEnvironment } from '../runtime/local-runtime-host.js';
-import type { EventSink } from '../services/observability.js';
+import {
+  emitLog,
+  type EventSink,
+  type LogContext,
+  type LogSink,
+} from '../services/observability.js';
 import type { SessionStore } from '../sessions/session-store.js';
 import { createBuiltinTools, type BuiltinToolOptions } from '../tools/builtin/index.js';
 import { createWebTools, type WebToolsOptions } from '../tools/web/index.js';
@@ -75,6 +80,15 @@ export type HeadlessRunOptions = {
   sessionStore?: SessionStore;
   artifactStore?: ArtifactStore;
   eventSink?: EventSink;
+  /**
+   * Structured JSON-ready lifecycle records. The process entrypoint wires this to
+   * stdout, which AgentCore forwards to CloudWatch.
+   */
+  logSink?: LogSink;
+  /** Host correlation fields, such as request and AgentCore runtime session ids. */
+  logContext?: LogContext;
+  /** Correlation id supplied by a transport; generated when omitted. */
+  invocationId?: string;
   elicitationHandler?: McpElicitationHandler;
   /**
    * Caps `payload.permissionMode`. Set it to `plan` to refuse every state-changing
@@ -125,12 +139,35 @@ export async function invokeHeadless(
   options: HeadlessRunOptions = {},
 ): Promise<HeadlessResult> {
   const started = Date.now();
-  const parsed = parsePayload(payload);
-  const prepared = await prepare(parsed, options);
-  const collected: AgentEvent[] = [];
-  const totals = new RunTotals();
-
+  const invocationId = options.invocationId ?? randomUUID();
+  const baseContext: LogContext = {
+    ...(options.logContext ?? {}),
+    invocationId,
+    invocationMode: 'buffered',
+  };
+  let phase = 'validation';
+  let prepared: PreparedRun | undefined;
+  log(options, baseContext, {
+    event: 'invocation.started',
+    payload,
+  });
   try {
+    const parsed = parsePayload(payload);
+    const sessionId = parsed.sessionId ?? invocationId;
+    const context = { ...baseContext, sessionId };
+    log(options, context, {
+      event: 'invocation.payload.validated',
+      agentName: parsed.agent.name,
+      modelProvider: parsed.modelProvider.name,
+      mcpServers: parsed.mcpServers.map((server) => server.name),
+      skills: parsed.skills.map((skill) => skill.name),
+    });
+
+    phase = 'preparation';
+    prepared = await prepare(parsed, options, sessionId, context);
+    phase = 'execution';
+    const collected: AgentEvent[] = [];
+    const totals = new RunTotals();
     for await (const event of prepared.session.run({
       prompt: parsed.prompt,
       ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
@@ -138,12 +175,52 @@ export async function invokeHeadless(
       totals.observe(event);
       if (parsed.includeEvents) collected.push(event);
     }
-    return {
+    const result = {
       ...totals.result(prepared, Date.now() - started),
       ...(parsed.includeEvents ? { events: collected } : {}),
     };
-  } finally {
-    await prepared.close();
+    phase = 'cleanup';
+    const closing = prepared;
+    prepared = undefined;
+    await closePrepared(closing, options, context);
+    log(options, context, {
+      ...(result.status === 'error' ? { level: 'error' as const } : {}),
+      event: 'invocation.completed',
+      status: result.status,
+      durationMs: Date.now() - started,
+      result,
+    });
+    return result;
+  } catch (error) {
+    if (prepared) {
+      phase = 'cleanup';
+      const closing = prepared;
+      prepared = undefined;
+      try {
+        await closePrepared(closing, options, {
+          ...baseContext,
+          sessionId: closing.sessionId,
+        });
+      } catch (cleanupError) {
+        log(options, baseContext, {
+          level: 'error',
+          event: 'invocation.failed',
+          phase,
+          durationMs: Date.now() - started,
+          error: describeError(cleanupError),
+          causedBy: describeError(error),
+        });
+        throw cleanupError;
+      }
+    }
+    log(options, baseContext, {
+      level: 'error',
+      event: 'invocation.failed',
+      phase,
+      durationMs: Date.now() - started,
+      error: describeError(error),
+    });
+    throw error;
   }
 }
 
@@ -159,15 +236,90 @@ export async function* streamHeadless(
   payload: unknown,
   options: HeadlessRunOptions = {},
 ): AsyncGenerator<AgentEvent> {
-  const parsed = parsePayload(payload);
-  const prepared = await prepare(parsed, options);
+  const started = Date.now();
+  const invocationId = options.invocationId ?? randomUUID();
+  const baseContext: LogContext = {
+    ...(options.logContext ?? {}),
+    invocationId,
+    invocationMode: 'stream',
+  };
+  let context = baseContext;
+  let phase = 'validation';
+  let prepared: PreparedRun | undefined;
+  let completed = false;
+  let failed = false;
+  let runError = false;
+  let terminalEvent: AgentEvent | undefined;
+  log(options, baseContext, {
+    event: 'invocation.started',
+    payload,
+  });
   try {
-    yield* prepared.session.run({
+    const parsed = parsePayload(payload);
+    const sessionId = parsed.sessionId ?? invocationId;
+    context = { ...baseContext, sessionId };
+    log(options, context, {
+      event: 'invocation.payload.validated',
+      agentName: parsed.agent.name,
+      modelProvider: parsed.modelProvider.name,
+      mcpServers: parsed.mcpServers.map((server) => server.name),
+      skills: parsed.skills.map((skill) => skill.name),
+    });
+    phase = 'preparation';
+    prepared = await prepare(parsed, options, sessionId, context);
+    phase = 'execution';
+    for await (const event of prepared.session.run({
       prompt: parsed.prompt,
       ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
+    })) {
+      terminalEvent = event;
+      if (event.type === 'error') runError = true;
+      yield event;
+    }
+    completed = true;
+  } catch (error) {
+    failed = true;
+    log(options, context, {
+      level: 'error',
+      event: 'invocation.failed',
+      phase,
+      durationMs: Date.now() - started,
+      error: describeError(error),
     });
+    throw error;
   } finally {
-    await prepared.close();
+    if (prepared) {
+      phase = 'cleanup';
+      try {
+        await closePrepared(prepared, options, context);
+      } catch (error) {
+        log(options, context, {
+          level: 'error',
+          event: 'invocation.failed',
+          phase,
+          durationMs: Date.now() - started,
+          error: describeError(error),
+        });
+        throw error;
+      }
+    }
+    if (completed) {
+      log(options, context, {
+        ...(runError ? { level: 'error' as const } : {}),
+        event: 'invocation.completed',
+        status: runError ? 'error' : 'success',
+        terminalEvent,
+        durationMs: Date.now() - started,
+      });
+    } else if (!failed) {
+      log(options, context, {
+        level: 'warn',
+        event: 'invocation.cancelled',
+        phase,
+        terminalEvent,
+        durationMs: Date.now() - started,
+      });
+    }
   }
 }
 
@@ -211,19 +363,90 @@ type PreparedRun = {
 async function prepare(
   payload: InvocationPayload,
   options: HeadlessRunOptions,
+  sessionId: string,
+  logContext: LogContext,
 ): Promise<PreparedRun> {
-  const sessionId = payload.sessionId ?? randomUUID();
+  const started = Date.now();
+  log(options, logContext, {
+    event: 'invocation.preparation.started',
+    sessionId,
+  });
   const workingDirectory = await runWorkspace(payload, options, sessionId);
+  log(options, logContext, {
+    event: 'invocation.workspace.ready',
+    sessionId,
+    workingDirectory,
+  });
   const shellEnvironment = options.shellEnvironment ?? scrubbedEnvironment();
   const runtime = new LocalRuntimeHost(workingDirectory, { env: shellEnvironment });
   const localTools = headlessToolCatalogue(runtime, options);
 
-  const agent = await resolveInlineAgent(payload, {
-    localTools,
-    ...(options.elicitationHandler === undefined
-      ? {}
-      : { elicitationHandler: options.elicitationHandler }),
-    ...(options.logger === undefined ? {} : { logger: options.logger }),
+  log(options, logContext, {
+    event: 'agent.resolution.started',
+    sessionId,
+    agentName: payload.agent.name,
+    modelProvider: {
+      name: payload.modelProvider.name,
+      provider: payload.modelProvider.provider,
+      model: payload.modelProvider.model,
+      baseURL: payload.modelProvider.baseURL,
+    },
+    localTools: localTools.map((tool) => tool.name),
+    mcpServers: payload.mcpServers.map((server) => ({
+      name: server.name,
+      transport: server.transport,
+      command: server.command,
+      args: server.args,
+      url: server.url,
+    })),
+  });
+  const registryLogger =
+    options.logger === undefined && options.logSink === undefined
+      ? undefined
+      : (message: string): void => {
+          if (options.logger) {
+            options.logger(message);
+          } else {
+            log(options, logContext, {
+              level: 'warn',
+              event: 'runtime.warning',
+              sessionId,
+              message,
+            });
+          }
+        };
+  let agent: ResolvedAgent;
+  try {
+    agent = await resolveInlineAgent(payload, {
+      localTools,
+      ...(options.elicitationHandler === undefined
+        ? {}
+        : { elicitationHandler: options.elicitationHandler }),
+      ...(registryLogger === undefined ? {} : { logger: registryLogger }),
+      ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+      logContext,
+    });
+  } catch (error) {
+    log(options, logContext, {
+      level: 'error',
+      event: 'agent.resolution.failed',
+      sessionId,
+      agentName: payload.agent.name,
+      durationMs: Date.now() - started,
+      error: describeError(error),
+    });
+    throw error;
+  }
+  log(options, logContext, {
+    event: 'agent.resolution.completed',
+    sessionId,
+    agentName: agent.record.name,
+    provider: agent.provider.name,
+    model: agent.model ?? agent.modelProvider.model,
+    tools: agent.tools.map((tool) => tool.name),
+    skills: agent.skillRecords.map((skill) => skill.name),
+    mcpServers: agent.mcpRecords.map((server) => server.name),
+    durationMs: Date.now() - started,
   });
 
   try {
@@ -247,6 +470,8 @@ async function prepare(
       ...(stored === undefined ? {} : { initialMessages: stored.messages }),
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
       ...(options.eventSink === undefined ? {} : { eventSink: options.eventSink }),
+      ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+      logContext,
       projectContextProvider: new LocalProjectContextProvider(runtime),
       metadata: { ...payload.metadata, agentName: agent.record.name },
     });
@@ -262,9 +487,71 @@ async function prepare(
       },
     };
   } catch (error) {
+    log(options, logContext, {
+      level: 'error',
+      event: 'invocation.preparation.failed',
+      sessionId,
+      durationMs: Date.now() - started,
+      error: describeError(error),
+    });
     await agent.close();
     throw error;
   }
+}
+
+async function closePrepared(
+  prepared: PreparedRun,
+  options: HeadlessRunOptions,
+  context: LogContext,
+): Promise<void> {
+  const started = Date.now();
+  log(options, context, {
+    event: 'invocation.cleanup.started',
+    sessionId: prepared.sessionId,
+  });
+  try {
+    await prepared.close();
+    log(options, context, {
+      event: 'invocation.cleanup.completed',
+      sessionId: prepared.sessionId,
+      durationMs: Date.now() - started,
+    });
+  } catch (error) {
+    log(options, context, {
+      level: 'error',
+      event: 'invocation.cleanup.failed',
+      sessionId: prepared.sessionId,
+      durationMs: Date.now() - started,
+      error: describeError(error),
+    });
+    throw error;
+  }
+}
+
+function log(
+  options: HeadlessRunOptions,
+  context: LogContext,
+  entry: Parameters<LogSink['log']>[0],
+): void {
+  emitLog(options.logSink, { ...context, ...entry });
+}
+
+function describeError(error: unknown): {
+  name: string;
+  message: string;
+  code?: string;
+  recoverable?: boolean;
+  stack?: string;
+} {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  return {
+    name: error.name,
+    message: error.message,
+    ...(error instanceof AgentHarnessError
+      ? { code: error.code, recoverable: error.recoverable }
+      : {}),
+    ...(error.stack === undefined ? {} : { stack: error.stack }),
+  };
 }
 
 /**

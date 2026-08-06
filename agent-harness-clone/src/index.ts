@@ -223,11 +223,27 @@ export { FileArtifactStore, InMemoryArtifactStore } from './artifacts/artifact-s
 export type { Artifact, ArtifactStore } from './artifacts/artifact-store.js';
 export {
   CompositeEventSink,
+  DEFAULT_MAX_LOG_LINE_BYTES,
+  emitLog,
+  JsonLogSink,
   MetricsSink,
   NotificationSink,
+  parseLogLevel,
+  redactCredentials,
+  safeSerialize,
   StructuredLogSink,
 } from './services/observability.js';
-export type { EventSink, HarnessMetrics } from './services/observability.js';
+export type {
+  EventSink,
+  HarnessLogEntry,
+  HarnessLogLevel,
+  HarnessMetrics,
+  JsonLogSinkOptions,
+  LogContext,
+  LogLevel,
+  LogSink,
+  StructuredLogSinkOptions,
+} from './services/observability.js';
 export { BudgetTracker, SessionRateLimiter } from './services/limits.js';
 export type { BudgetLimits, RateLimitOptions } from './services/limits.js';
 export { formatProjectContext, LocalProjectContextProvider } from './context/project-context.js';
@@ -383,5 +399,11 @@ export {
   streamHeadless,
 } from './headless/invoke.js';
 export type { HeadlessResult, HeadlessRunOptions, HeadlessToolSummary } from './headless/invoke.js';
-export { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './headless/server.js';
+export {
+  AGENTCORE_RUNTIME_SESSION_HEADER,
+  AWS_TRACE_HEADER,
+  HEADLESS_HOST,
+  HEADLESS_PORT,
+  startHeadlessServer,
+} from './headless/server.js';
 export type { HeadlessServerOptions, RunningHeadlessServer } from './headless/server.js';

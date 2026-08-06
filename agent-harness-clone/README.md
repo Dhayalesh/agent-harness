@@ -143,6 +143,37 @@ The container needs no environment beyond what it ships with. Set
 `AGENT_PERMISSION_CEILING` and `AGENT_SERVICE_KEY` for a deployment more than one
 caller reaches.
 
+### CloudWatch and end-to-end logs
+
+The server writes structured JSON lines to stdout. AgentCore collects that container
+stream, so the same records appear in the runtime's CloudWatch log stream without an
+AWS SDK logger or CloudWatch credentials in this application.
+
+Logging is enabled by default and covers the full path: server startup and shutdown,
+HTTP request acceptance or rejection, the invocation payload, validation, workspace
+and agent preparation, model requests and responses (including retries and token
+usage), MCP connection and request/response traffic, tool inputs and results, session
+events, cleanup, and the final result or failure. Every invocation record carries an
+`invocationId`; HTTP runs also carry a `requestId`, the AgentCore `runtimeSessionId`,
+and the AWS `traceId` when those headers are present. Session, turn, and tool-call ids
+are added as soon as they exist.
+
+For example, use the invocation id from `http.request.started` to reconstruct a run in
+CloudWatch Logs Insights:
+
+```text
+fields @timestamp, event, invocationId, sessionId, turnId, toolCallId, durationMs
+| filter invocationId = <invocation-id>
+| sort @timestamp asc
+```
+
+Payloads, MCP headers, tool arguments, and model output can contain secrets. Before a
+record is written, credential-shaped keys and token patterns are replaced with
+`[redacted]`; normal token-usage counters remain visible. Records larger than one
+CloudWatch-safe line are emitted as ordered `log.chunk` records with `chunkId`,
+`chunkIndex`, and `chunkCount`, so no invocation payload or tool result silently
+disappears.
+
 Each invocation gets its own workspace directory named for the session, so concurrent
 payloads cannot read each other's files. Directories are not deleted: a run's output is
 often the files it wrote, and the path comes back on the result so the caller can

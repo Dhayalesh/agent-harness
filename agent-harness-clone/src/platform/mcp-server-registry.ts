@@ -4,6 +4,7 @@ import type { StreamableHTTPClientTransportOptions } from '@modelcontextprotocol
 import { AgentHarnessError } from '../core/errors.js';
 import type { McpConnectionOptions, McpElicitationHandler } from '../mcp/client.js';
 import { McpConnection } from '../mcp/client.js';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { McpServerRecord } from './mcp-server-definitions.js';
 import { assertMcpRuntimeSupport } from './mcp-server-support.js';
 
@@ -17,6 +18,8 @@ export interface McpServerLookup {
 export type PlatformMcpServerRegistryOptions = {
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
+  logSink?: LogSink;
+  logContext?: LogContext;
   /**
    * Answers a server's `elicitation/create`. Records that ask for elicitation
    * without one resolve anyway, with the capability left unadvertised: a server
@@ -110,11 +113,18 @@ export class PlatformMcpServerRegistry {
   private connectionOptions(record: McpServerRecord): McpConnectionOptions {
     const handler = this.options.elicitationHandler;
     if (record.capabilities.elicitation && handler === undefined) {
-      this.logger(
+      const message =
         `[mcp-server-registry] stored capability 'elicitation' for '${record.name}' is not in ` +
-          'effect: no elicitationHandler was supplied, so the capability stays unadvertised ' +
-          'and the server cannot prompt (src/mcp/client.ts).',
-      );
+        'effect: no elicitationHandler was supplied, so the capability stays unadvertised ' +
+        'and the server cannot prompt (src/mcp/client.ts).';
+      this.logger(message);
+      emitLog(this.options.logSink, {
+        ...(this.options.logContext ?? {}),
+        level: 'warn',
+        event: 'mcp.configuration.warning',
+        serverName: record.name,
+        message,
+      });
     }
     return {
       ...(record.capabilities.elicitation && handler !== undefined
@@ -122,6 +132,8 @@ export class PlatformMcpServerRegistry {
         : {}),
       connectTimeoutMs: record.capabilities.connectTimeoutMs,
       requestTimeoutMs: record.capabilities.requestTimeoutMs,
+      ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),
+      ...(this.options.logContext === undefined ? {} : { logContext: this.options.logContext }),
     };
   }
 }

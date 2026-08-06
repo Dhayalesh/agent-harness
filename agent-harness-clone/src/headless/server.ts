@@ -1,6 +1,8 @@
+import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { AgentHarnessError } from '../core/errors.js';
 import type { AgentEvent } from '../core/events.js';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import { invokeHeadless, streamHeadless, type HeadlessRunOptions } from './invoke.js';
 
 /**
@@ -21,6 +23,8 @@ import { invokeHeadless, streamHeadless, type HeadlessRunOptions } from './invok
 /** Matches `AGENTCORE_PORT` / `AGENTCORE_HOST`, so the same container contract applies. */
 export const HEADLESS_PORT = 8080;
 export const HEADLESS_HOST = '0.0.0.0';
+export const AGENTCORE_RUNTIME_SESSION_HEADER = 'x-amzn-bedrock-agentcore-runtime-session-id';
+export const AWS_TRACE_HEADER = 'x-amzn-trace-id';
 
 export type HeadlessServerOptions = HeadlessRunOptions & {
   host?: string;
@@ -62,6 +66,7 @@ export async function startHeadlessServer(
     serviceKey,
     maxBodyBytes: _maxBodyBytes,
     maxConcurrentRuns: _maxConcurrentRuns,
+    invocationId: _invocationId,
     ...runOptions
   } = options;
   let activeRuns = 0;
@@ -97,7 +102,15 @@ export async function startHeadlessServer(
 
   const server = createServer((request, response) => {
     void handle(request, response).catch((error: unknown) => {
-      process.stderr.write(`headless: unhandled request failure: ${describe(error)}\n`);
+      emitLog(runOptions.logSink, {
+        ...(runOptions.logContext ?? {}),
+        level: 'error',
+        event: 'http.request.unhandled',
+        error: errorDetails(error),
+      });
+      if (runOptions.logSink === undefined) {
+        process.stderr.write(`headless: unhandled request failure: ${describe(error)}\n`);
+      }
       if (!response.headersSent) sendJson(response, 500, { error: describe(error) });
       response.end();
     });
@@ -105,20 +118,70 @@ export async function startHeadlessServer(
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://localhost');
+    const requestStarted = Date.now();
+    const requestId = randomUUID();
+    const runtimeSessionId = header(request, AGENTCORE_RUNTIME_SESSION_HEADER);
+    const traceId = header(request, AWS_TRACE_HEADER);
+    const context: LogContext = {
+      ...(runOptions.logContext ?? {}),
+      requestId,
+      invocationId: requestId,
+      ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
+      ...(traceId === undefined ? {} : { traceId }),
+    };
+    emitLog(runOptions.logSink, {
+      ...context,
+      event: 'http.request.started',
+      method: request.method,
+      path: url.pathname,
+      query: safeSearchParameters(url),
+      headers: safeRequestHeaders(request),
+      remoteAddress: request.socket.remoteAddress,
+      activeRuns,
+    });
+    let responseFinished = false;
+    response.once('finish', () => {
+      responseFinished = true;
+      emitLog(runOptions.logSink, {
+        ...context,
+        event: 'http.request.completed',
+        method: request.method,
+        path: url.pathname,
+        statusCode: response.statusCode,
+        durationMs: Date.now() - requestStarted,
+        activeRuns,
+      });
+    });
+    response.once('close', () => {
+      if (responseFinished) return;
+      emitLog(runOptions.logSink, {
+        ...context,
+        level: 'warn',
+        event: 'http.request.disconnected',
+        method: request.method,
+        path: url.pathname,
+        statusCode: response.statusCode,
+        durationMs: Date.now() - requestStarted,
+        activeRuns,
+      });
+    });
 
     if (request.method === 'GET' && url.pathname === '/ping') {
       writePing(response);
       return;
     }
     if (request.method !== 'POST' || url.pathname !== '/invocations') {
+      rejected(runOptions.logSink, context, 404, 'Not found');
       sendJson(response, 404, { error: 'Not found' });
       return;
     }
     if (serviceKey !== undefined && header(request, 'x-agent-service-key') !== serviceKey) {
+      rejected(runOptions.logSink, context, 401, 'Invalid agent service key');
       sendJson(response, 401, { error: 'Invalid agent service key' });
       return;
     }
     if (activeRuns >= maxConcurrentRuns) {
+      rejected(runOptions.logSink, context, 429, 'Invocation capacity reached');
       sendJson(response, 429, {
         error: `At capacity: ${activeRuns} runs in flight of ${maxConcurrentRuns} allowed`,
       });
@@ -129,6 +192,7 @@ export async function startHeadlessServer(
     try {
       payload = await readJson(request, maxBodyBytes);
     } catch (error) {
+      rejected(runOptions.logSink, context, 400, describe(error));
       sendJson(response, 400, { error: describe(error) });
       return;
     }
@@ -142,16 +206,30 @@ export async function startHeadlessServer(
 
     activeRuns += 1;
     setBusy(true);
+    const invocationOptions: HeadlessRunOptions = {
+      ...runOptions,
+      invocationId: requestId,
+      logContext: context,
+    };
     try {
       if (streaming) {
-        await writeEventStream(response, () => streamHeadless(payload, runOptions));
+        await writeEventStream(response, () => streamHeadless(payload, invocationOptions));
         return;
       }
       // A failure inside the turn comes back as `status: 'error'` on a 200, because
       // the result still carries the partial output and the tokens it spent. Only a
       // payload this runner could not act on is a 4xx.
-      sendJson(response, 200, await invokeHeadless(payload, runOptions));
+      sendJson(response, 200, await invokeHeadless(payload, invocationOptions));
     } catch (error) {
+      emitLog(runOptions.logSink, {
+        ...context,
+        level: 'error',
+        event: 'http.invocation.failed',
+        streaming,
+        statusCode: statusForError(error),
+        durationMs: Date.now() - requestStarted,
+        error: errorDetails(error),
+      });
       if (!response.headersSent) {
         sendJson(response, statusForError(error), { error: describe(error) });
       }
@@ -170,21 +248,48 @@ export async function startHeadlessServer(
   if (!address || typeof address === 'string') {
     throw new AgentHarnessError('Headless server did not bind', 'SERVER_NOT_BOUND');
   }
+  const serverUrl = `http://${options.host ?? HEADLESS_HOST}:${address.port}`;
+  emitLog(runOptions.logSink, {
+    ...(runOptions.logContext ?? {}),
+    event: 'server.started',
+    url: serverUrl,
+    maxBodyBytes,
+    maxConcurrentRuns,
+    authenticated: serviceKey !== undefined,
+  });
   if (serviceKey === undefined) {
-    process.stderr.write(
+    const message =
       'headless: no serviceKey set, so /invocations is unauthenticated. A payload chooses the ' +
-        'system prompt, the model endpoint, the MCP servers, and the permission mode, so anyone ' +
-        'who can reach this port can run commands here. Set AGENT_SERVICE_KEY, or bind to ' +
-        'loopback behind a front door that authenticates.\n',
-    );
+      'system prompt, the model endpoint, the MCP servers, and the permission mode, so anyone ' +
+      'who can reach this port can run commands here. Set AGENT_SERVICE_KEY, or bind to ' +
+      'loopback behind a front door that authenticates.';
+    emitLog(runOptions.logSink, {
+      ...(runOptions.logContext ?? {}),
+      level: 'warn',
+      event: 'server.security.warning',
+      message,
+    });
+    if (runOptions.logSink === undefined) process.stderr.write(`${message}\n`);
   }
   return {
     server,
-    url: `http://${options.host ?? HEADLESS_HOST}:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
+    url: serverUrl,
+    close: async () => {
+      const started = Date.now();
+      emitLog(runOptions.logSink, {
+        ...(runOptions.logContext ?? {}),
+        event: 'server.shutdown.started',
+        activeRuns,
+      });
+      await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
-      }),
+      });
+      emitLog(runOptions.logSink, {
+        ...(runOptions.logContext ?? {}),
+        event: 'server.shutdown.completed',
+        durationMs: Date.now() - started,
+      });
+    },
   };
 }
 
@@ -280,4 +385,71 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function rejected(
+  logSink: LogSink | undefined,
+  context: LogContext,
+  statusCode: number,
+  reason: string,
+): void {
+  emitLog(logSink, {
+    ...context,
+    level: statusCode >= 500 ? 'error' : 'warn',
+    event: 'http.request.rejected',
+    statusCode,
+    reason,
+  });
+}
+
+function safeRequestHeaders(request: IncomingMessage): Record<string, string | string[]> {
+  return Object.fromEntries(
+    Object.entries(request.headers).flatMap(([name, value]) => {
+      if (value === undefined) return [];
+      if (isSensitiveName(name)) return [[name, '[REDACTED]']];
+      return [[name, value]];
+    }),
+  );
+}
+
+function safeSearchParameters(url: URL): Record<string, string | string[]> {
+  const result: Record<string, string | string[]> = {};
+  for (const [name, value] of url.searchParams) {
+    const safeValue = isSensitiveName(name) ? '[REDACTED]' : value;
+    const existing = result[name];
+    result[name] =
+      existing === undefined
+        ? safeValue
+        : Array.isArray(existing)
+          ? [...existing, safeValue]
+          : [existing, safeValue];
+  }
+  return result;
+}
+
+function isSensitiveName(name: string): boolean {
+  const normalized = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
+  return (
+    /(^|[-_])(api[-_]?key|authorization|cookie|credential|password|private[-_]?key|secret|service[-_]?key|token)([-_]|$)/.test(
+      normalized,
+    ) || normalized === 'set-cookie'
+  );
+}
+
+function errorDetails(error: unknown): {
+  name: string;
+  message: string;
+  code?: string;
+  recoverable?: boolean;
+  stack?: string;
+} {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  return {
+    name: error.name,
+    message: error.message,
+    ...(error instanceof AgentHarnessError
+      ? { code: error.code, recoverable: error.recoverable }
+      : {}),
+    ...(error.stack === undefined ? {} : { stack: error.stack }),
+  };
 }

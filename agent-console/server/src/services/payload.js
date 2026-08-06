@@ -1,0 +1,131 @@
+import { resolveAgentForInvocation } from "./platform.js";
+
+export async function buildPayload({
+  agentId,
+  prompt,
+  sessionId,
+  permissionMode,
+  includeEvents,
+}) {
+  const resolved = await resolveAgentForInvocation(agentId);
+  const agent = resolved.agent.value;
+  const provider = resolved.modelProvider.value;
+
+  const permissionRules = agent.tools.map((tool) => ({
+    tool,
+    decision: "allow",
+  }));
+  if (resolved.mcpServers.length) {
+    permissionRules.push({ tool: "mcp__*", decision: "allow" });
+  }
+  if (resolved.skills.length) {
+    permissionRules.push({ tool: "skill", decision: "allow" });
+  }
+
+  const payload = {
+    prompt,
+    agent: compact({
+      name: agent.name,
+      description: agent.description,
+      systemPrompt: agent.systemPrompt,
+      model: agent.model,
+      tools: [...agent.tools],
+      limits: { ...agent.limits },
+    }),
+    modelProvider: pick(provider, [
+      "name",
+      "provider",
+      "model",
+      "baseURL",
+      "apiKey",
+      "auth",
+      "capabilities",
+      "wire",
+      "headers",
+    ]),
+    mcpServers: resolved.mcpServers.map(({ value }) =>
+      pick(value, [
+        "name",
+        "transport",
+        "command",
+        "args",
+        "env",
+        "url",
+        "apiKey",
+        "auth",
+        "capabilities",
+        "wire",
+        "headers",
+      ]),
+    ),
+    skills: resolved.skills.map((skill) =>
+      compact({
+        name: skill.value.name,
+        document: skill.documentBody,
+        allowedTools: skill.allowedTools,
+      }),
+    ),
+    permissionMode: permissionMode ?? "default",
+    permissionRules,
+    permissionFallback: "deny",
+    includeEvents: Boolean(includeEvents),
+    metadata: {
+      source: "agent-console",
+      agentId: resolved.agent.document._id.toString(),
+    },
+  };
+  if (sessionId) payload.sessionId = sessionId;
+  return { payload, resolved };
+}
+
+export function redactPayload(value) {
+  return redact(value);
+}
+
+function redact(value, key = "") {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map((entry) => redact(entry));
+  if (typeof value !== "object") {
+    return isSecretKey(key) ? "***redacted***" : value;
+  }
+  const result = {};
+  for (const [childKey, childValue] of Object.entries(value)) {
+    if (["env", "headers"].includes(childKey) && isObject(childValue)) {
+      result[childKey] = Object.fromEntries(
+        Object.keys(childValue).map((name) => [name, "***redacted***"]),
+      );
+    } else if (isSecretKey(childKey)) {
+      result[childKey] =
+        childValue === undefined || childValue === null || childValue === ""
+          ? childValue
+          : "***redacted***";
+    } else {
+      result[childKey] = redact(childValue, childKey);
+    }
+  }
+  return result;
+}
+
+function isSecretKey(key) {
+  return /(?:api[-_]?key|secret|password|token)$/i.test(key);
+}
+
+function pick(source, fields) {
+  const output = {};
+  for (const field of fields) {
+    if (source[field] !== undefined && source[field] !== null) {
+      output[field] = source[field];
+    }
+  }
+  return output;
+}
+
+function compact(value) {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined),
+  );
+}
+
+function isObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}

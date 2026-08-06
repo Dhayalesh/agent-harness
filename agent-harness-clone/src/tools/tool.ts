@@ -50,6 +50,11 @@ export type ToolExecutionContext = {
 
 export type ToolExecutionResult = {
   content: string;
+  /**
+   * A transport can return a fulfilled promise that still represents a tool
+   * failure (MCP's `isError` response is the common case).
+   */
+  isError?: boolean;
   metadata?: Record<string, unknown>;
 };
 

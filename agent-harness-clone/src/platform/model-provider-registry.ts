@@ -3,6 +3,7 @@ import { OpenAICompatibleModelProvider } from '../models/openai-compatible-provi
 import { OPENROUTER_BASE_URL, OpenRouterModelProvider } from '../models/openrouter-provider.js';
 import type { ModelProvider } from '../models/provider.js';
 import { RetryModelProvider } from '../models/retry-provider.js';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { ModelProviderRecord } from './model-provider-definitions.js';
 import { RUNTIME_SUPPORT, assertRuntimeSupport } from './model-provider-support.js';
 
@@ -16,6 +17,8 @@ export interface ModelProviderLookup {
 export type PlatformModelProviderRegistryOptions = {
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
+  logSink?: LogSink;
+  logContext?: LogContext;
 };
 
 /**
@@ -27,7 +30,7 @@ export class PlatformModelProviderRegistry {
 
   constructor(
     private readonly store: ModelProviderLookup,
-    options: PlatformModelProviderRegistryOptions = {},
+    private readonly options: PlatformModelProviderRegistryOptions = {},
   ) {
     this.logger = options.logger ?? ((message) => console.warn(message));
   }
@@ -80,10 +83,11 @@ export class PlatformModelProviderRegistry {
 
     const ignored = ignoredCapabilities(record);
     if (ignored.length > 0) {
-      this.logger(
+      this.warning(
         `[model-provider-registry] stored capabilities for '${record.name}' are not in effect: ` +
           `${ignored.join(', ')}. ` +
           'ModelProvider carries no capability surface (src/models/provider.ts:36).',
+        record.name,
       );
     }
 
@@ -95,6 +99,10 @@ export class PlatformModelProviderRegistry {
           defaultModel: record.model,
           defaultHeaders: { ...record.headers },
         }),
+        {
+          ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),
+          ...(this.options.logContext === undefined ? {} : { logContext: this.options.logContext }),
+        },
       );
     }
     return new RetryModelProvider(
@@ -108,7 +116,22 @@ export class PlatformModelProviderRegistry {
           ? {}
           : { maxTokensField: record.wire.maxTokensField }),
       }),
+      {
+        ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),
+        ...(this.options.logContext === undefined ? {} : { logContext: this.options.logContext }),
+      },
     );
+  }
+
+  private warning(message: string, provider: string): void {
+    this.logger(message);
+    emitLog(this.options.logSink, {
+      ...(this.options.logContext ?? {}),
+      level: 'warn',
+      event: 'model.configuration.warning',
+      provider,
+      message,
+    });
   }
 }
 
