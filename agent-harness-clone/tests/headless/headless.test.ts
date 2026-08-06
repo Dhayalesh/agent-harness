@@ -113,6 +113,82 @@ function payload(baseURL: string, overrides: Partial<InvocationPayloadInput> = {
   } satisfies InvocationPayloadInput;
 }
 
+test('invocations in one transport session share a sessionId in their logs', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    textChunk('First.'),
+    textChunk('Second.'),
+    textChunk('Third.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-session-'));
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  // Two invocations under one transport session, then one under another. This is the
+  // AgentCore shape: the session id arrives on a header and the payloads never name
+  // one, which previously left each invocation with its own generated sessionId.
+  const runs = [
+    { sessionId: 'session-alpha', lines: [] as string[] },
+    { sessionId: 'session-alpha', lines: [] as string[] },
+    { sessionId: 'session-beta', lines: [] as string[] },
+  ];
+  for (const run of runs) {
+    await invokeHeadless(payload(endpoint.baseURL), {
+      sessionId: run.sessionId,
+      workspaceRoot,
+      builtinToolOptions: { powershell: false },
+      logSink: new StructuredLogSink((line) => run.lines.push(line)),
+    });
+  }
+
+  const sessionIdsOf = (lines: readonly string[]): Set<string> =>
+    new Set(
+      lines
+        .map((line) => (JSON.parse(line) as { sessionId?: string }).sessionId)
+        .filter((value): value is string => value !== undefined),
+    );
+
+  for (const run of runs) {
+    assert.deepEqual([...sessionIdsOf(run.lines)], [run.sessionId]);
+    // The very first record predates payload validation, so this is what proves a
+    // rejected payload would still be attributable to its session.
+    const first = JSON.parse(run.lines[0] ?? '{}') as Record<string, unknown>;
+    assert.equal(first.event, 'invocation.started');
+    assert.equal(first.sessionId, run.sessionId);
+  }
+
+  // Grouped by session, but still separable by invocation within it.
+  const invocationIds = runs
+    .slice(0, 2)
+    .map((run) => JSON.parse(run.lines[0] ?? '{}') as { invocationId: string })
+    .map((record) => record.invocationId);
+  assert.equal(new Set(invocationIds).size, 2);
+});
+
+test('an explicit payload sessionId outranks the transport session', async (t) => {
+  const endpoint = await scriptedEndpoint([textChunk('Named.')]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-session-named-'));
+  const lines: string[] = [];
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const result = await invokeHeadless(payload(endpoint.baseURL, { sessionId: 'from-payload' }), {
+    sessionId: 'from-transport',
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+    logSink: new StructuredLogSink((line) => lines.push(line)),
+  });
+
+  assert.equal(result.sessionId, 'from-payload');
+  const validated = lines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((record) => record.event === 'invocation.payload.validated');
+  assert.equal(validated?.sessionId, 'from-payload');
+});
+
 test('a payload runs a full turn with no database, no S3, and no env vars', async (t) => {
   const endpoint = await scriptedEndpoint([
     toolCallChunk('call-1', 'write_file', { path: 'hello.txt', content: 'hi' }),

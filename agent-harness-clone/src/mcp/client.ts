@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   StreamableHTTPClientTransport,
@@ -186,6 +187,8 @@ export class McpConnection {
           () => this.client.callTool(request, undefined, this.requestOptions(context.signal)),
           {
             toolCallId: context.toolCallId,
+            turnId: context.turnId,
+            sessionId: context.sessionId,
             remoteTool: remote.name,
           },
         );
@@ -320,12 +323,14 @@ export class McpConnection {
     fields: Record<string, unknown> = {},
   ): Promise<Result> {
     const started = Date.now();
+    const mcpRequestId = randomUUID();
     this.log({
       event: 'mcp.request.started',
       serverName: this.serverName,
       operation,
       request,
       ...fields,
+      mcpRequestId,
     });
     try {
       const response = await run();
@@ -339,11 +344,11 @@ export class McpConnection {
         event: 'mcp.request.completed',
         serverName: this.serverName,
         operation,
-        request,
         response,
         remoteError,
         durationMs: Date.now() - started,
         ...fields,
+        mcpRequestId,
       });
       return response;
     } catch (error) {
@@ -352,10 +357,10 @@ export class McpConnection {
         event: 'mcp.request.failed',
         serverName: this.serverName,
         operation,
-        request,
         durationMs: Date.now() - started,
         error: describeError(error),
         ...fields,
+        mcpRequestId,
       });
       throw error;
     }

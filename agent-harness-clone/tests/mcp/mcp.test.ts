@@ -61,6 +61,23 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
     assert.equal(askResult.content, 'approved');
     assert.equal(elicited, true);
 
+    const fail = tools.find((tool) => tool.name === 'mcp__fixture__fail');
+    assert.ok(fail);
+    const failResult = await fail.execute(
+      {},
+      {
+        sessionId: 'session',
+        turnId: 'failure-turn',
+        toolCallId: 'failure-call',
+        workingDirectory: process.cwd(),
+        signal: new AbortController().signal,
+        messages: [],
+        reportProgress() {},
+      },
+    );
+    assert.equal(failResult.content, 'fixture failure');
+    assert.equal(failResult.isError, true);
+
     const resources = await connection.listResources();
     assert.equal(resources[0]?.uri, 'fixture://hello');
     const contents = await connection.readResource('fixture://hello');
@@ -92,6 +109,19 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
   assert.equal(call.invocationId, 'invocation-1');
   assert.equal(call.remoteTool, 'echo');
   assert.equal(call.toolCallId, 'call');
+  assert.equal(call.turnId, 'turn');
+  assert.equal(call.sessionId, 'session');
   assert.equal(call.remoteError, false);
+  assert.equal(typeof call.mcpRequestId, 'string');
   assert.ok(Number(call.durationMs) >= 0);
+  const remoteFailure = activities.find(
+    (entry) =>
+      entry.event === 'mcp.request.completed' &&
+      entry.operation === 'tools/call' &&
+      entry.toolCallId === 'failure-call',
+  );
+  assert.ok(remoteFailure);
+  assert.equal(remoteFailure.remoteError, true);
+  assert.equal(remoteFailure.level, 'error');
+  assert.equal(remoteFailure.turnId, 'failure-turn');
 });

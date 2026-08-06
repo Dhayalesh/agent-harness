@@ -67,6 +67,11 @@ export async function startHeadlessServer(
     maxBodyBytes: _maxBodyBytes,
     maxConcurrentRuns: _maxConcurrentRuns,
     invocationId: _invocationId,
+    // Dropped for the same reason as `invocationId`: both are per-invocation identity.
+    // A server-wide value would label every request in the process as one session,
+    // which is the inverse of the fan-out this change exists to fix. Each request
+    // derives its own from the AgentCore header below.
+    sessionId: _sessionId,
     ...runOptions
   } = options;
   let activeRuns = 0;
@@ -128,6 +133,10 @@ export async function startHeadlessServer(
       invocationId: requestId,
       ...(runtimeSessionId === undefined ? {} : { runtimeSessionId }),
       ...(traceId === undefined ? {} : { traceId }),
+      // The transport's best guess at session identity, so `http.request.*` and a
+      // rejected payload carry it too. `invokeHeadless` may refine this to a
+      // `payload.sessionId`, which is why the run's own records are the authority.
+      ...(runtimeSessionId === undefined ? {} : { sessionId: runtimeSessionId }),
     };
     emitLog(runOptions.logSink, {
       ...context,
@@ -210,6 +219,10 @@ export async function startHeadlessServer(
       ...runOptions,
       invocationId: requestId,
       logContext: context,
+      // Every invocation AgentCore routes to one session carries the same header, so
+      // handing it down is what makes their logs share a `sessionId` — and, when a
+      // `sessionStore` is configured, what lets them share a conversation.
+      ...(runtimeSessionId === undefined ? {} : { sessionId: runtimeSessionId }),
     };
     try {
       if (streaming) {

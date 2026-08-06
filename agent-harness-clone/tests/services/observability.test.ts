@@ -37,13 +37,22 @@ test('StructuredLogSink writes contextual JSON and recursively redacts credentia
         {
           headers: {
             Authorization: 'Bearer header-secret-value',
-            'x-safe-header': 'visible',
+            'x-safe-header': 'opaque-header-secret',
+            'content-type': 'application/json',
           },
           env: {
             MCP_API_KEY: 'mcp-env-secret',
-            SAFE_SETTING: 'visible',
+            SAFE_SETTING: 'opaque-env-secret',
           },
           url: 'https://mcp.example.test/run?token=url-query-secret&limit=5',
+          auth: 'opaque-auth-secret',
+          args: [
+            '--mode',
+            'stdio',
+            '--token',
+            'opaque-cli-secret',
+            '--header=opaque-inline-secret',
+          ],
         },
       ],
       usage: {
@@ -73,10 +82,13 @@ test('StructuredLogSink writes contextual JSON and recursively redacts credentia
   const server = (payload.mcpServers as JsonRecord[])[0] as JsonRecord;
   const headers = server.headers as JsonRecord;
   assert.equal(headers.Authorization, REDACTED);
-  assert.equal(headers['x-safe-header'], 'visible');
+  assert.equal(headers['x-safe-header'], REDACTED);
+  assert.equal(headers['content-type'], 'application/json');
   const env = server.env as JsonRecord;
   assert.equal(env.MCP_API_KEY, REDACTED);
-  assert.equal(env.SAFE_SETTING, 'visible');
+  assert.equal(env.SAFE_SETTING, REDACTED);
+  assert.equal(server.auth, REDACTED);
+  assert.deepEqual(server.args, ['--mode', 'stdio', '--token', REDACTED, '--header=' + REDACTED]);
 
   const redactedUrl = new URL(server.url as string);
   assert.equal(redactedUrl.searchParams.get('token'), REDACTED);
@@ -88,8 +100,41 @@ test('StructuredLogSink writes contextual JSON and recursively redacts credentia
   assert.equal(usage.cacheReadTokens, 3);
   assert.doesNotMatch(
     lines[0] as string,
-    /model-api-key-secret|header-secret-value|mcp-env-secret|url-query-secret/,
+    /model-api-key-secret|header-secret-value|opaque-header-secret|mcp-env-secret|opaque-env-secret|url-query-secret|opaque-auth-secret|opaque-cli-secret|opaque-inline-secret/,
   );
+});
+
+test('StructuredLogSink redacts database credentials, signed URLs, and unreadable values', () => {
+  const lines: string[] = [];
+  const unreadable = Object.create(null) as Record<string, unknown>;
+  Object.defineProperty(unreadable, 'value', {
+    enumerable: true,
+    get() {
+      throw new Error('getter secret should not escape');
+    },
+  });
+  const sink = new StructuredLogSink((line) => lines.push(line));
+
+  sink.log({
+    event: 'invocation.started',
+    databaseUrl: 'postgres://database-user:database-password@db.example.test/app',
+    signedUrl: 'https://example.test/object?sig=signed-secret&limit=10',
+    unreadable,
+  });
+
+  assert.equal(lines.length, 1);
+  assert.doesNotMatch(
+    lines[0] as string,
+    /database-user|database-password|signed-secret|getter secret/,
+  );
+  const record = json(lines[0] as string);
+  const databaseUrl = new URL(String(record.databaseUrl));
+  assert.equal(decodeURIComponent(databaseUrl.username), REDACTED);
+  assert.equal(decodeURIComponent(databaseUrl.password), REDACTED);
+  const signedUrl = new URL(String(record.signedUrl));
+  assert.equal(signedUrl.searchParams.get('sig'), REDACTED);
+  assert.equal(signedUrl.searchParams.get('limit'), '10');
+  assert.deepEqual(record.unreadable, { value: '[unreadable]' });
 });
 
 test('StructuredLogSink safely serializes cycles and bigint values', () => {
@@ -137,7 +182,8 @@ test('StructuredLogSink is fail-open when primary and fallback writers throw', (
   const failure = json(fallback[0] as string);
   assert.equal(failure.event, 'observability.write.failed');
   assert.equal(failure.level, 'error');
-  assert.match(String(failure.message), /primary writer unavailable/);
+  assert.equal(failure.message, 'Structured log writer failed');
+  assert.equal(failure.errorName, 'Error');
 
   const fullyBroken = new StructuredLogSink(
     () => {
@@ -197,6 +243,8 @@ test('StructuredLogSink chunks oversized JSON into bounded reassemblable lines',
     assert.equal(chunk.chunkId, chunkId);
     assert.equal(chunk.chunkIndex, index + 1);
     assert.equal(chunk.chunkCount, chunks.length);
+    assert.equal(chunk.invocationId, 'invocation-large');
+    assert.equal(chunk.toolCallId, 'tool-call-large');
   }
 
   const reconstructed = chunks.map((chunk) => String(chunk.content)).join('');

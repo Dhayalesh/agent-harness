@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentEvent } from '../core/events.js';
 import { REDACTED, redact } from './redact.js';
 
@@ -91,6 +92,9 @@ export class StructuredLogSink implements EventSink, LogSink {
     const { type, ...fields } = event;
     this.log({
       event: type,
+      // `type` was the original StructuredLogSink schema. Keep it while `event`
+      // gives lifecycle and AgentEvent records one field to query.
+      type,
       level: agentEventLevel(event),
       ...fields,
       ...agentEventCorrelation(event),
@@ -108,6 +112,7 @@ export class StructuredLogSink implements EventSink, LogSink {
         timestamp,
       });
       const serialized = safeSerialize(record);
+      const correlation = correlationFields(record);
       const lines = logLines(
         serialized,
         entry.event,
@@ -115,6 +120,7 @@ export class StructuredLogSink implements EventSink, LogSink {
         entry.level ?? 'info',
         this.maxLineBytes,
         this.component,
+        correlation,
       );
       for (const line of lines) this.write(line);
     } catch (error) {
@@ -125,7 +131,8 @@ export class StructuredLogSink implements EventSink, LogSink {
             level: 'error',
             component: this.component,
             event: 'observability.write.failed',
-            message: error instanceof Error ? error.message : String(error),
+            errorName: error instanceof Error ? error.name : 'Error',
+            message: 'Structured log writer failed',
           }),
         );
       } catch {
@@ -149,8 +156,6 @@ export function safeSerialize(value: unknown): string {
   }
 }
 
-let chunkSequence = 0;
-
 function logLines(
   serialized: string,
   originalEvent: string,
@@ -158,10 +163,11 @@ function logLines(
   level: HarnessLogLevel,
   maximumBytes: number,
   component: string,
+  correlation: Record<string, unknown>,
 ): string[] {
   if (Buffer.byteLength(serialized, 'utf8') <= maximumBytes) return [serialized];
 
-  const chunkId = String(Date.now()) + '-' + String(++chunkSequence);
+  const chunkId = randomUUID();
   const pieces: string[] = [];
   let offset = 0;
   while (offset < serialized.length) {
@@ -179,6 +185,7 @@ function logLines(
         Number.MAX_SAFE_INTEGER,
         Number.MAX_SAFE_INTEGER,
         serialized.slice(offset, middle),
+        correlation,
       );
       if (Buffer.byteLength(candidate, 'utf8') <= maximumBytes) {
         best = middle;
@@ -201,6 +208,7 @@ function logLines(
       index + 1,
       pieces.length,
       content,
+      correlation,
     ),
   );
 }
@@ -214,8 +222,10 @@ function chunkLine(
   chunkIndex: number,
   chunkCount: number,
   content: string,
+  correlation: Record<string, unknown>,
 ): string {
   return JSON.stringify({
+    ...correlation,
     timestamp,
     level,
     component,
@@ -233,9 +243,6 @@ function agentEventLevel(event: AgentEvent): HarnessLogLevel {
   if (event.type === 'error') return 'error';
   if (event.type === 'warning') return 'warn';
   if (event.type === 'tool.completed' && event.result.isError) return 'error';
-  if (event.type === 'mcp.server.failed') return 'error';
-  if (event.type === 'mcp.tool.call.completed' && event.isError) return 'error';
-  if (event.type === 'invocation.completed' && event.status === 'error') return 'error';
   return 'info';
 }
 
@@ -246,10 +253,7 @@ function agentEventCorrelation(event: AgentEvent): Record<string, unknown> {
       ? event.call.id
       : event.type === 'tool.completed'
         ? event.result.toolCallId
-        : event.type === 'tool.progress' ||
-            event.type === 'permission.requested' ||
-            event.type === 'mcp.tool.call.started' ||
-            event.type === 'mcp.tool.call.completed'
+        : event.type === 'tool.progress' || event.type === 'permission.requested'
           ? event.toolCallId
           : undefined;
   return {
@@ -258,124 +262,22 @@ function agentEventCorrelation(event: AgentEvent): Record<string, unknown> {
   };
 }
 
-/**
- * How much of the event stream reaches the log.
- *
- * - `silent`: nothing.
- * - `error`: failures only — `error`, `mcp.server.failed`, failed tool results.
- * - `info`: the shape of the run. Every boundary (invocation, MCP, model, tool,
- *   turn, permission), with tool inputs and results in full. The default.
- * - `debug`: `info` plus completed assistant messages and compaction detail.
- * - `trace`: everything, including per-token `assistant.text.delta`. Very loud;
- *   intended for reproducing a specific failure, not for standing traffic.
- */
-export type LogLevel = 'silent' | 'error' | 'info' | 'debug' | 'trace';
-
-const LEVEL_ORDER: Record<LogLevel, number> = {
-  silent: 0,
-  error: 1,
-  info: 2,
-  debug: 3,
-  trace: 4,
-};
-
-/** The lowest level at which each event is emitted. */
-const EVENT_LEVEL: Partial<Record<AgentEvent['type'], LogLevel>> = {
-  error: 'error',
-  'mcp.server.failed': 'error',
-  'assistant.text.delta': 'trace',
-  'assistant.message.completed': 'debug',
-  'context.compaction.started': 'debug',
-  'context.compaction.completed': 'debug',
-  'tool.progress': 'debug',
-};
-
-export function parseLogLevel(value: string | undefined, fallback: LogLevel = 'info'): LogLevel {
-  const trimmed = value?.trim().toLowerCase();
-  if (!trimmed) return fallback;
-  if (trimmed in LEVEL_ORDER) return trimmed as LogLevel;
-  throw new Error(`Invalid log level: ${value}. Expected ${Object.keys(LEVEL_ORDER).join(', ')}.`);
-}
-
-export type JsonLogSinkOptions = {
-  level?: LogLevel;
-  /**
-   * Defaults to stdout, keeping container output as a single JSON-lines stream.
-   */
-  write?: (line: string) => void;
-  /** Merged into every line — `requestId`, `agentName`, and similar run-wide keys. */
-  context?: Record<string, unknown>;
-  service?: string;
-  /** Caps each string inside a logged payload. Unset logs values in full. */
-  maxStringLength?: number;
-};
-
-/**
- * One line of JSON per event, on stdout, with credentials removed.
- *
- * Line-delimited JSON because that is what CloudWatch Logs Insights parses without a
- * custom pattern: `fields @timestamp, type, tool.name | filter sessionId = '…'` works
- * against this directly. A multi-line or pretty-printed object would arrive as
- * several unrelated log events and lose that.
- *
- * Every value passes through `redact` (`src/services/redact.ts`) on the way out, so a
- * payload's `apiKey` and an MCP `Authorization` header are blanked before they reach
- * the log. Failures here are swallowed: a sink that throws must not fail a run.
- */
-export class JsonLogSink implements EventSink {
-  private readonly level: LogLevel;
-  private readonly write: (line: string) => void;
-  private readonly context: Record<string, unknown>;
-  private readonly service: string;
-  private readonly maxStringLength: number | undefined;
-
-  constructor(options: JsonLogSinkOptions = {}) {
-    this.level = options.level ?? 'info';
-    this.write = options.write ?? ((line) => process.stdout.write(`${line}\n`));
-    this.context = options.context ?? {};
-    this.service = options.service ?? 'agent-harness';
-    this.maxStringLength = options.maxStringLength;
+function correlationFields(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const source = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const key of [
+    'invocationId',
+    'requestId',
+    'runtimeSessionId',
+    'traceId',
+    'sessionId',
+    'turnId',
+    'toolCallId',
+  ]) {
+    if (source[key] !== undefined) result[key] = source[key];
   }
-
-  onEvent(event: AgentEvent): void {
-    if (!this.enabled(event)) return;
-    try {
-      this.write(JSON.stringify(this.line(event)));
-    } catch {
-      // Observability is never an execution dependency.
-    }
-  }
-
-  private enabled(event: AgentEvent): boolean {
-    const required = EVENT_LEVEL[event.type] ?? 'info';
-    return LEVEL_ORDER[this.level] >= LEVEL_ORDER[required];
-  }
-
-  private line(event: AgentEvent): Record<string, unknown> {
-    const { type, timestamp, sessionId, sequence, protocolVersion, ...rest } = event;
-    return {
-      timestamp,
-      level: this.severity(event),
-      service: this.service,
-      type,
-      sessionId,
-      sequence,
-      protocolVersion,
-      ...this.context,
-      ...(redact(rest, {
-        ...(this.maxStringLength === undefined ? {} : { maxStringLength: this.maxStringLength }),
-      }) as Record<string, unknown>),
-    };
-  }
-
-  private severity(event: AgentEvent): 'ERROR' | 'WARN' | 'INFO' {
-    if (event.type === 'error' || event.type === 'mcp.server.failed') return 'ERROR';
-    if (event.type === 'warning') return 'WARN';
-    if (event.type === 'tool.completed' && event.result.isError) return 'ERROR';
-    if (event.type === 'mcp.tool.call.completed' && event.isError) return 'ERROR';
-    if (event.type === 'invocation.completed' && event.status === 'error') return 'ERROR';
-    return 'INFO';
-  }
+  return result;
 }
 
 export type HarnessMetrics = {

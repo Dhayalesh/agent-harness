@@ -38,6 +38,17 @@ server.registerTool(
     };
   },
 );
+server.registerTool(
+  'fail',
+  {
+    description: 'Return an MCP protocol-level tool error',
+    inputSchema: {},
+  },
+  async () => ({
+    isError: true,
+    content: [{ type: 'text', text: 'fixture failure' }],
+  }),
+);
 server.registerResource(
   'fixture-resource',
   'fixture://hello',

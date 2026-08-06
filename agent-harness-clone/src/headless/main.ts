@@ -53,12 +53,6 @@ const running = await startHeadlessServer({
   // Windows machine, so `agent.tools` in a payload validates the same in both.
   builtinToolOptions: { powershell: false },
   logSink,
-  logger: (message) =>
-    emitLog(logSink, {
-      level: 'warn',
-      event: 'runtime.warning',
-      message,
-    }),
 });
 
 // Structured rather than a plain banner: stdout is now a JSON-lines stream, and six

@@ -21,11 +21,15 @@ export const REDACTED = '[redacted]';
  * payload's own `headers` maps are caller-defined and cannot be enumerated here.
  */
 const SECRET_KEYS = new Set([
+  'access_key',
   'apikey',
   'api_key',
+  'auth',
+  'authentication',
   'authorization',
   'bearer',
   'client_secret',
+  'code',
   'cookie',
   'credential',
   'credentials',
@@ -35,7 +39,9 @@ const SECRET_KEYS = new Set([
   'private_key',
   'privatekey',
   'refresh_token',
+  'secret',
   'service_key',
+  'sig',
   'session_key',
   'session_token',
   'signature',
@@ -62,21 +68,44 @@ const SAFE_MEASUREMENT_KEYS = new Set([
  * still matches the list above.
  */
 const STRUCTURAL_KEYS = new Set(['auth', 'authentication']);
+const SECRET_CONTAINER_KEYS = new Set([
+  'default_headers',
+  'env',
+  'environment',
+  'headers',
+  'request_headers',
+]);
+const SAFE_HEADER_KEYS = new Set([
+  'accept',
+  'accept_encoding',
+  'cache_control',
+  'content_length',
+  'content_type',
+  'host',
+  'user_agent',
+  'x_amzn_bedrock_agentcore_runtime_session_id',
+  'x_amzn_trace_id',
+]);
 
 function isSecretKey(key: string): boolean {
-  const lowered = key
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .replace(/[-.\s]+/g, '_')
-    .toLowerCase();
+  const lowered = normalizeKey(key);
   if (STRUCTURAL_KEYS.has(lowered) || SAFE_MEASUREMENT_KEYS.has(lowered)) return false;
   if (SECRET_KEYS.has(lowered)) return true;
-  return /(^|_)(api_?key|secret|password|passwd|private_?key|service_?key|credential|access_?key|client_?secret|refresh_?token|session_?token|id_?token|authorization|cookie|signature|token)($|_)/.test(
+  return /(^|_)(api_?key|secret|password|passwd|private_?key|service_?key|credential|access_?key|client_?secret|refresh_?token|session_?token|id_?token|authorization|cookie|signature|token|sig|oauth_?code)($|_)/.test(
     lowered,
   );
 }
 
+function normalizeKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[-.\s]+/g, '_')
+    .toLowerCase();
+}
+
 /** Long, high-entropy, or explicitly prefixed strings that read as credentials. */
 const SECRET_TEXT_PATTERNS: readonly RegExp[] = [
+  /\b(?:Authorization|Proxy-Authorization|X-Api-Key|Api-Key)\s*[:=]\s*[^\s,;]+/gi,
   /\b(?:Bearer|Basic|Token)\s+[A-Za-z0-9._\-+/=]{8,}/gi,
   /\bsk-[A-Za-z0-9._\-]{12,}/g,
   /\bsk-ant-[A-Za-z0-9._\-]{12,}/g,
@@ -90,13 +119,14 @@ const SECRET_TEXT_PATTERNS: readonly RegExp[] = [
 ];
 
 export function scrubText(value: string): string {
-  let result = scrubUrl(value);
+  let result = value.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s\x22\x27<>]+/gi, (candidate) =>
+    scrubUrl(candidate),
+  );
   for (const pattern of SECRET_TEXT_PATTERNS) result = result.replace(pattern, REDACTED);
   return result;
 }
 
 function scrubUrl(value: string): string {
-  if (!/^https?:\/\//i.test(value)) return value;
   try {
     const url = new URL(value);
     if (url.username) url.username = REDACTED;
@@ -145,7 +175,9 @@ function walk(
   if (typeof value === 'bigint') return `${value.toString()}n`;
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`;
 
-  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '[invalid date]' : value.toISOString();
+  }
   if (value instanceof Error) {
     return { name: value.name, message: truncate(scrubText(value.message), 2000) };
   }
@@ -162,8 +194,33 @@ function walk(
       return value.map((entry) => walk(entry, options, depthLeft - 1, seen));
     }
     const result: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      result[key] = isSecretKey(key) ? REDACTED : walk(entry, options, depthLeft - 1, seen);
+    let keys: string[];
+    try {
+      keys = Object.keys(value);
+    } catch {
+      return '[unreadable object]';
+    }
+    for (const key of keys) {
+      let entry: unknown;
+      try {
+        entry = (value as Record<string, unknown>)[key];
+      } catch {
+        result[key] = '[unreadable]';
+        continue;
+      }
+      const normalized = normalizeKey(key);
+      if (SECRET_CONTAINER_KEYS.has(normalized)) {
+        result[key] = redactSecretContainer(entry, normalized, options, depthLeft - 1, seen);
+      } else if (normalized === 'args' && Array.isArray(entry)) {
+        result[key] = redactArguments(entry, options, depthLeft - 1, seen);
+      } else if (STRUCTURAL_KEYS.has(normalized)) {
+        result[key] =
+          entry !== null && typeof entry === 'object'
+            ? walk(entry, options, depthLeft - 1, seen)
+            : REDACTED;
+      } else {
+        result[key] = isSecretKey(key) ? REDACTED : walk(entry, options, depthLeft - 1, seen);
+      }
     }
     return result;
   } finally {
@@ -171,6 +228,68 @@ function walk(
     // reported as circular.
     seen.delete(value);
   }
+}
+
+function redactSecretContainer(
+  value: unknown,
+  container: string,
+  options: RedactOptions,
+  depthLeft: number,
+  seen: WeakSet<object>,
+): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return REDACTED;
+  let keys: string[];
+  try {
+    keys = Object.keys(value);
+  } catch {
+    return '[unreadable object]';
+  }
+  const result: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (container.includes('header') && SAFE_HEADER_KEYS.has(normalizeKey(key))) {
+      try {
+        result[key] = walk((value as Record<string, unknown>)[key], options, depthLeft, seen);
+      } catch {
+        result[key] = '[unreadable]';
+      }
+    } else {
+      result[key] = REDACTED;
+    }
+  }
+  return result;
+}
+
+function redactArguments(
+  args: unknown[],
+  options: RedactOptions,
+  depthLeft: number,
+  seen: WeakSet<object>,
+): unknown[] {
+  let redactNext = false;
+  return args.map((argument) => {
+    if (redactNext) {
+      redactNext = false;
+      return REDACTED;
+    }
+    if (typeof argument !== 'string') return walk(argument, options, depthLeft, seen);
+    if (/^-H$/.test(argument) || /^--(?:header|env)$/i.test(argument)) {
+      redactNext = true;
+      return argument;
+    }
+    const assignment = argument.match(
+      /^(--?[^=]*(?:api[-_]?key|auth|authorization|cookie|credential|env|header|password|secret|signature|token))=(.*)$/i,
+    );
+    if (assignment) return String(assignment[1]) + '=' + REDACTED;
+    if (
+      /^--?[^=]*(?:api[-_]?key|auth|authorization|cookie|credential|env|header|password|secret|signature|token)$/i.test(
+        argument,
+      )
+    ) {
+      redactNext = true;
+      return argument;
+    }
+    return truncate(scrubText(argument), options.maxStringLength);
+  });
 }
 
 function truncate(value: string, maximum: number | undefined): string {

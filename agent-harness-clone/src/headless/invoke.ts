@@ -89,6 +89,19 @@ export type HeadlessRunOptions = {
   logContext?: LogContext;
   /** Correlation id supplied by a transport; generated when omitted. */
   invocationId?: string;
+  /**
+   * Session identity supplied by the transport, used when the payload names none.
+   *
+   * AgentCore sends its runtime session id on a header, and every invocation in one
+   * session carries the same value. Without this the fallback is `invocationId`, which
+   * is fresh per request — so a session's invocations would each log a different
+   * `sessionId` and could not be grouped, which is what this exists to fix.
+   *
+   * The payload still wins: an explicit `payload.sessionId` names a conversation the
+   * caller wants to resume, and that is a stronger statement of intent than a header
+   * the transport attached.
+   */
+  sessionId?: string;
   elicitationHandler?: McpElicitationHandler;
   /**
    * Caps `payload.permissionMode`. Set it to `plan` to refuse every state-changing
@@ -144,17 +157,22 @@ export async function invokeHeadless(
     ...(options.logContext ?? {}),
     invocationId,
     invocationMode: 'buffered',
+    // Present from the first line rather than only after validation. A payload that
+    // fails to parse still belongs to the session that sent it, and a reader
+    // filtering on `sessionId` should see that failure too.
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
   };
   let phase = 'validation';
   let prepared: PreparedRun | undefined;
+  let context: LogContext = baseContext;
   log(options, baseContext, {
     event: 'invocation.started',
     payload,
   });
   try {
     const parsed = parsePayload(payload);
-    const sessionId = parsed.sessionId ?? invocationId;
-    const context = { ...baseContext, sessionId };
+    const sessionId = resolveSessionId(parsed, options, invocationId);
+    context = { ...baseContext, sessionId };
     log(options, context, {
       event: 'invocation.payload.validated',
       agentName: parsed.agent.name,
@@ -188,24 +206,21 @@ export async function invokeHeadless(
       event: 'invocation.completed',
       status: result.status,
       durationMs: Date.now() - started,
-      result,
+      result: resultForLog(result),
     });
     return result;
   } catch (error) {
+    const failurePhase = phase;
     if (prepared) {
-      phase = 'cleanup';
       const closing = prepared;
       prepared = undefined;
       try {
-        await closePrepared(closing, options, {
-          ...baseContext,
-          sessionId: closing.sessionId,
-        });
+        await closePrepared(closing, options, context);
       } catch (cleanupError) {
-        log(options, baseContext, {
+        log(options, context, {
           level: 'error',
           event: 'invocation.failed',
-          phase,
+          phase: 'cleanup',
           durationMs: Date.now() - started,
           error: describeError(cleanupError),
           causedBy: describeError(error),
@@ -213,10 +228,10 @@ export async function invokeHeadless(
         throw cleanupError;
       }
     }
-    log(options, baseContext, {
+    log(options, context, {
       level: 'error',
       event: 'invocation.failed',
-      phase,
+      phase: failurePhase,
       durationMs: Date.now() - started,
       error: describeError(error),
     });
@@ -242,6 +257,7 @@ export async function* streamHeadless(
     ...(options.logContext ?? {}),
     invocationId,
     invocationMode: 'stream',
+    ...(options.sessionId === undefined ? {} : { sessionId: options.sessionId }),
   };
   let context = baseContext;
   let phase = 'validation';
@@ -256,7 +272,7 @@ export async function* streamHeadless(
   });
   try {
     const parsed = parsePayload(payload);
-    const sessionId = parsed.sessionId ?? invocationId;
+    const sessionId = resolveSessionId(parsed, options, invocationId);
     context = { ...baseContext, sessionId };
     log(options, context, {
       event: 'invocation.payload.validated',
@@ -288,6 +304,7 @@ export async function* streamHeadless(
     });
     throw error;
   } finally {
+    const terminalPhase = phase;
     if (prepared) {
       phase = 'cleanup';
       try {
@@ -315,7 +332,7 @@ export async function* streamHeadless(
       log(options, context, {
         level: 'warn',
         event: 'invocation.cancelled',
-        phase,
+        phase: terminalPhase,
         terminalEvent,
         durationMs: Date.now() - started,
       });
@@ -342,6 +359,30 @@ function formatIssues(error: z.ZodError): string {
   return error.issues
     .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
     .join('; ');
+}
+
+/**
+ * Which session this invocation belongs to, most explicit source first.
+ *
+ * 1. `payload.sessionId` — the caller naming a conversation to resume.
+ * 2. `options.sessionId` — the transport's session identity, which for AgentCore is
+ *    the runtime session header and is stable across every invocation in a session.
+ * 3. `invocationId` — a fresh id, leaving the run stateless and self-identifying.
+ *
+ * The ordering is what makes a session's invocations group in CloudWatch: before
+ * step 2 existed, a payload without `sessionId` fell straight to step 3, so each
+ * invocation logged a different `sessionId` and nothing tied them together.
+ *
+ * This is also the id `prepare` uses for the session store and the workspace
+ * directory, so grouping the logs and continuing the conversation stay the same
+ * decision rather than drifting apart.
+ */
+function resolveSessionId(
+  payload: InvocationPayload,
+  options: HeadlessRunOptions,
+  invocationId: string,
+): string {
+  return payload.sessionId ?? options.sessionId ?? invocationId;
 }
 
 type PreparedRun = {
@@ -400,21 +441,11 @@ async function prepare(
       url: server.url,
     })),
   });
+  // Model and MCP registries emit their own structured warning records. A no-op
+  // legacy logger avoids writing the same warning a second time when only logSink is
+  // configured; callers that explicitly provide logger still receive it.
   const registryLogger =
-    options.logger === undefined && options.logSink === undefined
-      ? undefined
-      : (message: string): void => {
-          if (options.logger) {
-            options.logger(message);
-          } else {
-            log(options, logContext, {
-              level: 'warn',
-              event: 'runtime.warning',
-              sessionId,
-              message,
-            });
-          }
-        };
+    options.logger ?? (options.logSink === undefined ? undefined : (_message: string) => undefined);
   let agent: ResolvedAgent;
   try {
     agent = await resolveInlineAgent(payload, {
@@ -453,9 +484,15 @@ async function prepare(
     // Only consulted when a store was supplied. Without one, a repeated `sessionId`
     // names a workspace that already exists and a conversation that starts over,
     // which is the honest behaviour for a stateless runner.
-    const stored = payload.sessionId
-      ? await options.sessionStore?.load(payload.sessionId)
-      : undefined;
+    //
+    // Loaded against the resolved `sessionId` rather than `payload.sessionId`, so a
+    // session identified by the AgentCore header resumes like one named in the body.
+    // Keying these differently is how a run could log a session id and still answer
+    // with no memory of the invocation before it.
+    //
+    // `invocationId` is a fresh uuid, so a genuinely stateless run still finds
+    // nothing here and starts clean.
+    const stored = await options.sessionStore?.load(sessionId);
 
     const session = createAgentSession({
       sessionId,
@@ -534,6 +571,15 @@ function log(
   entry: Parameters<LogSink['log']>[0],
 ): void {
   emitLog(options.logSink, { ...context, ...entry });
+}
+
+function resultForLog(result: HeadlessResult): Record<string, unknown> {
+  const { messages, events, ...summary } = result;
+  return {
+    ...summary,
+    messageCount: messages.length,
+    ...(events === undefined ? {} : { eventCount: events.length }),
+  };
 }
 
 function describeError(error: unknown): {
