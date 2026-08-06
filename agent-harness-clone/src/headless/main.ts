@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
+import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, StructuredLogSink } from '../services/observability.js';
 import { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './server.js';
 
@@ -27,19 +28,37 @@ const shellEnvironmentExtras = (process.env.AGENT_SHELL_ENV_ALLOWLIST ?? '')
   .map((name) => name.trim())
   .filter((name) => name.length > 0);
 /**
- * Writes to stdout, not stderr.
+ * Where the log goes.
  *
- * AgentCore collects both standard streams; using stdout here keeps the deployed
- * application log as one JSON-lines stream. The important part is attaching the sink:
- * the previous entrypoint constructed no event sink, so there were no lifecycle lines
- * for AgentCore to forward.
+ * Unset, lines are written to stdout and AgentCore forwards them to the stream it
+ * names, which is one stream per runtime session and not something this process can
+ * influence. Setting `AGENT_LOG_GROUP` sends them to a group this deployment owns
+ * instead, laid out one stream per session — the grouping an operator actually reads
+ * by, and the reason for writing directly rather than through stdout.
  *
+ * These are exclusive by choice: duplicating every line into both destinations
+ * doubles ingest cost for a second copy nobody queries.
+ */
+const logGroupName = process.env.AGENT_LOG_GROUP?.trim();
+const cloudWatch = logGroupName
+  ? new CloudWatchLogWriter({
+      logGroupName,
+      ...(process.env.AWS_REGION?.trim() ? { region: process.env.AWS_REGION.trim() } : {}),
+    })
+  : undefined;
+
+/**
  * `logSink` covers both the invocation lifecycle and session AgentEvents. It is not
  * also passed as `eventSink`, because the session would then write every event twice.
+ *
+ * The writer is attached as the sink's `write` callback rather than replacing it, so
+ * redaction and oversized-line chunking still happen upstream and are identical
+ * whichever destination is in use.
  */
-const logSink = new StructuredLogSink((line) => process.stdout.write(`${line}\n`), {
-  context: {},
-});
+const logSink = new StructuredLogSink(
+  cloudWatch ? cloudWatch.write : (line) => process.stdout.write(`${line}\n`),
+  { context: {} },
+);
 
 const running = await startHeadlessServer({
   host,
@@ -84,6 +103,11 @@ const shutdown = async (): Promise<void> => {
       error: describeError(error),
     });
     throw error;
+  } finally {
+    // In `finally` so the shutdown-failure record above is sent too: queued lines
+    // live in memory, and an unflushed buffer at exit loses exactly the lines
+    // explaining why the process is exiting.
+    await cloudWatch?.close().catch(() => undefined);
   }
 };
 process.once('SIGINT', () => void shutdown());
