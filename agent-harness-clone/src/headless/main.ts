@@ -14,6 +14,22 @@ import { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './server.js';
  * listens and what it will allow a payload to do.
  */
 
+/**
+ * Loads `.env` when one sits beside the process, for a developer running this
+ * directly. Without it a `.env` is inert here — only `scripts/headless/exportPayload.ts`
+ * passed `--env-file`, so settings put there never reached the server and appeared to
+ * be ignored.
+ *
+ * Values already in the environment win: a container's real configuration must not be
+ * overridden by a file that happened to get copied into the image. `.dockerignore`
+ * excludes `.env` for that reason, so this is a no-op in a deployed image.
+ */
+try {
+  process.loadEnvFile?.('.env');
+} catch {
+  // No .env, or an unreadable one. Both mean "configure through the environment".
+}
+
 const host = process.env.AGENT_SERVICE_HOST ?? HEADLESS_HOST;
 const port = parsePort(process.env.AGENT_SERVICE_PORT ?? String(HEADLESS_PORT));
 const serviceKey = process.env.AGENT_SERVICE_KEY?.trim();
@@ -40,10 +56,15 @@ const shellEnvironmentExtras = (process.env.AGENT_SHELL_ENV_ALLOWLIST ?? '')
  * doubles ingest cost for a second copy nobody queries.
  */
 const logGroupName = process.env.AGENT_LOG_GROUP?.trim();
+// `AWS_REGION` is what the SDK itself reads. `PLATFORM_CONTENT_S3_REGION` is accepted
+// after it because a deployment already configured for S3 skill reads has named its
+// region once, and making it name the same value twice to get logs is a trap rather
+// than a decision.
+const region = process.env.AWS_REGION?.trim() || process.env.PLATFORM_CONTENT_S3_REGION?.trim();
 const cloudWatch = logGroupName
   ? new CloudWatchLogWriter({
       logGroupName,
-      ...(process.env.AWS_REGION?.trim() ? { region: process.env.AWS_REGION.trim() } : {}),
+      ...(region ? { region } : {}),
     })
   : undefined;
 
@@ -74,6 +95,39 @@ const running = await startHeadlessServer({
   logSink,
 });
 
+/**
+ * Names the credential variables the SDK will not find, on stderr, at startup.
+ *
+ * Written to stderr rather than through `logSink`, because when this fires the log
+ * sink is the broken component and anything sent through it is lost — which is the
+ * failure mode itself: a log group configured with credentials under the wrong names
+ * receives nothing and reports nothing, so it reads as "logging does not work".
+ *
+ * Only the ambient names are checked. A container using a task role, an SSO profile,
+ * or any other provider in the chain has none of these set and is correctly quiet.
+ */
+if (cloudWatch) {
+  const misnamed = [
+    ['AWS_ACCESS_KEY', 'AWS_ACCESS_KEY_ID'],
+    ['AWS_SECRET', 'AWS_SECRET_ACCESS_KEY'],
+  ].filter(([wrong, right]) => process.env[wrong!] && !process.env[right!]);
+  if (misnamed.length > 0) {
+    process.stderr.write(
+      `${JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level: 'warn',
+        component: 'agent-harness',
+        event: 'cloudwatch.credentials.misnamed',
+        logGroupName,
+        message:
+          'AGENT_LOG_GROUP is set but the AWS SDK reads different variable names, so log ' +
+          'delivery will fail with a credentials error. Rename these, or use a task role.',
+        rename: Object.fromEntries(misnamed),
+      })}\n`,
+    );
+  }
+}
+
 // Structured rather than a plain banner: stdout is now a JSON-lines stream, and six
 // bare lines of text would arrive as six unparseable CloudWatch records interleaved
 // with the run's own logs. As one record it is queryable like everything else, and it
@@ -85,6 +139,8 @@ emitLog(logSink, {
   streaming: 'Accept: text/event-stream, or ?stream=true',
   authenticated: serviceKey !== undefined,
   permissionCeiling: permissionCeiling ?? 'none',
+  logDestination: logGroupName ? `cloudwatch:${logGroupName}` : 'stdout',
+  ...(logGroupName && region ? { region } : {}),
   shellEnvExtras: shellEnvironmentExtras,
   pid: process.pid,
   nodeVersion: process.version,
