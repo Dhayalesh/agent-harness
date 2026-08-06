@@ -36,6 +36,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "^3.1103.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.0.0"
   },

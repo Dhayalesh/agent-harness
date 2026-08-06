@@ -240,6 +240,8 @@ export type {
   LogSink,
   StructuredLogSinkOptions,
 } from './services/observability.js';
+export { CloudWatchLogWriter } from './services/cloudwatch-log-writer.js';
+export type { CloudWatchLogWriterOptions } from './services/cloudwatch-log-writer.js';
 export { BudgetTracker, SessionRateLimiter } from './services/limits.js';
 export type { BudgetLimits, RateLimitOptions } from './services/limits.js';
 export { formatProjectContext, LocalProjectContextProvider } from './context/project-context.js';
