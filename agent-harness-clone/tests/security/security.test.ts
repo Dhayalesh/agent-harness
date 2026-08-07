@@ -55,7 +55,14 @@ test('retry provider retries pre-stream transient faults but never duplicates pa
   };
   for await (const event of provider.stream(request)) events.push(event);
   assert.equal(attempts, 2);
-  assert.equal(events[0]?.type, 'text_delta');
+  // The backoff announces itself, so a caller watching the stream can tell a
+  // retry apart from a hang. The recovered output still follows exactly once.
+  assert.equal(events[0]?.type, 'warning');
+  assert.equal(events[0]?.type === 'warning' ? events[0].code : undefined, 'MODEL_RETRY');
+  assert.deepEqual(
+    events.filter((event) => event.type === 'text_delta'),
+    [{ type: 'text_delta', delta: 'recovered' }],
+  );
 
   const scripted = new ScriptedModelProvider([
     [

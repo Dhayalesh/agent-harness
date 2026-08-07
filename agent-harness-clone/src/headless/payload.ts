@@ -197,11 +197,15 @@ export const invocationPayloadSchema = z
      */
     permissionRules: z.array(headlessPermissionRuleSchema).max(200).default([]),
     /**
-     * What happens to a tool no rule covered. `ask` is deliberately not offered:
-     * asking suspends the run waiting for a reply no payload can send, so it would
-     * hang until the caller timed out.
+     * What happens to a tool no rule covered.
+     *
+     * `ask` suspends the run on a `permission.requested` event until something
+     * answers it, so it is only meaningful to a caller that is both watching a
+     * stream and able to send the answer back. The runner refuses it otherwise —
+     * see `HeadlessRunOptions.interactivePermissions` — because an unanswerable
+     * question hangs until the caller times out.
      */
-    permissionFallback: z.enum(['allow', 'deny']).default('deny'),
+    permissionFallback: z.enum(['allow', 'deny', 'ask']).default('deny'),
     /** Attached to the session and to every stored message. */
     metadata: z.record(z.string(), z.unknown()).default({}),
     /**

@@ -111,7 +111,15 @@ test('OpenRouter provider targets the gateway with attribution and routing', asy
     content: 'System instructions',
   });
   assert.deepEqual(events, [
+    { type: 'tool_call_delta', index: 0, id: 'call-1', name: 'echo', argumentsDelta: '{"val' },
     { type: 'usage', usage: { inputTokens: 20, outputTokens: 6, estimatedCostUsd: 0.002 } },
+    {
+      type: 'tool_call_delta',
+      index: 0,
+      id: 'call-1',
+      name: 'echo',
+      argumentsDelta: 'ue":"ok"}',
+    },
     { type: 'tool_call', id: 'call-1', name: 'echo', input: { value: 'ok' } },
     { type: 'completed', stopReason: 'tool_use' },
   ]);

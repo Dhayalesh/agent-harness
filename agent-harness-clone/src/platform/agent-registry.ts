@@ -1,6 +1,7 @@
 import type { ContentStore } from '../content/content-store.js';
 import type { AgentLimits } from '../core/agent-session.js';
 import { AgentHarnessError } from '../core/errors.js';
+import type { RunProgressReporter } from '../core/events.js';
 import type { McpConnection, McpElicitationHandler } from '../mcp/client.js';
 import type { ModelProvider } from '../models/provider.js';
 import type { LogContext, LogSink } from '../services/observability.js';
@@ -83,6 +84,12 @@ export type PlatformAgentRegistryOptions = {
    * only when the record references a skill; a record with none resolves without it.
    */
   contentStore?: ContentStore;
+  /**
+   * Reports the long parts of assembly — downloading skill documents, connecting
+   * MCP servers — while they happen. Optional: a caller that is not watching a
+   * stream has the structured log for the same facts after the fact.
+   */
+  onProgress?: RunProgressReporter;
 };
 
 /**
@@ -159,6 +166,7 @@ export class PlatformAgentRegistry {
       ...(options.elicitationHandler === undefined
         ? {}
         : { elicitationHandler: options.elicitationHandler }),
+      ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
     });
   }
 
@@ -214,9 +222,19 @@ export class PlatformAgentRegistry {
     let skillRecords: readonly SkillRecord[] = [];
     let skills = new SkillRegistry();
     try {
+      if (record.skills.length > 0) {
+        this.options.onProgress?.('skills', `Loading ${record.skills.length} skill document(s)`, {
+          total: record.skills.length,
+        });
+      }
       const materialized = await this.materializeSkills(record, directory);
       skillRecords = materialized.records;
       skills = new SkillRegistry(materialized.skills);
+      if (skillRecords.length > 0) {
+        this.options.onProgress?.('skills', `Loaded ${skillRecords.length} skill document(s)`, {
+          skills: skillRecords.map((skill) => skill.name),
+        });
+      }
     } catch (error) {
       await directory.dispose();
       throw error;

@@ -7,7 +7,8 @@ import type { ArtifactStore } from '../artifacts/artifact-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
 import { createAgentSession, type AgentSession } from '../core/agent-session.js';
 import { AgentHarnessError } from '../core/errors.js';
-import type { AgentEvent } from '../core/events.js';
+import { AsyncEventQueue } from '../core/event-queue.js';
+import type { AgentEvent, RunPreparationStage, RunProgressReporter } from '../core/events.js';
 import type { AgentMessage } from '../core/messages.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
@@ -109,6 +110,29 @@ export type HeadlessRunOptions = {
    * lets the payload decide, including `bypass`.
    */
   permissionCeiling?: 'plan' | 'deny';
+  /**
+   * Allows `permissionFallback: 'ask'`, which suspends the run until something
+   * answers the `permission.requested` event.
+   *
+   * Off by default and refused outright in `invokeHeadless`: a buffered call has
+   * no one watching, so an asking run would hang until its caller timed out. A
+   * transport sets this only when it is streaming *and* it has a route that can
+   * deliver the answer back into the session.
+   */
+  interactivePermissions?: boolean;
+  /**
+   * Reports preparation progress. `streamHeadless` supplies its own so the
+   * progress reaches the stream; a caller may set one to observe a buffered run.
+   */
+  onProgress?: RunProgressReporter;
+  /**
+   * Receives the session as soon as it exists, before the first event.
+   *
+   * The seam a control channel needs: answering a permission request means
+   * calling `respondToPermission` on this exact session, and a generator yielding
+   * events has no other way to hand out a reference to it.
+   */
+  onSession?: (session: AgentSession) => void;
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
 };
@@ -282,7 +306,28 @@ export async function* streamHeadless(
       skills: parsed.skills.map((skill) => skill.name),
     });
     phase = 'preparation';
-    prepared = await prepare(parsed, options, sessionId, context);
+    // Preparation is the longest silence in a run — a stdio MCP server may have to
+    // be installed before it answers — so it reports rather than waits. The queue
+    // exists because the registry reports through a callback several frames below
+    // this generator; see `AsyncEventQueue`.
+    const queue = new AsyncEventQueue<AgentEvent>();
+    const channel = preparationChannel(sessionId, options, queue);
+    yield channel.emit('workspace', 'Preparing the run workspace');
+    yield channel.emit('agent', `Assembling agent ${parsed.agent.name}`, {
+      modelProvider: parsed.modelProvider.name,
+      model: parsed.agent.model ?? parsed.modelProvider.model,
+      mcpServers: parsed.mcpServers.length,
+      skills: parsed.skills.length,
+    });
+    const preparing = prepare(parsed, options, sessionId, context, channel).then(
+      (value) => ({ ok: true as const, value }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    void preparing.then(() => queue.close());
+    yield* queue.drain();
+    const settled = await preparing;
+    if (!settled.ok) throw settled.error;
+    prepared = settled.value;
     phase = 'execution';
     for await (const event of prepared.session.run({
       prompt: parsed.prompt,
@@ -406,6 +451,7 @@ async function prepare(
   options: HeadlessRunOptions,
   sessionId: string,
   logContext: LogContext,
+  progress?: RunProgressChannel,
 ): Promise<PreparedRun> {
   const started = Date.now();
   log(options, logContext, {
@@ -448,8 +494,12 @@ async function prepare(
     options.logger ?? (options.logSink === undefined ? undefined : (_message: string) => undefined);
   let agent: ResolvedAgent;
   try {
+    // The stream's own channel wins; `options.onProgress` is what a buffered
+    // caller sets when it wants the same milestones without the events.
+    const onProgress = progress?.report ?? options.onProgress;
     agent = await resolveInlineAgent(payload, {
       localTools,
+      ...(onProgress === undefined ? {} : { onProgress }),
       ...(options.elicitationHandler === undefined
         ? {}
         : { elicitationHandler: options.elicitationHandler }),
@@ -511,7 +561,11 @@ async function prepare(
       logContext,
       projectContextProvider: new LocalProjectContextProvider(runtime),
       metadata: { ...payload.metadata, agentName: agent.record.name },
+      // Continues the numbering the preparation events already used, so one run
+      // is one sequence from the first `run.preparing` to `session.completed`.
+      ...(progress === undefined ? {} : { initialSequence: progress.count() }),
     });
+    options.onSession?.(session);
 
     return {
       session,
@@ -534,6 +588,55 @@ async function prepare(
     await agent.close();
     throw error;
   }
+}
+
+/**
+ * The preparation reporter, its own sequence counter, and the queue that carries
+ * its events out to the generator.
+ *
+ * `emit` returns the event for the caller to yield directly; `report` is the
+ * callback handed down to the registry, which cannot yield and so pushes instead.
+ * Both share one counter, because the session continues it (`initialSequence`).
+ */
+type RunProgressChannel = {
+  report: RunProgressReporter;
+  emit: (stage: RunPreparationStage, message: string, data?: Record<string, unknown>) => AgentEvent;
+  count: () => number;
+};
+
+function preparationChannel(
+  sessionId: string,
+  options: HeadlessRunOptions,
+  queue: AsyncEventQueue<AgentEvent>,
+): RunProgressChannel {
+  let sequence = 0;
+  const build = (
+    stage: RunPreparationStage,
+    message: string,
+    data?: Record<string, unknown>,
+  ): AgentEvent => {
+    const event: AgentEvent = {
+      type: 'run.preparing',
+      stage,
+      message,
+      ...(data === undefined ? {} : { data }),
+      protocolVersion: 1,
+      sequence: (sequence += 1),
+      timestamp: new Date().toISOString(),
+      sessionId,
+    };
+    try {
+      options.eventSink?.onEvent(event);
+    } catch {
+      // Observability is never an execution dependency.
+    }
+    return event;
+  };
+  return {
+    report: (stage, message, data) => queue.push(build(stage, message, data)),
+    emit: build,
+    count: () => sequence,
+  };
 }
 
 async function closePrepared(
@@ -656,6 +759,16 @@ function permissionHandler(
   payload: InvocationPayload,
   options: HeadlessRunOptions,
 ): RulePermissionHandler {
+  // Refused rather than silently downgraded to `deny`: a caller that asked to be
+  // consulted and was quietly overruled would read the denials as the agent's
+  // judgement instead of as its transport's.
+  if (payload.permissionFallback === 'ask' && options.interactivePermissions !== true) {
+    throw new AgentHarnessError(
+      "permissionFallback 'ask' needs a transport that can deliver the answer: stream the " +
+        'run and enable the run registry, or choose allow or deny.',
+      'INTERACTIVE_PERMISSIONS_UNAVAILABLE',
+    );
+  }
   const mode =
     options.permissionCeiling === 'deny'
       ? 'deny'

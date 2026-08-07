@@ -15,8 +15,24 @@ export type OpenAICompatibleProviderOptions = {
   maxTokensField?: 'max_tokens' | 'max_completion_tokens';
   /** Gateway-specific request fields merged into the JSON body. */
   extraBody?: Readonly<Record<string, unknown>>;
+  /**
+   * Which delta field carries the model's deliberation. There is no standard:
+   * OpenRouter sends `reasoning`, DeepSeek and the vLLM-family gateways send
+   * `reasoning_content`. Unset reads both, which is safe because a response
+   * carries at most one of them.
+   */
+  reasoningField?: string;
+  /**
+   * Ask for reasoning in the request. Off by default: a gateway that does not
+   * know the parameter may reject the call, and one that does may bill for
+   * tokens the caller never asked to see.
+   */
+  requestReasoning?: boolean;
   fetch?: typeof fetch;
 };
+
+/** The delta fields read for deliberation when none is configured. */
+const REASONING_FIELDS = ['reasoning', 'reasoning_content'] as const;
 
 type CompatibleMessage =
   | { role: 'system' | 'user'; content: string }
@@ -37,6 +53,19 @@ type PendingToolCall = {
   arguments: string;
   emitted: boolean;
 };
+
+/**
+ * `reasoning` is a string on most gateways and an object on a few that wrap it
+ * with metadata. Only the text is forwarded; anything else is ignored rather than
+ * stringified into the stream as `[object Object]`.
+ */
+function reasoningText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  const record = asRecord(value);
+  if (record && typeof record.text === 'string') return record.text;
+  if (record && typeof record.content === 'string') return record.content;
+  return '';
+}
 
 export class OpenAICompatibleModelProvider implements ModelProvider {
   readonly name: string;
@@ -81,6 +110,8 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
             : {}),
           stream: true,
           stream_options: { include_usage: true },
+          // Both spellings, because the gateways that accept one ignore the other.
+          ...(this.options.requestReasoning ? { reasoning: {}, include_reasoning: true } : {}),
           ...(request.maxOutputTokens === undefined
             ? {}
             : {
@@ -117,11 +148,14 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       }
       const usage = asRecord(chunk.usage);
       if (usage) {
+        const outputDetails = asRecord(usage.completion_tokens_details);
+        const reasoningTokens = outputDetails?.reasoning_tokens;
         yield {
           type: 'usage',
           usage: {
             inputTokens: numberValue(usage.prompt_tokens),
             outputTokens: numberValue(usage.completion_tokens),
+            ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
             ...(typeof usage.cost === 'number' ? { estimatedCostUsd: usage.cost } : {}),
           },
         };
@@ -132,6 +166,15 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
         const delta = asRecord(choice.delta);
         if (delta && typeof delta.content === 'string' && delta.content) {
           yield { type: 'text_delta', delta: delta.content };
+        }
+        if (delta) {
+          const fields = this.options.reasoningField
+            ? [this.options.reasoningField]
+            : REASONING_FIELDS;
+          for (const field of fields) {
+            const reasoning = reasoningText(delta[field]);
+            if (reasoning) yield { type: 'reasoning_delta', delta: reasoning };
+          }
         }
         for (const callValue of arrayValue(delta?.tool_calls)) {
           const call = asRecord(callValue);
@@ -146,8 +189,19 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
           };
           if (typeof call.id === 'string') current.id += call.id;
           if (typeof details?.name === 'string') current.name += details.name;
-          if (typeof details?.arguments === 'string') current.arguments += details.arguments;
+          const argumentsDelta = typeof details?.arguments === 'string' ? details.arguments : '';
+          current.arguments += argumentsDelta;
           pending.set(index, current);
+          // Emitted per chunk as well as assembled at the end: a caller watching a
+          // stream can show the tool and its arguments as they arrive instead of
+          // waiting for a call that may take seconds to finish spelling itself out.
+          yield {
+            type: 'tool_call_delta',
+            index,
+            id: current.id,
+            name: current.name,
+            argumentsDelta,
+          };
         }
         if (!completed && choice.finish_reason !== null && choice.finish_reason !== undefined) {
           yield* emitPendingToolCalls(pending);

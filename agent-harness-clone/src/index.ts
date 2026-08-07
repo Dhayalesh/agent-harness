@@ -13,7 +13,12 @@
  */
 export { createAgentSession, resumeAgentSession } from './core/agent-session.js';
 export type { AgentLimits, AgentSession, AgentSessionConfig } from './core/agent-session.js';
-export type { AgentEvent, EventPayload } from './core/events.js';
+export type {
+  AgentEvent,
+  EventPayload,
+  RunPreparationStage,
+  RunProgressReporter,
+} from './core/events.js';
 export { isSerializableEvent } from './core/events.js';
 export type {
   AgentInput,
@@ -402,6 +407,10 @@ export {
   AWS_TRACE_HEADER,
   HEADLESS_HOST,
   HEADLESS_PORT,
+  RUN_ID_HEADER,
   startHeadlessServer,
 } from './headless/server.js';
 export type { HeadlessServerOptions, RunningHeadlessServer } from './headless/server.js';
+export { ResumeWindowExpiredError, RunRegistry } from './headless/run-registry.js';
+export type { RunFactory, RunRecord, RunRegistryOptions } from './headless/run-registry.js';
+export { AsyncEventQueue } from './core/event-queue.js';

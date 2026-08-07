@@ -9,8 +9,9 @@ reads no bucket, and holds no stored configuration, so any instance can serve an
 request and a replica can be added or removed without draining.
 
 ```
-POST /invocations   payload in, result or SSE event stream out
-GET  /ping          health probe
+POST /invocations               payload in, result or SSE event stream out
+POST /invocations/permissions   answers a suspended run's permission request
+GET  /ping                      health probe
 ```
 
 That is the whole surface. There is no CLI agent, no session gateway, no desktop or
@@ -229,6 +230,76 @@ on throws.
 `streamHeadless` yields `AgentEvent` verbatim — a versioned, serializable protocol, the
 same one the SSE endpoint frames.
 
+## What a stream shows
+
+Enough to render a run as it happens rather than summarize it afterwards.
+
+| Event                       | When                                                            |
+| --------------------------- | --------------------------------------------------------------- |
+| `run.preparing`             | Workspace, agent assembly, each MCP connection, skill downloads |
+| `session.started`           | Preparation is done and the first turn is beginning             |
+| `assistant.reasoning.delta` | The model's deliberation, where it emits any                    |
+| `assistant.text.delta`      | The answer, token by token                                      |
+| `tool.input.delta`          | A tool call arriving argument by argument, before it can run    |
+| `tool.requested/started`    | The assembled call, then the start of its execution             |
+| `tool.progress`             | Output from a running tool, **while it runs**                   |
+| `tool.completed`            | Its result                                                      |
+| `permission.requested`      | A tool is waiting on a decision (`permissionFallback: 'ask'`)   |
+| `usage.updated`             | Tokens so far, including `reasoningTokens`                      |
+| `warning`                   | A retried request, a compaction, a rate limit waited out        |
+
+Every event carries `protocolVersion`, `sessionId`, a timestamp, and a `sequence` that
+runs unbroken from the first `run.preparing` to `session.completed` — which is what
+makes `Last-Event-ID` mean something.
+
+**Reasoning** is off unless asked for. The provider record's
+`capabilities.supportsReasoning` decides whether the request asks for it, and
+`wire.reasoningField` names the delta field when a gateway is unusual; unset reads both
+`reasoning` and `reasoning_content`. Deliberation is kept on `AgentMessage.reasoning`,
+beside `content` rather than inside it, so a past turn's thinking is never replayed to
+the model as if it were the answer.
+
+**Tool progress is live.** `bash` and `powershell` forward every output chunk as it
+arrives, and MCP tools forward their progress notifications, so a command that runs for
+five minutes reports for five minutes instead of printing its transcript at the end.
+
+## Resuming, and answering
+
+Both need the server to hold a run after the request that started it, which it does not
+do by default. `resumableRuns` turns it on:
+
+```ts
+await startHeadlessServer({ serviceKey, resumableRuns: true });
+```
+
+The trade is the one the stateless design exists to avoid — a reconnect or a decision
+has to reach the process holding the run. Under AgentCore that already holds, because a
+runtime session id is pinned to one container.
+
+**Resuming.** A registered stream answers with `x-run-id`. Reconnect by POSTing to
+`/invocations` with that `x-run-id` and a `Last-Event-ID`, and the stream continues from
+the next event; the body is ignored, since the run already has the payload that started
+it. Events are buffered per run (`maxBufferedEvents`, default 2000) and a run with no
+reader is aborted after `resumeWindowMs` (default 60s). A caller that has fallen further
+behind than the buffer is told so rather than silently resumed from a gap.
+
+**Answering.** `permissionFallback: 'ask'` suspends the run on a `permission.requested`
+event. Resolve it with:
+
+```bash
+curl -X POST http://127.0.0.1:8080/invocations/permissions \
+  -H 'content-type: application/json' \
+  --data '{"runId":"<x-run-id>","requestId":"<from the event>","decision":"allow"}'
+```
+
+`ask` is refused outright without both a stream and a registry, because an unanswerable
+question hangs until the caller times out. The path sits under `/invocations` because
+that is what an AgentCore runtime routes.
+
+Long streams also write a `: keep-alive` comment frame every `keepAliveMs` (default 15s),
+so a turn spent inside one slow tool does not read as a dead connection to whatever sits
+between the caller and the container.
+
 ## Tools
 
 `read_file`, `glob`, `grep`, `write_file`, `edit_file`, `bash`, `powershell`,
@@ -241,9 +312,12 @@ cross-site redirects to the model rather than following them.
 
 Plan mode and `ask_user_question` are deliberately absent. Both need someone watching:
 plan mode is a review step before a human approves, and a question suspends the turn
-until one is answered. A payload is answered by nobody, so offering either would
-produce a run that stalls or that silently picks an option on the caller's behalf. For
-the same reason `permissionFallback` is `allow` or `deny` and never `ask`.
+until one is answered. A payload on its own is answered by nobody, so offering either
+would produce a run that stalls or that silently picks an option on the caller's behalf.
+
+`permissionFallback: 'ask'` is the one place that changes, and only where the watching
+is real: a stream to show the question and a registry to route the answer back. Without
+both it is refused rather than downgraded — see [Resuming, and answering](#resuming-and-answering).
 
 Skills arrive on the payload as documents and are written to a temporary directory in
 the layout a local skill directory uses, so a payload skill is an ordinary skill file
@@ -252,12 +326,14 @@ path as much as the success one.
 
 ## Architecture
 
-The invocation path is four files:
+The invocation path is five files:
 
 - [`payload.ts`](./src/headless/payload.ts) — the contract, as zod schemas
 - [`inline-agent.ts`](./src/headless/inline-agent.ts) — payload to assembled agent
 - [`invoke.ts`](./src/headless/invoke.ts) — the run, buffered or streamed
 - [`server.ts`](./src/headless/server.ts) — the HTTP surface
+- [`run-registry.ts`](./src/headless/run-registry.ts) — the optional state resuming
+  and answering need, and nothing else
 
 `inline-agent.ts` is the interesting one. Rather than building a session directly, it
 completes the payload's blocks into the record shapes `PlatformAgentRegistry` already

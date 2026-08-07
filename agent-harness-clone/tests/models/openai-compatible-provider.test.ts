@@ -75,14 +75,83 @@ test('OpenAI-compatible provider maps messages, tools, usage, and streamed tool 
     role: 'system',
     content: 'System instructions',
   });
+  // The fragments are reported as they arrive as well as assembled at the end, so
+  // a caller watching a stream can show the call before it is complete.
   assert.deepEqual(events, [
+    {
+      type: 'tool_call_delta',
+      index: 0,
+      id: 'call-1',
+      name: 'echo',
+      argumentsDelta: '{"val',
+    },
     {
       type: 'usage',
       usage: { inputTokens: 12, outputTokens: 4, estimatedCostUsd: 0.001 },
     },
+    {
+      type: 'tool_call_delta',
+      index: 0,
+      id: 'call-1',
+      name: 'echo',
+      argumentsDelta: 'ue":"ok"}',
+    },
     { type: 'tool_call', id: 'call-1', name: 'echo', input: { value: 'ok' } },
     { type: 'completed', stopReason: 'tool_use' },
   ]);
+  // Reasoning is neither asked for nor sent unless the provider is configured for it.
+  assert.equal(body.reasoning, undefined);
+  assert.equal(body.include_reasoning, undefined);
+});
+
+test('reasoning deltas are forwarded and counted, in either spelling', async () => {
+  const seen: Array<{ requested: boolean; events: ModelStreamEvent[] }> = [];
+  for (const field of ['reasoning', 'reasoning_content'] as const) {
+    let capturedBody: Record<string, unknown> = {};
+    const provider = new OpenAICompatibleModelProvider({
+      apiKey: 'test-key',
+      baseURL: 'https://compatible.example/v1',
+      defaultModel: 'test/model',
+      requestReasoning: true,
+      fetch: async (_input, init) => {
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return sseResponse([
+          { choices: [{ delta: { [field]: 'Weighing ' }, finish_reason: null }] },
+          { choices: [{ delta: { [field]: 'the options.' }, finish_reason: null }] },
+          { choices: [{ delta: { content: 'Answer.' }, finish_reason: 'stop' }] },
+          {
+            choices: [],
+            usage: {
+              prompt_tokens: 10,
+              completion_tokens: 40,
+              completion_tokens_details: { reasoning_tokens: 30 },
+            },
+          },
+        ]);
+      },
+    });
+    const events: ModelStreamEvent[] = [];
+    for await (const event of provider.stream(baseRequest)) events.push(event);
+    seen.push({ requested: capturedBody.include_reasoning === true, events });
+  }
+
+  for (const { requested, events } of seen) {
+    assert.equal(requested, true);
+    assert.deepEqual(
+      events.filter((event) => event.type === 'reasoning_delta'),
+      [
+        { type: 'reasoning_delta', delta: 'Weighing ' },
+        { type: 'reasoning_delta', delta: 'the options.' },
+      ],
+    );
+    // Deliberation is not the answer, and must not be folded into it.
+    assert.deepEqual(
+      events.filter((event) => event.type === 'text_delta'),
+      [{ type: 'text_delta', delta: 'Answer.' }],
+    );
+    const usage = events.find((event) => event.type === 'usage');
+    assert.equal(usage?.type === 'usage' ? usage.usage.reasoningTokens : undefined, 30);
+  }
 });
 
 test('OpenAI-compatible provider keeps the OpenAI output-limit field', async () => {

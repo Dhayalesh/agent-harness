@@ -184,7 +184,24 @@ export class McpConnection {
         const result = await this.request(
           'tools/call',
           request,
-          () => this.client.callTool(request, undefined, this.requestOptions(context.signal)),
+          () =>
+            this.client.callTool(request, undefined, {
+              ...this.requestOptions(context.signal),
+              // Supplying this is what makes the SDK send a progress token, which
+              // is what makes a long remote tool report anything at all. Without
+              // it an MCP call is opaque until it returns.
+              onprogress: (progress) => {
+                context.reportProgress(
+                  progress.message ?? `${remote.name}: ${describeProgress(progress)}`,
+                  {
+                    server: this.serverName,
+                    remoteTool: remote.name,
+                    progress: progress.progress,
+                    ...(progress.total === undefined ? {} : { total: progress.total }),
+                  },
+                );
+              },
+            }),
           {
             toolCallId: context.toolCallId,
             turnId: context.turnId,
@@ -433,6 +450,17 @@ function describeError(error: unknown): { name: string; message: string; stack?:
 
 function normalize(name: string): string {
   return name.replace(/[^A-Za-z0-9_-]/g, '_');
+}
+
+/**
+ * Fallback text for a server that sends counters without a message. `total` is
+ * optional in the protocol, so an unbounded progress reads as a count rather than
+ * as a percentage of an unknown whole.
+ */
+function describeProgress(progress: { progress: number; total?: number | undefined }): string {
+  return progress.total === undefined
+    ? `${progress.progress}`
+    : `${progress.progress}/${progress.total}`;
 }
 
 function formatMcpContent(content: unknown): string {

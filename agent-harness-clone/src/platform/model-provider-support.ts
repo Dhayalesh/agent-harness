@@ -26,30 +26,22 @@ export const RUNTIME_SUPPORT = {
    */
   authKinds: ['bearer'] as const,
   /**
-   * `maxTokensField` is the only wire knob the adapter exposes
-   * (`OpenAICompatibleProviderOptions.maxTokensField`). The others have no
-   * seam:
+   * `maxTokensField` and `reasoningField` are the wire knobs the adapter
+   * exposes. The others have no seam:
    * - `streamOptions`: `stream_options` is fixed to `{ include_usage: true }`
-   *   at `src/models/openai-compatible-provider.ts:83`.
-   * - `usageReporting`: usage events are additive at
-   *   `src/models/openai-compatible-provider.ts:118-128`, with no
-   *   last-write-wins mode.
-   * - `toolCallIdMode`: tool-call ids and names are concatenated with `+=` at
-   *   `src/models/openai-compatible-provider.ts:147-148`.
-   * - `reasoningField`: reasoning deltas are dropped; only `delta.content` is
-   *   read at `src/models/openai-compatible-provider.ts:133`.
+   *   in the request body of `openai-compatible-provider.ts`.
+   * - `usageReporting`: usage events are additive, with no last-write-wins mode.
+   * - `toolCallIdMode`: tool-call ids and names are concatenated with `+=`.
    */
-  wireFields: ['maxTokensField'] as const,
+  wireFields: ['maxTokensField', 'reasoningField'] as const,
   /**
-   * `ModelProvider` is `name` + `stream` (`src/models/provider.ts:36`) and
-   * carries no capability surface, so the adapter itself consumes none of these
-   * fields. `contextWindow` and `maxOutputTokens` are still honoured, because the
-   * entrypoint reads them off the record and passes them as the session's token
-   * ceilings (`src/adapters/cli/index.ts`). The rest are stored and
-   * shape-validated only, and the registry logs once per resolution that they
-   * are not in effect.
+   * `contextWindow` and `maxOutputTokens` are honoured because the entrypoint
+   * reads them off the record and passes them as the session's token ceilings.
+   * `supportsReasoning` is honoured because it decides whether the adapter asks
+   * the gateway for deliberation at all. The rest are stored and shape-validated
+   * only, and the registry logs once per resolution that they are not in effect.
    */
-  capabilitiesHonoured: ['contextWindow', 'maxOutputTokens'] as const,
+  capabilitiesHonoured: ['contextWindow', 'maxOutputTokens', 'supportsReasoning'] as const,
 } as const;
 
 /**
@@ -70,14 +62,10 @@ export type SupportedWireField = (typeof RUNTIME_SUPPORT.wireFields)[number];
 
 const WIRE_FIELD_REASONS: Readonly<Record<keyof ModelProviderWire, string>> = {
   maxTokensField: '',
-  streamOptions:
-    'stream_options is fixed to { include_usage: true } (openai-compatible-provider.ts:83)',
-  usageReporting:
-    'usage events are additive with no alternative mode (openai-compatible-provider.ts:118-128)',
-  toolCallIdMode:
-    'tool-call ids are accumulated by concatenation (openai-compatible-provider.ts:147-148)',
-  reasoningField:
-    'reasoning deltas are discarded; only delta.content is read (openai-compatible-provider.ts:133)',
+  reasoningField: '',
+  streamOptions: 'stream_options is fixed to { include_usage: true }',
+  usageReporting: 'usage events are additive with no alternative mode',
+  toolCallIdMode: 'tool-call ids are accumulated by concatenation',
 };
 
 /** The subset of a record the support gate inspects. */

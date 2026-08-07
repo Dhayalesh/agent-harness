@@ -1,4 +1,4 @@
-import { AgentAbortError } from '../core/errors.js';
+import { AgentAbortError, errorMessage } from '../core/errors.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { ModelProvider, ModelRequest, ModelStreamEvent } from './provider.js';
 
@@ -91,6 +91,15 @@ export class RetryModelProvider implements ModelProvider {
           nextAttempt: attempt + 1,
           delayMs: delay,
         });
+        // Also on the stream, not only in the log: a caller watching a backoff has
+        // no other way to tell a retry apart from a hang.
+        yield {
+          type: 'warning',
+          code: 'MODEL_RETRY',
+          message:
+            `${this.provider.name} attempt ${attempt} of ${this.maxAttempts} failed ` +
+            `(${errorMessage(error)}); retrying in ${delay}ms`,
+        };
         await abortableDelay(delay, request.signal);
       }
     }

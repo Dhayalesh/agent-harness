@@ -16,7 +16,13 @@ import {
   type PermissionHandler,
 } from '../permissions/permission-handler.js';
 import { ToolRegistry } from '../tools/registry.js';
-import type { Tool, ToolExecutionContext, ToolPermissionCheck } from '../tools/tool.js';
+import type {
+  Tool,
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolPermissionCheck,
+} from '../tools/tool.js';
+import { AsyncEventQueue } from './event-queue.js';
 import type { SessionStore, StoredSession } from '../sessions/session-store.js';
 import type { CommandRegistry } from '../commands/commands.js';
 import type { ArtifactStore } from '../artifacts/artifact-store.js';
@@ -60,6 +66,15 @@ export type AgentSessionConfig = {
   rateLimiter?: SessionRateLimiter;
   projectContextProvider?: ProjectContextProvider;
   limits?: Partial<AgentLimits>;
+  /**
+   * Where this session's `sequence` numbering starts.
+   *
+   * A transport that emitted its own events before the session began — the
+   * preparation a headless run reports — passes the count it already used, so the
+   * stream a caller sees is numbered once from end to end. That is what lets a
+   * reconnect say "I had up to N" and mean it.
+   */
+  initialSequence?: number;
   idFactory?: () => string;
   clock?: () => Date;
 };
@@ -76,6 +91,8 @@ export type AgentSession = {
 type PermissionWaiter = {
   resolve: (decision: 'allow' | 'deny') => void;
 };
+
+type SettledExecution = { ok: true; output: ToolExecutionResult } | { ok: false; error: unknown };
 
 const DEFAULT_LIMITS: AgentLimits = { maxTurns: 24, maxOutputTokens: 8_192 };
 
@@ -152,6 +169,7 @@ class AgentSessionImpl implements AgentSession {
     this.budget = new BudgetTracker(config.budget);
     this.rateLimiter = config.rateLimiter;
     this.projectContextProvider = config.projectContextProvider;
+    this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
   }
 
@@ -200,6 +218,7 @@ class AgentSessionImpl implements AgentSession {
         yield this.event({ type: 'turn.started', turnId, turn });
 
         const textParts: string[] = [];
+        const reasoningParts: string[] = [];
         const toolCalls: ToolCallBlock[] = [];
         let stopReason: StopReason = 'end_turn';
         let modelStarted: number | undefined;
@@ -277,6 +296,31 @@ class AgentSessionImpl implements AgentSession {
                   delta: modelEvent.delta,
                 });
                 break;
+              case 'reasoning_delta':
+                reasoningParts.push(modelEvent.delta);
+                yield this.event({
+                  type: 'assistant.reasoning.delta',
+                  turnId,
+                  delta: modelEvent.delta,
+                });
+                break;
+              case 'tool_call_delta':
+                yield this.event({
+                  type: 'tool.input.delta',
+                  turnId,
+                  index: modelEvent.index,
+                  toolCallId: modelEvent.id,
+                  toolName: modelEvent.name,
+                  delta: modelEvent.argumentsDelta,
+                });
+                break;
+              case 'warning':
+                yield this.event({
+                  type: 'warning',
+                  code: modelEvent.code,
+                  message: modelEvent.message,
+                });
+                break;
               case 'tool_call': {
                 const call: ToolCallBlock = {
                   type: 'tool_call',
@@ -314,6 +358,7 @@ class AgentSessionImpl implements AgentSession {
             model: this.config.model,
             stopReason,
             text: textParts.join(''),
+            ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
             toolCalls,
             durationMs: Date.now() - modelStarted,
           });
@@ -378,6 +423,7 @@ class AgentSessionImpl implements AgentSession {
           id: this.idFactory(),
           role: 'assistant',
           createdAt: this.now(),
+          ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
           content: [
             ...(textParts.length === 0
               ? []
@@ -623,7 +669,7 @@ class AgentSessionImpl implements AgentSession {
       input: parsed.data,
     });
     yield this.event({ type: 'tool.started', turnId, call });
-    const queuedProgress: AgentEvent[] = [];
+    const progress = new AsyncEventQueue<AgentEvent>();
     const context: ToolExecutionContext = {
       sessionId: this.id,
       turnId,
@@ -632,7 +678,7 @@ class AgentSessionImpl implements AgentSession {
       signal: this.activeController?.signal ?? AbortSignal.abort(),
       messages: this.messages,
       reportProgress: (message, data) => {
-        queuedProgress.push(
+        progress.push(
           this.event({
             type: 'tool.progress',
             turnId,
@@ -645,8 +691,19 @@ class AgentSessionImpl implements AgentSession {
     };
 
     try {
-      const output = await tool.execute(parsed.data, context);
-      for (const progressEvent of queuedProgress) yield progressEvent;
+      // Settled into a value rather than awaited directly, so the rejection is
+      // handled the moment it happens and the queue below can be drained for as
+      // long as the tool runs without leaving a rejected promise unattended.
+      const execution: Promise<SettledExecution> = tool.execute(parsed.data, context).then(
+        (output) => ({ ok: true as const, output }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      void execution.then(() => progress.close());
+      // The progress a long command reports as it goes, forwarded as it goes.
+      yield* progress.drain();
+      const settled = await execution;
+      if (!settled.ok) throw settled.error;
+      const output = settled.output;
       let content = output.content;
       let artifactMetadata: Record<string, unknown> = {};
       if (content.length > this.maxInlineToolResultChars && this.artifactStore) {
@@ -687,7 +744,7 @@ class AgentSessionImpl implements AgentSession {
       yield this.event({ type: 'tool.completed', turnId, result });
       return result;
     } catch (error) {
-      for (const progressEvent of queuedProgress) yield progressEvent;
+      // Whatever the tool reported before it failed has already been yielded.
       const result = this.toolError(call.id, errorMessage(error));
       this.log({
         level: 'error',

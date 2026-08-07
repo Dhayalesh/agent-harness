@@ -24,6 +24,10 @@ export type OpenRouterProviderOptions = {
   /** Restrict or order upstream providers, e.g. `{ order: ['anthropic'] }`. */
   providerRouting?: Readonly<Record<string, unknown>>;
   defaultHeaders?: Readonly<Record<string, string>>;
+  /** Ask OpenRouter to return the model's deliberation alongside its answer. */
+  requestReasoning?: boolean;
+  /** Overrides the delta field read for deliberation. OpenRouter sends `reasoning`. */
+  reasoningField?: string;
   fetch?: typeof fetch;
 };
 
@@ -90,6 +94,10 @@ export class OpenRouterModelProvider implements ModelProvider {
       maxTokensField: 'max_tokens',
       defaultHeaders: openRouterHeaders(options),
       ...(routing === undefined ? {} : { extraBody: routing }),
+      ...(options.requestReasoning === undefined
+        ? {}
+        : { requestReasoning: options.requestReasoning }),
+      ...(options.reasoningField === undefined ? {} : { reasoningField: options.reasoningField }),
       ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
     });
   }

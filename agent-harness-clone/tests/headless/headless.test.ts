@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import type { AgentEvent } from '../../src/index.js';
 import {
   AgentHarnessError,
   createBuiltinTools,
@@ -90,6 +91,40 @@ async function scriptedEndpoint(script: readonly string[]): Promise<{
         server.close((error) => (error ? reject(error) : resolve()));
       }),
   };
+}
+
+/**
+ * A shell command that prints and then keeps running.
+ *
+ * The runtime's tool catalogue is fixed (`AGENT_RUNTIME_SUPPORT.tools`), so a test
+ * cannot invent a tool to observe; it uses the real shell tool, which already
+ * reports every output chunk. The gap between the print and the exit is what makes
+ * live progress distinguishable from progress flushed at the end.
+ */
+const SLOW_SHELL =
+  process.platform === 'win32'
+    ? {
+        tool: 'powershell',
+        command: "Write-Output 'step one'; Start-Sleep -Milliseconds 700",
+        options: { powershell: true },
+      }
+    : {
+        tool: 'bash',
+        command: "echo 'step one'; sleep 0.7",
+        options: { powershell: false },
+      };
+
+function shellPayload(baseURL: string, prompt: string): InvocationPayloadInput {
+  return payload(baseURL, {
+    prompt,
+    agent: {
+      name: 'shell-demo',
+      systemPrompt: 'You run shell commands.',
+      tools: [SLOW_SHELL.tool],
+      limits: { maxTurns: 4 },
+    },
+    permissionRules: [{ tool: SLOW_SHELL.tool, decision: 'allow' as const }],
+  });
 }
 
 function payload(baseURL: string, overrides: Partial<InvocationPayloadInput> = {}) {
@@ -297,7 +332,10 @@ test('the event stream is the same protocol the other transports emit', async (t
     assert.equal(event.protocolVersion, 1);
   }
 
-  assert.equal(types[0], 'session.started');
+  // Preparation reports before the session exists, so the first thing a caller
+  // sees is what the run is doing rather than nothing at all.
+  assert.equal(types[0], 'run.preparing');
+  assert.ok(types.includes('session.started'));
   assert.ok(types.includes('assistant.text.delta'));
   assert.equal(types.at(-1), 'session.completed');
 });
@@ -586,6 +624,258 @@ test('payload.stream picks the encoding only when the transport did not', async 
     'text/event-stream',
   );
   assert.match(asked.headers.get('content-type') ?? '', /text\/event-stream/);
+});
+
+test('tool progress reaches the stream while the tool is still running', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-1', SLOW_SHELL.tool, { command: SLOW_SHELL.command }),
+    textChunk('Done.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-progress-'));
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const events: Array<{ event: AgentEvent; at: number }> = [];
+  for await (const event of streamHeadless(
+    shellPayload(endpoint.baseURL, 'Run the slow command.'),
+    { workspaceRoot, builtinToolOptions: SLOW_SHELL.options },
+  )) {
+    events.push({ event, at: Date.now() });
+  }
+
+  const firstProgress = events.find(({ event }) => event.type === 'tool.progress');
+  const completed = events.find(({ event }) => event.type === 'tool.completed');
+  assert.ok(firstProgress, 'the shell tool reported nothing');
+  assert.ok(completed);
+
+  // The command prints immediately and then sleeps 700ms. Buffered progress would
+  // arrive with the result; live progress arrives while the command is sleeping,
+  // so the gap between the two is the whole point.
+  const gap = completed.at - firstProgress.at;
+  assert.ok(gap > 200, `progress arrived only ${gap}ms before the result, so it was buffered`);
+
+  // One run, one sequence: the preparation events and the session's own share a
+  // counter, which is what a resuming caller relies on.
+  const sequences = events.map(({ event }) => event.sequence);
+  assert.deepEqual(
+    sequences,
+    sequences.map((_value, index) => index + 1),
+  );
+});
+
+test('preparation is reported before the session starts', async (t) => {
+  const endpoint = await scriptedEndpoint([textChunk('Ready.')]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-prep-'));
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const events: AgentEvent[] = [];
+  for await (const event of streamHeadless(payload(endpoint.baseURL, { prompt: 'Say ready.' }), {
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+  })) {
+    events.push(event);
+  }
+
+  const stages = events
+    .filter((event) => event.type === 'run.preparing')
+    .map((event) => event.stage);
+  assert.deepEqual(stages, ['workspace', 'agent']);
+  const firstPreparing = events.findIndex((event) => event.type === 'run.preparing');
+  const sessionStarted = events.findIndex((event) => event.type === 'session.started');
+  assert.equal(firstPreparing, 0);
+  assert.ok(sessionStarted > firstPreparing);
+});
+
+test('a stream keeps the connection alive and can be resumed where it dropped', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-1', SLOW_SHELL.tool, { command: SLOW_SHELL.command }),
+    textChunk('Done.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-resume-'));
+  const running = await startHeadlessServer({
+    host: '127.0.0.1',
+    port: 0,
+    workspaceRoot,
+    builtinToolOptions: SLOW_SHELL.options,
+    keepAliveMs: 30,
+    resumableRuns: true,
+  });
+  t.after(async () => {
+    await running.close();
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const body = JSON.stringify(shellPayload(endpoint.baseURL, 'Run the slow command.'));
+
+  const first = await fetch(`${running.url}/invocations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+    body,
+  });
+  assert.equal(first.status, 200);
+  const runId = first.headers.get('x-run-id');
+  assert.ok(runId, 'a registered stream names its run');
+
+  // Read until the command has printed, then keep reading while it sleeps — long
+  // enough for the 30ms keep-alive to fire on an otherwise silent stream.
+  const reader = (first.body as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  let lastId = 0;
+  while (!text.includes('step one') || !text.includes(': keep-alive')) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  for (const line of text.split('\n')) {
+    if (line.startsWith('id: ')) lastId = Number.parseInt(line.slice(4), 10);
+  }
+  assert.ok(text.includes(': keep-alive'), 'a silent stream still writes comment frames');
+  assert.ok(lastId > 0);
+
+  // Drop the connection mid-run. The work continues without it.
+  await reader.cancel().catch(() => undefined);
+
+  const resumed = await fetch(`${running.url}/invocations`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'x-run-id': runId,
+      'last-event-id': String(lastId),
+    },
+    body: '{}',
+  });
+  assert.equal(resumed.status, 200);
+  const tail = await resumed.text();
+
+  const resumedIds = [...tail.matchAll(/^id: (\d+)$/gm)].map((match) => Number(match[1]));
+  assert.ok(resumedIds.length > 0, 'the resumed stream replays what the first one missed');
+  assert.equal(
+    resumedIds.every((id) => id > lastId),
+    true,
+    'a resumed stream repeats nothing the caller already had',
+  );
+  assert.match(tail, /event: session\.completed/);
+});
+
+/** `write_file` has no per-invocation check and is not `kind: 'read'`, so with no
+ * rule covering it the handler falls through to the fallback — which is the only
+ * way to reach a permission question. */
+function askingPayload(baseURL: string): InvocationPayloadInput {
+  return payload(baseURL, {
+    prompt: 'Write hello.txt.',
+    agent: {
+      name: 'ask-demo',
+      systemPrompt: 'You write files when asked.',
+      tools: ['write_file'],
+      limits: { maxTurns: 4 },
+    },
+    permissionRules: [],
+    permissionFallback: 'ask',
+  });
+}
+
+test('an asking payload is refused unless the transport can answer it', async (t) => {
+  const endpoint = await scriptedEndpoint([textChunk('Nothing to do.')]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-ask-'));
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  // Buffered: nobody is watching, so a question would hang. Refused instead.
+  await assert.rejects(
+    async () =>
+      invokeHeadless(askingPayload(endpoint.baseURL), {
+        workspaceRoot,
+        builtinToolOptions: { powershell: false },
+      }),
+    (error: unknown) =>
+      error instanceof AgentHarnessError && error.code === 'INTERACTIVE_PERMISSIONS_UNAVAILABLE',
+  );
+});
+
+test('a streamed run asks for permission and runs the tool once answered', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-1', 'write_file', { path: 'hello.txt', content: 'hi' }),
+    textChunk('Written.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-answer-'));
+  const running = await startHeadlessServer({
+    host: '127.0.0.1',
+    port: 0,
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+    resumableRuns: true,
+  });
+  t.after(async () => {
+    await running.close();
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const response = await fetch(`${running.url}/invocations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+    body: JSON.stringify(askingPayload(endpoint.baseURL)),
+  });
+  assert.equal(response.status, 200);
+  const runId = response.headers.get('x-run-id');
+  assert.ok(runId);
+
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  while (!text.includes('event: permission.requested')) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false, 'the run ended without asking');
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  const asked = text
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice(6)) as AgentEvent)
+    .find((event) => event.type === 'permission.requested');
+  assert.ok(asked && asked.type === 'permission.requested');
+  assert.equal(asked.toolName, 'write_file');
+
+  const answer = await fetch(`${running.url}/invocations/permissions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ runId, requestId: asked.requestId, decision: 'allow' }),
+  });
+  assert.equal(answer.status, 200);
+  assert.deepEqual(await answer.json(), {
+    answered: true,
+    runId,
+    requestId: asked.requestId,
+    decision: 'allow',
+  });
+
+  while (!text.includes('event: session.completed')) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    text += decoder.decode(chunk.value, { stream: true });
+  }
+  assert.match(text, /event: permission\.resolved/);
+  // Allowed, so the tool ran rather than coming back as a denial.
+  assert.match(text, /event: tool\.completed/);
+  assert.doesNotMatch(text, /Permission denied/);
+
+  // A second answer to the same question has nothing left to resolve.
+  const repeat = await fetch(`${running.url}/invocations/permissions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ runId, requestId: asked.requestId, decision: 'allow' }),
+  });
+  assert.equal(repeat.status, 409);
 });
 
 test('a malformed payload is a 400 from the server, not a 500', async (t) => {

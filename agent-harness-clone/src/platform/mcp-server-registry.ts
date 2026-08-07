@@ -2,6 +2,7 @@ import { getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js
 import type { StdioServerParameters } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { StreamableHTTPClientTransportOptions } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { AgentHarnessError } from '../core/errors.js';
+import type { RunProgressReporter } from '../core/events.js';
 import type { McpConnectionOptions, McpElicitationHandler } from '../mcp/client.js';
 import { McpConnection } from '../mcp/client.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
@@ -26,6 +27,8 @@ export type PlatformMcpServerRegistryOptions = {
    * cannot prompt a host that has no way to ask.
    */
   elicitationHandler?: McpElicitationHandler;
+  /** Reports each connection as it is attempted, for a caller watching a stream. */
+  onProgress?: RunProgressReporter;
 };
 
 /**
@@ -74,7 +77,18 @@ export class PlatformMcpServerRegistry {
     const connections: McpConnection[] = [];
     try {
       for (const record of records) {
+        this.options.onProgress?.('mcp', `Connecting MCP server ${record.name}`, {
+          server: record.name,
+          transport: record.transport,
+          index: connections.length + 1,
+          total: records.length,
+        });
+        const started = Date.now();
         connections.push(await this.resolveRecord(record));
+        this.options.onProgress?.('mcp', `Connected MCP server ${record.name}`, {
+          server: record.name,
+          durationMs: Date.now() - started,
+        });
       }
       return connections;
     } catch (error) {

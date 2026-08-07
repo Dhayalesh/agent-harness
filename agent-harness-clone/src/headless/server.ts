@@ -4,6 +4,7 @@ import { AgentHarnessError } from '../core/errors.js';
 import type { AgentEvent } from '../core/events.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import { invokeHeadless, streamHeadless, type HeadlessRunOptions } from './invoke.js';
+import { RunRegistry, type RunRegistryOptions } from './run-registry.js';
 
 /**
  * `POST /invocations` with a payload, `GET /ping` for a health probe.
@@ -25,6 +26,11 @@ export const HEADLESS_PORT = 8080;
 export const HEADLESS_HOST = '0.0.0.0';
 export const AGENTCORE_RUNTIME_SESSION_HEADER = 'x-amzn-bedrock-agentcore-runtime-session-id';
 export const AWS_TRACE_HEADER = 'x-amzn-trace-id';
+/**
+ * Names the run to rejoin or to answer. Sent back on every registered stream, so
+ * a caller that did not choose one still learns the id it was given.
+ */
+export const RUN_ID_HEADER = 'x-run-id';
 
 export type HeadlessServerOptions = HeadlessRunOptions & {
   host?: string;
@@ -47,6 +53,19 @@ export type HeadlessServerOptions = HeadlessRunOptions & {
   maxBodyBytes?: number;
   /** Concurrent runs allowed. Further requests get 429. Defaults to 8. */
   maxConcurrentRuns?: number;
+  /**
+   * Gap between SSE comment frames on an otherwise silent stream. Defaults to
+   * 15s, under the 30–60s idle timeout most proxies apply.
+   */
+  keepAliveMs?: number;
+  /**
+   * Keeps runs addressable after the request that started them, which is what
+   * `Last-Event-ID` resume and `permissionFallback: 'ask'` both need. Off by
+   * default: it trades the property that any replica can serve any request, so
+   * enable it only where a caller is pinned to one process — an AgentCore runtime
+   * session is, a load-balanced pool is not.
+   */
+  resumableRuns?: boolean | RunRegistryOptions;
 };
 
 export type RunningHeadlessServer = {
@@ -60,12 +79,19 @@ export async function startHeadlessServer(
 ): Promise<RunningHeadlessServer> {
   const maxBodyBytes = options.maxBodyBytes ?? 8_000_000;
   const maxConcurrentRuns = options.maxConcurrentRuns ?? 8;
+  const keepAliveMs = options.keepAliveMs ?? 15_000;
+  const registry =
+    options.resumableRuns === undefined || options.resumableRuns === false
+      ? undefined
+      : new RunRegistry(options.resumableRuns === true ? {} : options.resumableRuns);
   const {
     host: _host,
     port: _port,
     serviceKey,
     maxBodyBytes: _maxBodyBytes,
     maxConcurrentRuns: _maxConcurrentRuns,
+    keepAliveMs: _keepAliveMs,
+    resumableRuns: _resumableRuns,
     invocationId: _invocationId,
     // Dropped for the same reason as `invocationId`: both are per-invocation identity.
     // A server-wide value would label every request in the process as one session,
@@ -120,6 +146,61 @@ export async function startHeadlessServer(
       response.end();
     });
   });
+
+  /**
+   * Resolves one `permission.requested` event. The decision reaches the suspended
+   * run through the session the registry is holding; there is no other route
+   * back into a turn that is already in flight.
+   */
+  async function answerPermission(
+    request: IncomingMessage,
+    response: ServerResponse,
+    context: LogContext,
+  ): Promise<void> {
+    if (!registry) {
+      rejected(runOptions.logSink, context, 404, 'Run registry is not enabled');
+      sendJson(response, 404, {
+        error: 'This server holds no runs, so there is nothing to answer. Enable resumableRuns.',
+      });
+      return;
+    }
+    let body: unknown;
+    try {
+      body = await readJson(request, 64_000);
+    } catch (error) {
+      rejected(runOptions.logSink, context, 400, describe(error));
+      sendJson(response, 400, { error: describe(error) });
+      return;
+    }
+    const decision = permissionDecision(body);
+    if (!decision) {
+      rejected(runOptions.logSink, context, 400, 'Invalid permission decision');
+      sendJson(response, 400, {
+        error: 'Expected { runId, requestId, decision } with decision "allow" or "deny"',
+      });
+      return;
+    }
+    const run = registry.get(decision.runId);
+    const answered = run?.session?.respondToPermission(decision.requestId, decision.decision);
+    emitLog(runOptions.logSink, {
+      ...context,
+      level: answered === true ? 'info' : 'warn',
+      event: 'http.permission.answered',
+      runId: decision.runId,
+      requestId: decision.requestId,
+      decision: decision.decision,
+      answered: answered === true,
+    });
+    if (answered !== true) {
+      sendJson(response, 409, {
+        error:
+          `No pending permission ${decision.requestId} on run ${decision.runId}. It was already ` +
+          'answered, the run ended, or the id is wrong.',
+      });
+      return;
+    }
+    sendJson(response, 200, { answered: true, ...decision });
+  }
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://localhost');
@@ -179,7 +260,9 @@ export async function startHeadlessServer(
       writePing(response);
       return;
     }
-    if (request.method !== 'POST' || url.pathname !== '/invocations') {
+    const permissionRoute =
+      request.method === 'POST' && url.pathname === '/invocations/permissions';
+    if (request.method !== 'POST' || (url.pathname !== '/invocations' && !permissionRoute)) {
       rejected(runOptions.logSink, context, 404, 'Not found');
       sendJson(response, 404, { error: 'Not found' });
       return;
@@ -189,10 +272,58 @@ export async function startHeadlessServer(
       sendJson(response, 401, { error: 'Invalid agent service key' });
       return;
     }
+
+    // The other half of `permissionFallback: 'ask'`: the run is suspended on a
+    // `permission.requested` event it emitted to the stream, and this is the
+    // request that answers it. Kept on the `/invocations` path because that is
+    // what an AgentCore runtime routes.
+    if (permissionRoute) {
+      await answerPermission(request, response, context);
+      return;
+    }
     if (activeRuns >= maxConcurrentRuns) {
       rejected(runOptions.logSink, context, 429, 'Invocation capacity reached');
       sendJson(response, 429, {
         error: `At capacity: ${activeRuns} runs in flight of ${maxConcurrentRuns} allowed`,
+      });
+      return;
+    }
+
+    // A reconnect names the run it lost and where it got to. Checked before the
+    // body is read, because a resuming caller has nothing new to say: the run it
+    // is rejoining already has the payload that started it.
+    const runId = header(request, RUN_ID_HEADER) ?? runtimeSessionId;
+    const resuming = runId === undefined ? undefined : registry?.get(runId);
+    if (resuming) {
+      const after = lastEventId(request, url);
+      emitLog(runOptions.logSink, {
+        ...context,
+        event: 'http.invocation.resumed',
+        runId,
+        afterSequence: after,
+      });
+      activeRuns += 1;
+      setBusy(true);
+      try {
+        await writeEventStream(response, () => resuming.read(after), {
+          keepAliveMs,
+          ...(runId === undefined ? {} : { runId }),
+          // Detaching, not ending: the run stays in the registry so the next
+          // reconnect finds it, and its own idle window decides when it dies.
+          release: async () => undefined,
+        });
+      } finally {
+        activeRuns -= 1;
+        setBusy(activeRuns > 0);
+      }
+      return;
+    }
+    if (header(request, 'last-event-id') !== undefined && registry) {
+      rejected(runOptions.logSink, context, 409, 'No resumable run for that id');
+      sendJson(response, 409, {
+        error:
+          `No run is being held for ${runId ?? '(no run id)'}. It finished and was released, ` +
+          'or its resume window passed. Start a new run.',
       });
       return;
     }
@@ -230,10 +361,28 @@ export async function startHeadlessServer(
       // handing it down is what makes their logs share a `sessionId` — and, when a
       // `sessionStore` is configured, what lets them share a conversation.
       ...(runtimeSessionId === undefined ? {} : { sessionId: runtimeSessionId }),
+      // Only a registered stream can be asked a question and answer it: the
+      // request that decides arrives after the one that asked, and needs the
+      // session to still be findable.
+      ...(registry && streaming ? { interactivePermissions: true } : {}),
     };
     try {
       if (streaming) {
-        await writeEventStream(response, () => streamHeadless(payload, invocationOptions));
+        if (registry) {
+          const id = runId ?? requestId;
+          const record = registry.start(id, (setSession) =>
+            streamHeadless(payload, { ...invocationOptions, onSession: setSession }),
+          );
+          await writeEventStream(response, () => record.read(0), {
+            keepAliveMs,
+            runId: id,
+            release: async () => undefined,
+          });
+          return;
+        }
+        await writeEventStream(response, () => streamHeadless(payload, invocationOptions), {
+          keepAliveMs,
+        });
         return;
       }
       // A failure inside the turn comes back as `status: 'error'` on a 200, because
@@ -301,6 +450,9 @@ export async function startHeadlessServer(
         event: 'server.shutdown.started',
         activeRuns,
       });
+      // Held runs first: each one may own MCP processes and a skill directory,
+      // and closing the listener does not reach either.
+      await registry?.closeAll();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
@@ -331,10 +483,15 @@ function payloadPrefersStream(payload: unknown): boolean {
  * Advances the generator once before writing SSE headers, so a payload rejected at
  * validation still gets a status code. Once the headers are out they cannot be taken
  * back, and a later failure has to travel as an event instead.
+ *
+ * `release` decides what a finished or abandoned stream does to the run behind it.
+ * Without a registry that is "end it", which is the stateless default; with one the
+ * run outlives the socket so a reconnect has something to resume.
  */
 async function writeEventStream(
   response: ServerResponse,
   open: () => AsyncGenerator<AgentEvent>,
+  options: { keepAliveMs: number; runId?: string; release?: () => Promise<void> },
 ): Promise<void> {
   const iterator = open();
   let first: IteratorResult<AgentEvent>;
@@ -349,22 +506,64 @@ async function writeEventStream(
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
+    // Reverse proxies that buffer by default hold a stream until it ends, which
+    // turns every delta into one delivery at the finish.
+    'x-accel-buffering': 'no',
+    ...(options.runId === undefined ? {} : { 'x-run-id': options.runId }),
   });
+
+  // A comment frame is a no-op to an SSE reader and traffic to everything in
+  // between. Without it a turn that spends four minutes in one tool looks to an
+  // idle-timeout proxy exactly like a dead connection.
+  const keepAlive = setInterval(() => {
+    if (!response.writableEnded) response.write(': keep-alive\n\n');
+  }, options.keepAliveMs);
+  keepAlive.unref?.();
+
   try {
     for (let next = first; next.done !== true; next = await iterator.next()) {
-      response.write(
+      if (response.writableEnded) break;
+      await writeFrame(
+        response,
         `id: ${next.value.sequence}\nevent: ${next.value.type}\ndata: ${JSON.stringify(next.value)}\n\n`,
       );
     }
   } catch (error) {
-    response.write(`event: error\ndata: ${JSON.stringify({ error: describe(error) })}\n\n`);
+    if (!response.writableEnded) {
+      response.write(`event: error\ndata: ${JSON.stringify({ error: describe(error) })}\n\n`);
+    }
   } finally {
-    // Reaches the generator's `finally`, which closes the MCP connections and
-    // deletes the skill directory. Without it, a caller that hung up mid-stream
-    // would leave stdio servers running.
-    await iterator.return(undefined as never).catch(() => undefined);
+    clearInterval(keepAlive);
+    if (options.release) {
+      await options.release();
+    } else {
+      // Reaches the generator's `finally`, which closes the MCP connections and
+      // deletes the skill directory. Without it, a caller that hung up mid-stream
+      // would leave stdio servers running.
+      await iterator.return(undefined as never).catch(() => undefined);
+    }
   }
   response.end();
+}
+
+/**
+ * Writes one frame, waiting for `drain` when the socket is full.
+ *
+ * Ignoring the return of `write` is how a fast model and a slow reader turn into
+ * unbounded memory in this process: Node keeps accepting writes and queues every
+ * one of them.
+ */
+async function writeFrame(response: ServerResponse, frame: string): Promise<void> {
+  if (response.write(frame)) return;
+  await new Promise<void>((resolve) => {
+    const done = (): void => {
+      response.off('drain', done);
+      response.off('close', done);
+      resolve();
+    };
+    response.once('drain', done);
+    response.once('close', done);
+  });
 }
 
 /**
@@ -390,6 +589,30 @@ function statusForError(error: unknown): number {
     'UNSUPPORTED_MCP_TRANSPORT',
   ]);
   return clientErrors.has(error.code) ? 400 : 502;
+}
+
+function permissionDecision(
+  body: unknown,
+): { runId: string; requestId: string; decision: 'allow' | 'deny' } | undefined {
+  if (typeof body !== 'object' || body === null) return undefined;
+  const value = body as Record<string, unknown>;
+  const { runId, requestId, decision } = value;
+  if (typeof runId !== 'string' || !runId) return undefined;
+  if (typeof requestId !== 'string' || !requestId) return undefined;
+  if (decision !== 'allow' && decision !== 'deny') return undefined;
+  return { runId, requestId, decision };
+}
+
+/**
+ * Where a reconnect got to. `Last-Event-ID` is the SSE-native spelling and what a
+ * browser resends by itself; the query parameter is for callers that cannot set
+ * headers. `0` means "from the beginning", which is also what a malformed value
+ * falls back to — replaying is recoverable, skipping silently is not.
+ */
+function lastEventId(request: IncomingMessage, url: URL): number {
+  const raw = header(request, 'last-event-id') ?? url.searchParams.get('lastEventId') ?? '';
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function header(request: IncomingMessage, name: string): string | undefined {

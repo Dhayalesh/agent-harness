@@ -112,11 +112,15 @@ test('a stored record resolves to a provider that completes a turn against a stu
 
     // Resolution must name the unhonoured capabilities exactly once, and must
     // not claim the honoured ones are dropped.
-    assert.deepEqual(RUNTIME_SUPPORT.capabilitiesHonoured, ['contextWindow', 'maxOutputTokens']);
+    assert.deepEqual(RUNTIME_SUPPORT.capabilitiesHonoured, [
+      'contextWindow',
+      'maxOutputTokens',
+      'supportsReasoning',
+    ]);
     assert.equal(logged.length, 1);
     assert.match(logged[0] as string, /capabilities for 'primary' are not in effect/);
     assert.match(logged[0] as string, /supportsTools=true/);
-    assert.doesNotMatch(logged[0] as string, /contextWindow|maxOutputTokens/);
+    assert.doesNotMatch(logged[0] as string, /contextWindow|maxOutputTokens|supportsReasoning/);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -212,16 +216,24 @@ test('unsupported providers, auth kinds, and wire fields are rejected at write',
     },
   );
 
+  // `reasoningField` is honoured now: the adapter reads that delta field.
   const reasoning = parseModelProviderInput({
     ...writable,
     provider: 'openai-compatible',
     wire: { reasoningField: 'reasoning_content' },
   });
+  assert.doesNotThrow(() => assertRuntimeSupport(reasoning));
+
+  const usageReporting = parseModelProviderInput({
+    ...writable,
+    provider: 'openai-compatible',
+    wire: { usageReporting: 'cumulative' },
+  });
   assert.throws(
-    () => assertRuntimeSupport(reasoning),
+    () => assertRuntimeSupport(usageReporting),
     (error: unknown) => {
       assert.equal((error as { code?: string }).code, 'UNSUPPORTED_MODEL_WIRE_FIELD');
-      assert.match((error as Error).message, /'wire\.reasoningField'/);
+      assert.match((error as Error).message, /'wire\.usageReporting'/);
       return true;
     },
   );

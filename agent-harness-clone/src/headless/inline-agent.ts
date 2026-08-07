@@ -1,4 +1,5 @@
 import { InMemoryContentStore } from '../content/content-store.js';
+import type { RunProgressReporter } from '../core/events.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
 import { nowIso, parseAgentRecord, type AgentRecord } from '../platform/agent-definitions.js';
 import {
@@ -112,6 +113,8 @@ export type InlineAgentOptions = {
   logger?: (message: string) => void;
   logSink?: LogSink;
   logContext?: LogContext;
+  /** Reports skill downloads and MCP connections while assembly is happening. */
+  onProgress?: RunProgressReporter;
 };
 
 /**
@@ -166,6 +169,7 @@ export async function resolveInlineAgent(
       ? {}
       : { elicitationHandler: options.elicitationHandler }),
     ...(options.logger === undefined ? {} : { logger: options.logger }),
+    ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
   });
   return registry.resolveRecord(record);
 }

@@ -91,6 +91,15 @@ export class PlatformModelProviderRegistry {
       );
     }
 
+    // Asking for deliberation is what the capability decides: a record that says
+    // the model does not reason should not spend tokens proving it.
+    const reasoning = {
+      ...(record.capabilities.supportsReasoning ? { requestReasoning: true } : {}),
+      ...(record.wire?.reasoningField === undefined
+        ? {}
+        : { reasoningField: record.wire.reasoningField }),
+    };
+
     if (record.provider === 'openrouter') {
       return new RetryModelProvider(
         new OpenRouterModelProvider({
@@ -98,6 +107,7 @@ export class PlatformModelProviderRegistry {
           baseURL,
           defaultModel: record.model,
           defaultHeaders: { ...record.headers },
+          ...reasoning,
         }),
         {
           ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),
@@ -115,6 +125,7 @@ export class PlatformModelProviderRegistry {
         ...(record.wire?.maxTokensField === undefined
           ? {}
           : { maxTokensField: record.wire.maxTokensField }),
+        ...reasoning,
       }),
       {
         ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),

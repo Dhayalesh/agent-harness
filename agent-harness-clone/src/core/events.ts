@@ -20,6 +20,27 @@ export type AgentEvent = EventBase &
         reason: StopReason;
       }
     | { type: 'assistant.text.delta'; turnId: string; delta: string }
+    /**
+     * The model's own deliberation, when it emits any and the provider is
+     * configured to forward it. Separate from `assistant.text.delta` because it is
+     * not part of the answer: it is shown differently, and a consumer that does not
+     * want it can drop one event type rather than filter prose.
+     */
+    | { type: 'assistant.reasoning.delta'; turnId: string; delta: string }
+    /**
+     * A tool call arriving argument by argument, before it is complete enough to
+     * run. `index` is the correlation key: the id and name are known from the first
+     * chunk of a well-behaved provider but are empty strings until they arrive.
+     * `tool.requested` still marks the assembled call.
+     */
+    | {
+        type: 'tool.input.delta';
+        turnId: string;
+        index: number;
+        toolCallId: string;
+        toolName: string;
+        delta: string;
+      }
     | {
         type: 'assistant.message.completed';
         turnId: string;
@@ -66,9 +87,36 @@ export type AgentEvent = EventBase &
         tokensAfter: number;
       }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
+    /**
+     * Work done before the first turn can start: the workspace, the model, MCP
+     * connections, skill documents. Without these a stream is silent for as long as
+     * preparation takes, which for a stdio MCP server that has to be installed is
+     * the longest silence in the run.
+     */
+    | {
+        type: 'run.preparing';
+        stage: 'workspace' | 'agent' | 'mcp' | 'skills' | 'ready';
+        message: string;
+        data?: Record<string, unknown>;
+      }
     | { type: 'warning'; code: string; message: string }
     | { type: 'error'; code: string; message: string; recoverable: boolean }
   );
+
+export type RunPreparationStage = Extract<AgentEvent, { type: 'run.preparing' }>['stage'];
+
+/**
+ * How the layers that run before the session report what they are doing.
+ *
+ * A plain callback rather than a generator because preparation is a call tree,
+ * not a stream: the registry connecting an MCP server is several frames below the
+ * transport that wants to say so.
+ */
+export type RunProgressReporter = (
+  stage: RunPreparationStage,
+  message: string,
+  data?: Record<string, unknown>,
+) => void;
 
 export type EventPayload = AgentEvent extends infer Event
   ? Event extends AgentEvent
