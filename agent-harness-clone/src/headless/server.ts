@@ -206,12 +206,19 @@ export async function startHeadlessServer(
       return;
     }
 
-    // The transport decides streaming, not the payload: the same configuration is
-    // legitimately run both ways, and a field saying otherwise would let a body
-    // contradict the `Accept` its caller sent.
+    // The transport decides streaming, and only falls back to the payload when it
+    // said nothing: the same configuration is legitimately run both ways, and a body
+    // must not be able to contradict the `Accept` its caller sent — that header is
+    // what the caller can actually read. `payload.stream` exists so a stored agent
+    // definition can carry the preference for a caller that sends `Accept: */*`.
+    const accept = header(request, 'accept') ?? '';
+    const requested = url.searchParams.get('stream');
     const streaming =
-      url.searchParams.get('stream') === 'true' ||
-      (header(request, 'accept') ?? '').includes('text/event-stream');
+      requested === 'true' || accept.includes('text/event-stream')
+        ? true
+        : requested === 'false' || accept.includes('application/json')
+          ? false
+          : payloadPrefersStream(payload);
 
     activeRuns += 1;
     setBusy(true);
@@ -304,6 +311,20 @@ export async function startHeadlessServer(
       });
     },
   };
+}
+
+/**
+ * Read from the unvalidated body, because the encoding has to be chosen before a
+ * response starts. Only a literal `true` counts: any other value falls through to
+ * buffered and is then rejected by the schema with a 400, rather than being guessed
+ * at here.
+ */
+function payloadPrefersStream(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    (payload as { stream?: unknown }).stream === true
+  );
 }
 
 /**

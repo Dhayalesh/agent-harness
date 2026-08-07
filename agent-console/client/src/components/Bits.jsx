@@ -51,6 +51,27 @@ export function when(iso) {
   return new Date(iso).toLocaleString();
 }
 
+/** Clock time only, for timestamps that sit next to a message. */
+export function clock(iso) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Compact age for dense lists where a full locale string is too long. */
+export function relative(iso) {
+  if (!iso) return "—";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "—";
+  const seconds = Math.round((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604_800) return `${Math.floor(seconds / 86_400)}d ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
 export function tokens(usage) {
   if (!usage) return "—";
   const total =

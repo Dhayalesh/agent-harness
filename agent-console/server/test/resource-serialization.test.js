@@ -4,6 +4,7 @@ import { McpServer } from "../src/models/mcp-server.js";
 import { ModelProvider } from "../src/models/model-provider.js";
 import {
   agentProviderLimitIssue,
+  agentStreamingIssue,
   mcpConfigurationIssue,
   safeMcpServer,
   safeModelProvider,
@@ -241,4 +242,25 @@ test("reports agent token limits that exceed the referenced provider", () => {
     ),
     null,
   );
+});
+
+test("reports a streaming agent pointed at a provider that cannot stream", () => {
+  const streaming = { supportsStreaming: true };
+  const buffered = { supportsStreaming: false };
+
+  assert.equal(
+    agentStreamingIssue({ stream: true }, { capabilities: buffered })?.code,
+    "MODEL_PROVIDER_NO_STREAMING",
+  );
+  assert.equal(
+    agentStreamingIssue({ stream: true }, { capabilities: streaming }),
+    null,
+  );
+  // An agent that never asked to stream is unaffected by the capability.
+  assert.equal(
+    agentStreamingIssue({ stream: false }, { capabilities: buffered }),
+    null,
+  );
+  // A provider record without capabilities is old, not a refusal.
+  assert.equal(agentStreamingIssue({ stream: true }, {}), null);
 });

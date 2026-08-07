@@ -97,9 +97,13 @@ curl -X POST http://127.0.0.1:8080/invocations \
   --data-binary @payload.json
 ```
 
-Add `Accept: text/event-stream` or `?stream=true` for SSE. Streaming is a transport
-choice rather than a payload field, so a body cannot contradict the `Accept` its caller
-sent.
+Add `Accept: text/event-stream` or `?stream=true` for SSE, or `?stream=false` /
+`Accept: application/json` to insist on a buffered result.
+
+A payload may also carry `stream: true`, which is consulted only when the transport
+stated nothing — an `Accept: */*` from a caller whose agent definition is the thing that
+knows it streams. An explicit `Accept` still wins, because that header is what the caller
+can actually read and a body must not be able to make it read something else.
 
 ## Configuration
 

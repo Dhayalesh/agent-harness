@@ -28,6 +28,9 @@ const agentSchema = new mongoose.Schema(
     skills: { type: [skillReferenceSchema], default: [] },
     mcpServerIds: { type: [String], default: [] },
     limits: { type: limitsSchema, required: true },
+    // Historical records predate this field; the default fills it on hydration so
+    // they stay valid without a migration.
+    stream: { type: Boolean, required: true, default: false },
     enabled: { type: Boolean, required: true, default: true, index: true },
     isDefault: Boolean,
     createdAt: { type: String, required: true },

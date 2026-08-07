@@ -15,6 +15,7 @@ const EMPTY = {
   maxTurns: 12,
   maxInputTokens: "",
   maxOutputTokens: "",
+  stream: false,
   enabled: true,
   isDefault: false,
 };
@@ -121,6 +122,14 @@ export function AgentFormPage({ mode }) {
     }));
   };
 
+  const selectedProvider = catalogue.modelProviders.find(
+    (provider) => provider.id === form.modelProviderId,
+  );
+  // Absent capabilities mean an older provider record, which is not the same as a
+  // provider that said no, so only an explicit `false` blocks streaming.
+  const streamingSupported =
+    selectedProvider?.capabilities?.supportsStreaming !== false;
+
   const selectedSkill = (skillId) =>
     form.skills.find((entry) => entry.skillId === skillId);
 
@@ -187,6 +196,7 @@ export function AgentFormPage({ mode }) {
       })),
       mcpServerIds: [...form.mcpServerIds],
       limits,
+      stream: form.stream,
       enabled: form.enabled,
       isDefault: form.isDefault,
     };
@@ -301,6 +311,35 @@ export function AgentFormPage({ mode }) {
             <p className="warn">
               Add a <Link to="/model-providers/new">model provider</Link> before
               saving this agent.
+            </p>
+          )}
+          <div className="toggle-row">
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={form.stream}
+                onChange={set("stream")}
+              />
+              <span>
+                <strong>Stream responses</strong>
+                <small>
+                  {streamingSupported
+                    ? "Sent to the runtime as a preference"
+                    : "This provider does not support streaming"}
+                </small>
+              </span>
+            </label>
+          </div>
+          <p className="field-hint">
+            Asks the runtime to answer as an event stream, which raises the
+            AgentCore ceiling for one turn from 15 to 60 minutes. The console
+            still records a completed run, so it reads the buffered response
+            until it learns to consume the stream.
+          </p>
+          {form.stream && !streamingSupported && (
+            <p className="warn compact-warn">
+              {selectedProvider?.name} reports no streaming support, so this
+              agent will not pass validation until one of the two changes.
             </p>
           )}
           <Field

@@ -100,6 +100,7 @@ export function AgentsPage() {
                     </div>
                   </div>
                   <span className="resource-badges">
+                    {agent.stream && <span className="pill">streaming</span>}
                     {agent.isDefault && <span className="pill pill-plan">default</span>}
                     <span className={agent.enabled ? "pill pill-success" : "pill"}>
                       {agent.enabled ? "enabled" : "disabled"}

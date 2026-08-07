@@ -170,7 +170,7 @@ export async function resolveAgentForInvocation(id) {
     });
   }
 
-  assertAgentProviderLimits(storedAgent, storedProvider);
+  assertAgentProviderCompatibility(storedAgent, storedProvider);
   return {
     agent: { document: agent, value: storedAgent },
     modelProvider: { document: provider, value: storedProvider },
@@ -181,7 +181,7 @@ export async function resolveAgentForInvocation(id) {
 
 export async function assertAgentReferences(value) {
   const provider = await loadModelProvider(value.modelProviderId);
-  assertAgentProviderLimits(value, provider);
+  assertAgentProviderCompatibility(value, provider);
   for (const id of value.mcpServerIds ?? []) await loadMcpServer(id);
   for (const entry of value.skills ?? []) await loadSkill(entry.skillId);
 }
@@ -245,6 +245,8 @@ function resolvedSummary(
   if (provider) {
     const limitIssue = agentProviderLimitIssue(agent, provider);
     if (limitIssue) issues.push(limitIssue);
+    const streamingIssue = agentStreamingIssue(agent, provider);
+    if (streamingIssue) issues.push(streamingIssue);
   }
 
   const servers = (agent.mcpServerIds ?? []).map((id) => {
@@ -331,9 +333,27 @@ function validateDocument(schema, document, label) {
   return parseRecordOrThrow(schema, plain(document), label);
 }
 
-function assertAgentProviderLimits(agent, provider) {
-  const limitIssue = agentProviderLimitIssue(agent, provider);
-  if (limitIssue) throw badRequest(limitIssue.message);
+function assertAgentProviderCompatibility(agent, provider) {
+  const issue =
+    agentProviderLimitIssue(agent, provider) ??
+    agentStreamingIssue(agent, provider);
+  if (issue) throw badRequest(issue.message);
+}
+
+/**
+ * A streaming agent needs a provider that streams. The capability is stored on the
+ * provider record, so this catches the mismatch at save time rather than leaving it
+ * for the runtime to reject mid-turn.
+ */
+export function agentStreamingIssue(agent, provider) {
+  if (!agent.stream) return null;
+  if (provider.capabilities?.supportsStreaming === false) {
+    return issueValue(
+      "MODEL_PROVIDER_NO_STREAMING",
+      "Streaming is enabled but the referenced model provider does not support it.",
+    );
+  }
+  return null;
 }
 
 export function agentProviderLimitIssue(agent, provider) {

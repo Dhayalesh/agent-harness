@@ -140,6 +140,26 @@ test("accepts agent patches and rejects empty updates", () => {
   assert.equal(agentUpdateSchema.safeParse({}).success, false);
 });
 
+test("defaults the streaming control off and accepts it on either operation", () => {
+  // A historical record has no `stream` key at all and must still parse.
+  assert.equal(agentCreateSchema.parse(historicalAgent).stream, false);
+  assert.equal(
+    agentRecordSchema.parse({
+      ...historicalAgent,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: "agent-console",
+    }).stream,
+    false,
+  );
+  assert.equal(
+    agentCreateSchema.parse({ ...historicalAgent, stream: true }).stream,
+    true,
+  );
+  assert.equal(agentUpdateSchema.safeParse({ stream: true }).success, true);
+  assert.equal(agentUpdateSchema.safeParse({ stream: "yes" }).success, false);
+});
+
 test("accepts historical model provider records and supported secret patches", () => {
   assert.equal(
     modelProviderCreateSchema.safeParse(openAiCompatibleProvider).success,

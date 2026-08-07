@@ -209,6 +209,17 @@ export const invocationPayloadSchema = z
      * with large tool results produces a response far bigger than its answer.
      */
     includeEvents: z.boolean().default(false),
+    /**
+     * The preferred response encoding when the transport did not state one, so a
+     * stored agent definition can carry "this one streams" without its caller
+     * restating it per request.
+     *
+     * A preference, not an instruction: an explicit `Accept` or `?stream=` still
+     * decides, because that header is what the caller can actually read and a body
+     * must not be able to make it read something else. Left `optional` rather than
+     * defaulted so "unset" stays distinguishable from "asked for buffered".
+     */
+    stream: z.boolean().optional(),
   })
   .strict();
 

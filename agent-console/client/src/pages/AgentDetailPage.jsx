@@ -142,6 +142,10 @@ export function AgentDetailPage() {
                 <dd>{agent.isDefault ? "yes" : "no"}</dd>
               </div>
               <div>
+                <dt>Streaming</dt>
+                <dd>{agent.stream ? "requested" : "off"}</dd>
+              </div>
+              <div>
                 <dt>Max turns</dt>
                 <dd>{agent.limits?.maxTurns ?? "—"}</dd>
               </div>

@@ -536,6 +536,58 @@ test('the server accepts a payload on POST /invocations and enforces its key', a
   assert.doesNotMatch(logLines.join('\n'), /x-agent-service-key:secret/);
 });
 
+test('payload.stream picks the encoding only when the transport did not', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    textChunk('One.'),
+    textChunk('Two.'),
+    textChunk('Three.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-prefer-'));
+  const running = await startHeadlessServer({
+    host: '127.0.0.1',
+    port: 0,
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+  });
+  t.after(async () => {
+    await running.close();
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const post = (body: InvocationPayloadInput, accept?: string) =>
+    fetch(`${running.url}/invocations`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(accept === undefined ? {} : { accept }),
+      },
+      body: JSON.stringify(body),
+    });
+
+  // `fetch` sends `Accept: */*`, which states nothing, so the payload decides.
+  const preferred = await post(payload(endpoint.baseURL, { prompt: 'Say one.', stream: true }));
+  assert.equal(preferred.status, 200);
+  assert.match(preferred.headers.get('content-type') ?? '', /text\/event-stream/);
+  assert.match(await preferred.text(), /event: session\.completed/);
+
+  // The caller said what it can read, and a body does not get to override that.
+  const overridden = await post(
+    payload(endpoint.baseURL, { prompt: 'Say two.', stream: true }),
+    'application/json',
+  );
+  assert.equal(overridden.status, 200);
+  assert.match(overridden.headers.get('content-type') ?? '', /application\/json/);
+  assert.equal(((await overridden.json()) as { status: string }).status, 'success');
+
+  // And the transport can still ask for a stream a payload never mentioned.
+  const asked = await post(
+    payload(endpoint.baseURL, { prompt: 'Say three.' }),
+    'text/event-stream',
+  );
+  assert.match(asked.headers.get('content-type') ?? '', /text\/event-stream/);
+});
+
 test('a malformed payload is a 400 from the server, not a 500', async (t) => {
   const running = await startHeadlessServer({ host: '127.0.0.1', port: 0, serviceKey: 'secret' });
   t.after(() => running.close());

@@ -54,6 +54,12 @@ const agentShape = {
   skills: z.array(agentSkillSchema).max(100).default([]),
   mcpServerIds: z.array(objectIdString).max(50).default([]),
   limits: limitsSchema.default({ maxTurns: 24 }),
+  /**
+   * Asks the runtime to answer as an event stream rather than one buffered result.
+   * Off by default, and only sent in the payload when it is on, so an agent that
+   * never opted in produces the payload it always produced.
+   */
+  stream: z.boolean().default(false),
   enabled: z.boolean().default(true),
   isDefault: z.boolean().optional(),
 };

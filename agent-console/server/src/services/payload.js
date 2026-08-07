@@ -69,6 +69,10 @@ export async function buildPayload({
     permissionRules,
     permissionFallback: "deny",
     includeEvents: Boolean(includeEvents),
+    // Only present when the agent asked for it. The runtime payload schema is
+    // strict, so an agent that never opted in keeps sending the payload a runtime
+    // built before this field still accepts.
+    ...(agent.stream ? { stream: true } : {}),
     metadata: {
       source: "agent-console",
       agentId: resolved.agent.document._id.toString(),

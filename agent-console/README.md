@@ -21,6 +21,8 @@ The console reads and writes the historical platform collections in place:
 
 - `agents` stores the agent definition and string ObjectId references:
   `modelProviderId`, ordered `mcpServerIds`, and ordered `skills[].skillId` entries.
+  It also carries `stream`, the per-agent response-encoding preference described in
+  [AgentCore behavior](#agentcore-behavior).
 - `model_providers` stores model configuration and its API credential.
 - `mcp_servers` stores stdio or HTTP MCP configuration and its credentials,
   environment, and headers.
@@ -229,8 +231,20 @@ turn-level `status: "error"`, is persisted as a completed runtime result. An AWS
 authorization, throttling, timeout, or service failure is translated to an API error and
 recorded on the run.
 
-The non-streaming timeout defaults to AgentCore's 15-minute cap. Streaming is not
-implemented by this console.
+The non-streaming timeout defaults to AgentCore's 15-minute cap.
+
+An agent carries a `stream` flag, off by default. It is a preference forwarded to the
+runtime, not a transport switch: the field is added to the payload only when it is on,
+so an agent that never opted in produces the same payload as before and a runtime built
+without the field keeps accepting it. Saving `stream` against a model provider whose
+`capabilities.supportsStreaming` is `false` is rejected, and an existing mismatch is
+reported as a `MODEL_PROVIDER_NO_STREAMING` readiness issue.
+
+The console still invokes with `accept: application/json` and records one completed
+run, and the runtime's transport rule is that an explicit `Accept` outranks the payload,
+so today the flag changes what the runtime is told rather than what comes back.
+Consuming the SSE response — which is what would buy the 60-minute streaming ceiling in
+place of the 15-minute one — is not implemented here.
 
 ## Troubleshooting
 
