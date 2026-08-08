@@ -1,17 +1,24 @@
+import { Button, Chip, Code } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import {
+  EmptyState,
   ErrorNote,
   Loading,
+  PageHeader,
+  SearchInput,
   StatusPill,
+  useConfirm,
   when,
 } from "../components/Bits.jsx";
+import { Icon } from "../components/Icon.jsx";
+import { ResourceRow } from "../components/ResourceRow.jsx";
 
 export function SkillsPage() {
   const [skills, setSkills] = useState(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState(null);
+  const [confirm, confirmDialog] = useConfirm();
 
   const load = useCallback(async (q) => {
     setError(null);
@@ -40,9 +47,11 @@ export function SkillsPage() {
   }, [skills, query]);
 
   const remove = async (skill) => {
-    const confirmed = window.confirm(
-      `Delete skill "${skill.name}"? Agents that reference it must be updated first.`,
-    );
+    const confirmed = await confirm({
+      title: "Delete skill",
+      body: `Delete skill "${skill.name}"? Agents that reference it must be updated first.`,
+      confirmLabel: "Delete skill",
+    });
     if (!confirmed) return;
 
     try {
@@ -55,77 +64,90 @@ export function SkillsPage() {
 
   return (
     <section>
-      <div className="page-head">
-        <div>
-          <h1>Skills</h1>
-          <p className="muted">
-            Reusable SKILL.md instructions loaded from S3 or HTTPS for an agent
-            run.
-          </p>
-        </div>
-        <div className="resource-toolbar">
-          <input
-            type="search"
-            className="search"
-            placeholder="Search skills"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            aria-label="Search skills"
-          />
-          <Link to="/skills/new">New skill</Link>
-        </div>
-      </div>
+      <PageHeader
+        eyebrow="Build"
+        title="Skills"
+        description="Reusable SKILL.md instructions loaded from S3 or HTTPS for an agent run."
+        actions={
+          <>
+            <SearchInput
+              value={query}
+              onValueChange={setQuery}
+              label="Search skills"
+              placeholder="Search skills"
+            />
+            <Button
+              color="primary"
+              radius="md"
+              href="/skills/new"
+              startContent={<Icon name="plus" className="h-4 w-4" />}
+            >
+              New skill
+            </Button>
+          </>
+        }
+      />
 
       <ErrorNote error={error} />
 
       {skills === null ? (
         <Loading what="skills" />
       ) : visibleSkills.length === 0 ? (
-        <p className="empty">
-          {query ? "No skills match this search." : "No skills found."}{" "}
-          {!query && <Link to="/skills/new">Create one</Link>}
-          {!query && "."}
-        </p>
+        <EmptyState
+          icon="skills"
+          title={query ? "No skills match this search." : "No skills found."}
+          description={
+            query
+              ? "Try a different search."
+              : "Point at a SKILL.md document an agent can load at run time."
+          }
+          action={
+            !query && (
+              <Button color="primary" radius="md" href="/skills/new">
+                Create one
+              </Button>
+            )
+          }
+        />
       ) : (
-        <ul className="resource-list">
+        <ul className="flex flex-col gap-3">
           {visibleSkills.map((skill) => (
-            <li key={skill.id} className="resource-row">
-              <div className="resource-summary">
-                <div className="resource-title-row">
-                  <strong>{skill.name}</strong>
-                  <span className="resource-badges">
-                    <span className="pill">
+            <li key={skill.id}>
+              <ResourceRow
+                title={skill.name}
+                editHref={`/skills/${skill.id}/edit`}
+                deleteLabel={`Delete ${skill.name}`}
+                onDelete={() => remove(skill)}
+                badges={
+                  <>
+                    <Chip
+                      size="sm"
+                      variant="flat"
+                      color="primary"
+                      classNames={{
+                        base: "h-5 rounded-full",
+                        content:
+                          "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
+                      }}
+                    >
                       {skill.uri?.startsWith("s3://") ? "S3" : "HTTPS"}
-                    </span>
-                    <StatusPill
-                      status={skill.enabled ? "enabled" : "disabled"}
-                    />
-                  </span>
-                </div>
-                <p className="muted resource-uri">
-                  <code>{skill.uri}</code>
-                </p>
-                <dl className="meta">
-                  <div>
-                    <dt>Updated</dt>
-                    <dd>{when(skill.updatedAt)}</dd>
-                  </div>
-                </dl>
-              </div>
-              <div className="card-actions">
-                <Link to={`/skills/${skill.id}/edit`}>Edit</Link>
-                <button
-                  type="button"
-                  className="danger"
-                  onClick={() => remove(skill)}
-                >
-                  Delete
-                </button>
-              </div>
+                    </Chip>
+                    <StatusPill status={skill.enabled ? "enabled" : "disabled"} />
+                  </>
+                }
+                summary={
+                  <Code size="sm" className="max-w-full truncate text-tiny">
+                    {skill.uri}
+                  </Code>
+                }
+                meta={[{ label: "Updated", value: when(skill.updatedAt) }]}
+              />
             </li>
           ))}
         </ul>
       )}
+
+      {confirmDialog}
     </section>
   );
 }

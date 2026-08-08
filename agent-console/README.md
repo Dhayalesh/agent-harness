@@ -1,7 +1,7 @@
 # Agent Console
 
-Agent Console is a React + Express control plane for agents hosted on Amazon Bedrock
-AgentCore Runtime. It manages the existing `trueai_agent_platform` records in MongoDB,
+Agent Console is a React + HeroUI + Express control plane for agents hosted on Amazon
+Bedrock AgentCore Runtime. It manages the existing `trueai_agent_platform` records in MongoDB,
 resolves their referenced model provider, MCP servers, and skills, invokes the deployed
 runtime, and renders saved chats and runs in the browser.
 
@@ -103,6 +103,31 @@ docker buildx build --platform linux/arm64 -t agent-harness:latest .
 Push the image to ECR and deploy it through AgentCore, then configure its runtime ARN in
 the console. Leave `AGENT_SERVICE_KEY` unset in that deployment: AgentCore authenticates
 the SDK invocation and does not forward that custom local-service header.
+
+## Console UI
+
+The browser app is React 18 on Vite, built from [HeroUI](https://heroui.com) components
+over Tailwind CSS. Structure is unchanged from the plain-CSS version — one route per
+screen under `client/src/pages`, shared pieces in `client/src/components` — and the
+API client is untouched.
+
+- `client/src/components/Bits.jsx` holds the shared primitives every page composes:
+  `PageHeader`, `SectionCard`, `StatTile`, `MetaGrid`, `EmptyState`, `ToggleCard`,
+  `FormActions`, and the date/token formatters. `ResourceRow.jsx` is the one row shape
+  the model, MCP, and skill lists share; `MapEditor.jsx` is the header/environment and
+  argument editor the two credentialed forms share.
+- `useConfirm()` replaces `window.confirm` for destructive actions, so a delete asks in
+  a themed dialog instead of a browser modal that blocks the tab.
+- Light and dark are both first-class. `client/src/theme.jsx` owns the class on `<html>`,
+  seeds it from the OS setting, persists the operator's choice, and a small inline script
+  in `index.html` applies it before React mounts so a reload does not flash white.
+- Theme colours live in `client/tailwind.config.js` as a single brand ramp fed to the
+  `heroui()` plugin, not as scattered hex values.
+
+One installation detail matters: Tailwind must scan `@heroui/theme` or every HeroUI
+component renders unstyled. That package is a transitive dependency, so the `content`
+globs list both the hoisted and the nested location. If you change package manager and
+components lose their styling, that glob is the thing to check.
 
 ## Configuration
 
@@ -207,7 +232,7 @@ PATCH requests deliberately distinguish "unchanged" from "clear":
 | --- | --- | --- |
 | `GET`, `POST` | `/api/chats` | List chats or create one with `{ agentId, title? }`. List supports `agentId` and `limit`. |
 | `GET`, `PATCH`, `DELETE` | `/api/chats/:id` | Read messages, rename with `{ title }`, or delete. `withRuns=true` also deletes linked runs. |
-| `POST` | `/api/chats/:id/messages` | Send `{ content, permissionMode?, includeEvents? }`; returns `{ chat, run, events }`. |
+| `POST` | `/api/chats/:id/messages` | Send `{ content, permissionMode?, includeEvents? }`; returns `{ chat, run, events }`, or an SSE event stream — see [Streaming](#streaming). |
 
 AgentCore affinity is not treated as transcript storage. Each chat keeps one runtime
 session ID, but every message also sends a bounded replay prompt assembled from persisted
@@ -231,20 +256,42 @@ turn-level `status: "error"`, is persisted as a completed runtime result. An AWS
 authorization, throttling, timeout, or service failure is translated to an API error and
 recorded on the run.
 
-The non-streaming timeout defaults to AgentCore's 15-minute cap.
+The non-streaming timeout defaults to AgentCore's 15-minute cap. A streamed run has
+60 minutes at the runtime, but `AGENTCORE_TIMEOUT_MS` still applies to the SDK request,
+so raise it past 900,000 before relying on the longer ceiling.
 
-An agent carries a `stream` flag, off by default. It is a preference forwarded to the
-runtime, not a transport switch: the field is added to the payload only when it is on,
-so an agent that never opted in produces the same payload as before and a runtime built
-without the field keeps accepting it. Saving `stream` against a model provider whose
+## Streaming
+
+An agent carries a `stream` flag, off by default, which is the console's own default for
+that agent rather than a switch on the wire. Saving it against a model provider whose
 `capabilities.supportsStreaming` is `false` is rejected, and an existing mismatch is
 reported as a `MODEL_PROVIDER_NO_STREAMING` readiness issue.
 
-The console still invokes with `accept: application/json` and records one completed
-run, and the runtime's transport rule is that an explicit `Accept` outranks the payload,
-so today the flag changes what the runtime is told rather than what comes back.
-Consuming the SSE response — which is what would buy the 60-minute streaming ceiling in
-place of the 15-minute one — is not implemented here.
+Which encoding a request actually uses is decided the same way at every hop — the caller
+states it, and the stored preference only answers for a caller that stated nothing:
+
+| Hop | Streams when |
+| --- | --- |
+| Browser to `POST /api/chats/:id/messages` | `Accept: text/event-stream` or `?stream=true`; otherwise the agent's `stream` flag |
+| Console to `InvokeAgentRuntime` | The console asked for a stream; `accept: text/event-stream` then outranks `payload.stream` at the runtime |
+
+A streamed message answers with SSE frames carrying the runtime's `AgentEvent` protocol
+verbatim — `run.preparing`, `assistant.reasoning.delta`, `assistant.text.delta`,
+`tool.input.delta`, `tool.progress`, `usage.updated`, `warning` — and finishes with one
+of two events this layer adds: `console.completed`, carrying the saved chat and run, or
+`console.failed`. The chat page renders thinking, tool cards with live output, and the
+answer as it arrives; a buffered agent takes the unchanged JSON path.
+
+Streaming does not change what is stored. The events are folded into the same result the
+buffered path receives (`RunTotals`) and written through the same code, so a run row does
+not depend on how it was invoked. Two consequences worth knowing: `workingDirectory` is
+empty on a streamed run because no event carries it, and a stream that ends without
+`session.completed` is recorded as `RUNTIME_STREAM_INCOMPLETE` with whatever partial
+output arrived. Closing the browser aborts the AgentCore call rather than leaving the run
+to finish unwatched.
+
+Resuming a dropped stream and answering an interactive permission request are runtime
+features this console does not use yet; both need it to hold a run id across requests.
 
 ## Troubleshooting
 

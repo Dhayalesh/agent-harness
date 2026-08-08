@@ -1,7 +1,15 @@
+import { Button, Input } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
-import { ErrorNote, Field, Loading } from "../components/Bits.jsx";
+import {
+  ErrorNote,
+  FormActions,
+  Loading,
+  PageHeader,
+  SectionCard,
+  ToggleCard,
+} from "../components/Bits.jsx";
 
 const EMPTY = {
   name: "",
@@ -35,13 +43,8 @@ export function SkillFormPage({ mode }) {
   if (form === null)
     return error ? <ErrorNote error={error} /> : <Loading what="skill" />;
 
-  const set = (key) => (event) => {
-    const value =
-      event.target.type === "checkbox"
-        ? event.target.checked
-        : event.target.value;
+  const set = (key) => (value) =>
     setForm((current) => ({ ...current, [key]: value }));
-  };
 
   const submit = async (event) => {
     event.preventDefault();
@@ -67,70 +70,69 @@ export function SkillFormPage({ mode }) {
 
   return (
     <section>
-      <div className="page-head">
-        <div>
-          <h1>{editing ? `Edit ${form.name}` : "New skill"}</h1>
-          <p className="muted">
-            Point to a SKILL.md document the console can load into an AgentCore
-            invocation.
-          </p>
-        </div>
-        <Link to="/skills">Cancel</Link>
-      </div>
+      <PageHeader
+        eyebrow="Skill"
+        title={editing ? `Edit ${form.name}` : "New skill"}
+        description="Point to a SKILL.md document the console can load into an AgentCore invocation."
+        actions={
+          <Button variant="light" radius="md" href="/skills">
+            Cancel
+          </Button>
+        }
+      />
 
       <ErrorNote error={error} />
 
-      <form className="form" onSubmit={submit}>
-        <fieldset>
-          <legend>Skill</legend>
-          <Field
+      <form className="flex max-w-[860px] flex-col gap-4" onSubmit={submit}>
+        <SectionCard
+          title="Skill"
+          description="The document is read when the agent runs, not when it is saved."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <Input
+            isRequired
             label="Name"
-            hint="Letters, digits, dash, or underscore. Unique; dots are not allowed."
-            error={fieldErrors.name}
-          >
-            <input
-              value={form.name}
-              onChange={set("name")}
-              required
-              maxLength={100}
-              pattern="[A-Za-z0-9_-]+"
-            />
-          </Field>
-          <Field
+            labelPlacement="outside"
+            placeholder="research"
+            variant="bordered"
+            maxLength={100}
+            pattern="[A-Za-z0-9_-]+"
+            value={form.name}
+            onValueChange={set("name")}
+            description="Letters, digits, dash, or underscore. Unique; dots are not allowed."
+            isInvalid={Boolean(fieldErrors.name)}
+            errorMessage={fieldErrors.name}
+          />
+          <Input
+            isRequired
             label="SKILL.md URI"
-            hint="An s3:// URI or an HTTPS URL that points directly to AWS S3. The document is read when the agent runs."
-            error={fieldErrors.uri}
-          >
-            <input
-              value={form.uri}
-              onChange={set("uri")}
-              required
-              maxLength={2048}
-              pattern="(?:s3://|https://).+"
-              placeholder="s3://my-agent-assets/skills/research/SKILL.md"
-              spellCheck={false}
-            />
-          </Field>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={form.enabled}
-              onChange={set("enabled")}
-            />
-            Enabled
-          </label>
-        </fieldset>
+            labelPlacement="outside"
+            placeholder="s3://my-agent-assets/skills/research/SKILL.md"
+            variant="bordered"
+            maxLength={2048}
+            pattern="(?:s3://|https://).+"
+            spellCheck={false}
+            value={form.uri}
+            onValueChange={set("uri")}
+            description="An s3:// URI or an HTTPS URL that points directly to AWS S3."
+            isInvalid={Boolean(fieldErrors.uri)}
+            errorMessage={fieldErrors.uri}
+          />
+          <ToggleCard
+            label="Enabled"
+            hint="Disabled skills are not offered to agents."
+            isSelected={form.enabled}
+            onValueChange={set("enabled")}
+            className="sm:max-w-sm"
+          />
+        </SectionCard>
 
-        <div className="form-actions">
-          <button type="submit" className="primary" disabled={saving}>
-            {saving
-              ? "Saving..."
-              : editing
-                ? "Save changes"
-                : "Create skill"}
-          </button>
-          <Link to="/skills">Cancel</Link>
-        </div>
+        <FormActions
+          cancelHref="/skills"
+          saving={saving}
+          isDisabled={saving}
+          label={editing ? "Save changes" : "Create skill"}
+        />
       </form>
     </section>
   );

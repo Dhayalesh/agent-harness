@@ -1,9 +1,28 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
     <title>Agent Console</title>
+    <script>
+      // Paint the stored theme before React mounts, otherwise a dark-theme
+      // operator sees one white frame on every reload.
+      (function () {
+        try {
+          var stored = localStorage.getItem("agent-console:theme");
+          var dark =
+            stored === "dark" ||
+            (!stored &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.classList.toggle("light", !dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (error) {
+          // No storage access; the default light class in the markup stands.
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

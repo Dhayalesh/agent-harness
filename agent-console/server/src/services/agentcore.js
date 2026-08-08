@@ -200,6 +200,123 @@ export async function invokeAgentRuntime({
   };
 }
 
+/**
+ * Opens the same invocation as an event stream.
+ *
+ * Separate from `invokeAgentRuntime` rather than a flag on it because the two
+ * differ in what they return, not only in how they ask: one has a result the
+ * moment it resolves, the other resolves as soon as the runtime starts answering
+ * and hands back the events to read. The buffered path stays the default and is
+ * untouched, so an agent that did not ask for this behaves exactly as before.
+ *
+ * `accept: text/event-stream` is what decides it. The deployed harness treats an
+ * explicit Accept as outranking `payload.stream`, so this works whether or not
+ * the agent record set the preference.
+ */
+export async function openAgentRuntimeStream({
+  runtime,
+  payload,
+  runtimeSessionId,
+  traceId,
+  signal,
+}) {
+  const command = new InvokeAgentRuntimeCommand({
+    agentRuntimeArn: runtime.arn,
+    qualifier: runtime.qualifier,
+    runtimeSessionId,
+    contentType: "application/json",
+    accept: "text/event-stream",
+    traceId,
+    payload: new TextEncoder().encode(JSON.stringify(payload)),
+  });
+
+  let response;
+  try {
+    response = await agentcoreClient(runtime.region).send(
+      command,
+      signal ? { abortSignal: signal } : undefined,
+    );
+  } catch (error) {
+    throw translate(error, runtime);
+  }
+
+  // A refusal arrives before any frame does, and its body is JSON rather than a
+  // stream, so it is read the same way the buffered path reads one.
+  if (response.statusCode && response.statusCode >= 400) {
+    const body = await readResponse(response).catch(() => null);
+    const detail =
+      typeof body === "object" && body?.error ? body.error : truncate(body);
+    throw badGateway(
+      `The runtime rejected the payload (HTTP ${response.statusCode}): ${detail}`,
+    );
+  }
+
+  return {
+    runtimeSessionId: response.runtimeSessionId ?? runtimeSessionId,
+    traceId: response.traceId,
+    statusCode: response.statusCode ?? 200,
+    events: readEventStream(response.response),
+  };
+}
+
+/**
+ * Frames in, `AgentEvent` objects out, as they arrive.
+ *
+ * Buffering to the next blank line rather than per chunk: a TCP chunk boundary
+ * has nothing to do with a frame boundary, so a large tool result routinely
+ * arrives split across several reads.
+ */
+export async function* readEventStream(body) {
+  if (!body) return;
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of body) {
+    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const event = parseEventFrame(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      if (event) yield event;
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  buffer += decoder.decode();
+  const last = parseEventFrame(buffer);
+  if (last) yield last;
+}
+
+function parseEventFrame(frame) {
+  let name;
+  const data = [];
+  for (const line of frame.split("\n")) {
+    // A comment line is the keep-alive: traffic to whatever is in between, and
+    // nothing at all to the reader.
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) name = line.slice(6).trim();
+    else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (data.length === 0) return null;
+
+  let value;
+  try {
+    value = JSON.parse(data.join("\n"));
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null) return null;
+  // The harness writes a bare `event: error` frame when a stream fails after its
+  // headers are out. Normalized here so a consumer only ever sees AgentEvent.
+  if (name === "error" && typeof value.type !== "string") {
+    return {
+      type: "error",
+      code: "RUNTIME_STREAM_FAILED",
+      message: String(value.error ?? "The runtime stream failed."),
+      recoverable: false,
+    };
+  }
+  return value;
+}
+
 /** Refuses a successful HTTP response that is not the hosted harness contract. */
 function validateRuntimeResult(body) {
   const parsed = runtimeResultSchema.safeParse(body);

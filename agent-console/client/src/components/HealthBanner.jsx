@@ -1,3 +1,4 @@
+import { Alert } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
@@ -45,17 +46,27 @@ export function HealthBanner() {
   }
 
   return (
-    <div className="banner" role="status">
-      <strong>Degraded</strong>
-      <ul>
-        {problems.map((problem) => (
-          <li key={problem}>{problem}</li>
-        ))}
-      </ul>
-      <p className="banner-hint">
-        Agents can be listed and edited without AWS; running one needs
-        credentials and a runtime ARN. There is no local fallback.
-      </p>
+    <div className="shrink-0 px-4 pt-4 sm:px-6 lg:px-8">
+      <Alert
+        color="warning"
+        variant="flat"
+        role="status"
+        title="Degraded"
+        classNames={{
+          base: "items-start border border-warning-200 dark:border-warning-500/25",
+          title: "text-small font-semibold",
+        }}
+      >
+        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-tiny">
+          {problems.map((problem) => (
+            <li key={problem}>{problem}</li>
+          ))}
+        </ul>
+        <p className="mt-2 text-tiny text-default-500">
+          Agents can be listed and edited without AWS; running one needs
+          credentials and a runtime ARN. There is no local fallback.
+        </p>
+      </Alert>
     </div>
   );
 }

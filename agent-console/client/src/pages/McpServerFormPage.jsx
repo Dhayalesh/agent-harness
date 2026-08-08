@@ -1,7 +1,21 @@
+import { Button, Input, Select, SelectItem } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
-import { ErrorNote, Field, Loading } from "../components/Bits.jsx";
+import {
+  ErrorNote,
+  FormActions,
+  Loading,
+  PageHeader,
+  SectionCard,
+  ToggleCard,
+} from "../components/Bits.jsx";
+import {
+  KeyValueEditor,
+  StringListEditor,
+  rowsFromSecretMap,
+  secretMapFromRows,
+} from "../components/MapEditor.jsx";
 
 const EMPTY = {
   name: "",
@@ -25,131 +39,6 @@ const EMPTY = {
   enabled: true,
   autoConnect: false,
 };
-
-const rowsFromSecretMap = (record, names) => {
-  if (record) {
-    return Object.entries(record).map(([key, value]) => ({ key, value }));
-  }
-  return (names ?? []).map((key) => ({ key, value: "" }));
-};
-
-const secretMapFromRows = (rows) =>
-  Object.fromEntries(
-    rows
-      .filter((row) => row.key.trim())
-      .map((row) => [row.key.trim(), row.value]),
-  );
-
-function KeyValueEditor({
-  label,
-  hint,
-  addLabel,
-  keyPlaceholder,
-  rows,
-  onChange,
-  error,
-  editing,
-}) {
-  const setRow = (index, key, value) =>
-    onChange(
-      rows.map((row, position) =>
-        position === index ? { ...row, [key]: value } : row,
-      ),
-    );
-
-  return (
-    <div className="field key-value-editor">
-      <span className="field-label">{label}</span>
-      <span className="field-hint">
-        {hint}
-        {editing &&
-          " Existing values are hidden; leave a displayed value blank to keep it, or remove its row to clear it."}
-      </span>
-      {rows.map((row, index) => (
-        <div className="key-value-row" key={index}>
-          <input
-            aria-label={`${label} ${index + 1} name`}
-            placeholder={keyPlaceholder}
-            value={row.key}
-            onChange={(event) => setRow(index, "key", event.target.value)}
-          />
-          <input
-            aria-label={`${label} ${index + 1} value`}
-            placeholder={
-              editing && !row.value ? "stored value (unchanged)" : "Value"
-            }
-            value={row.value}
-            onChange={(event) => setRow(index, "value", event.target.value)}
-          />
-          <button
-            type="button"
-            className="danger"
-            aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
-            onClick={() =>
-              onChange(rows.filter((_, position) => position !== index))
-            }
-          >
-            Remove
-          </button>
-        </div>
-      ))}
-      <div>
-        <button
-          type="button"
-          onClick={() => onChange([...rows, { key: "", value: "" }])}
-        >
-          {addLabel}
-        </button>
-      </div>
-      {error && <span className="field-error">{error}</span>}
-    </div>
-  );
-}
-
-function StringListEditor({ values, onChange, error }) {
-  return (
-    <div className="field string-list-editor">
-      <span className="field-label">Arguments</span>
-      <span className="field-hint">
-        Each row is passed to the command as one argument, in order. For
-        example, npx uses separate rows for -y, @scope/package, and
-        --transport=stdio. Put an MCP endpoint URL under HTTP transport instead
-        of in npx's package row.
-      </span>
-      {values.map((value, index) => (
-        <div className="key-value-row" key={index}>
-          <input
-            aria-label={`Argument ${index + 1}`}
-            value={value}
-            onChange={(event) =>
-              onChange(
-                values.map((entry, position) =>
-                  position === index ? event.target.value : entry,
-                ),
-              )
-            }
-          />
-          <button
-            type="button"
-            className="danger"
-            aria-label={`Remove argument ${index + 1}`}
-            onClick={() =>
-              onChange(values.filter((_, position) => position !== index))
-            }
-          >
-            Remove
-          </button>
-        </div>
-      ))}
-      <div>
-        <button type="button" onClick={() => onChange([...values, ""])}>
-          Add argument
-        </button>
-      </div>
-      {error && <span className="field-error">{error}</span>}
-    </div>
-  );
-}
 
 export function McpServerFormPage({ mode }) {
   const { id } = useParams();
@@ -205,20 +94,16 @@ export function McpServerFormPage({ mode }) {
   if (form === null)
     return error ? <ErrorNote error={error} /> : <Loading what="MCP server" />;
 
-  const set = (key) => (event) => {
-    const value =
-      event.target.type === "checkbox"
-        ? event.target.checked
-        : event.target.type === "number"
-          ? event.target.value === ""
-            ? ""
-            : Number(event.target.value)
-          : event.target.value;
+  const set = (key) => (value) =>
     setForm((current) => ({ ...current, [key]: value }));
-  };
 
-  const changeTransport = (event) => {
-    const transport = event.target.value;
+  const setNumber = (key) => (value) =>
+    setForm((current) => ({
+      ...current,
+      [key]: value === "" ? "" : Number(value),
+    }));
+
+  const changeTransport = (transport) => {
     setForm((current) => {
       const firstArgument = current.args[0]?.trim() ?? "";
       const url =
@@ -311,61 +196,74 @@ export function McpServerFormPage({ mode }) {
 
   return (
     <section>
-      <div className="page-head">
-        <div>
-          <h1>{editing ? `Edit ${form.name}` : "New MCP server"}</h1>
-          <p className="muted">
-            Configure a stdio process or HTTP endpoint the hosted runtime can
-            connect to.
-          </p>
-        </div>
-        <Link to="/mcp-servers">Cancel</Link>
-      </div>
+      <PageHeader
+        eyebrow="MCP server"
+        title={editing ? `Edit ${form.name}` : "New MCP server"}
+        description="Configure a stdio process or HTTP endpoint the hosted runtime can connect to."
+        actions={
+          <Button variant="light" radius="md" href="/mcp-servers">
+            Cancel
+          </Button>
+        }
+      />
 
       <ErrorNote error={error} />
 
-      <form className="form" onSubmit={submit}>
-        <fieldset>
-          <legend>Identity and transport</legend>
-          <Field
+      <form className="flex max-w-[860px] flex-col gap-4" onSubmit={submit}>
+        <SectionCard
+          title="Identity and transport"
+          description="How the runtime reaches this server."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <Input
+            isRequired
             label="Name"
-            hint="Letters, digits, dot, dash, or underscore. Unique."
-            error={fieldErrors.name}
+            labelPlacement="outside"
+            placeholder="github-mcp"
+            variant="bordered"
+            maxLength={100}
+            value={form.name}
+            onValueChange={set("name")}
+            description="Letters, digits, dot, dash, or underscore. Unique."
+            isInvalid={Boolean(fieldErrors.name)}
+            errorMessage={fieldErrors.name}
+          />
+          <Select
+            label="Transport"
+            labelPlacement="outside"
+            placeholder="Choose a transport"
+            variant="bordered"
+            className="md:max-w-xs"
+            selectedKeys={[form.transport]}
+            onSelectionChange={(keys) =>
+              changeTransport([...keys][0] ?? "http")
+            }
+            isInvalid={Boolean(fieldErrors.transport)}
+            errorMessage={fieldErrors.transport}
           >
-            <input
-              value={form.name}
-              onChange={set("name")}
-              required
-              maxLength={100}
-            />
-          </Field>
-          <Field label="Transport" error={fieldErrors.transport}>
-            <select value={form.transport} onChange={changeTransport}>
-              <option value="stdio">stdio</option>
-              <option value="http">http</option>
-            </select>
-          </Field>
+            <SelectItem key="stdio">stdio</SelectItem>
+            <SelectItem key="http">http</SelectItem>
+          </Select>
 
           {form.transport === "stdio" ? (
             <>
-              <Field
+              <Input
+                isRequired
                 label="Command"
-                hint="Executable available inside the AgentCore runtime image."
-                error={fieldErrors.command}
-              >
-                <input
-                  value={form.command}
-                  onChange={set("command")}
-                  required
-                  maxLength={1000}
-                  spellCheck={false}
-                />
-              </Field>
+                labelPlacement="outside"
+                placeholder="npx"
+                variant="bordered"
+                maxLength={1000}
+                spellCheck={false}
+                value={form.command}
+                onValueChange={set("command")}
+                description="Executable available inside the AgentCore runtime image."
+                isInvalid={Boolean(fieldErrors.command)}
+                errorMessage={fieldErrors.command}
+              />
               <StringListEditor
                 values={form.args}
-                onChange={(args) =>
-                  setForm((current) => ({ ...current, args }))
-                }
+                onChange={set("args")}
                 error={fieldErrors.args}
               />
               <KeyValueEditor
@@ -374,73 +272,83 @@ export function McpServerFormPage({ mode }) {
                 addLabel="Add variable"
                 keyPlaceholder="Variable name"
                 rows={form.env}
-                onChange={(env) => setForm((current) => ({ ...current, env }))}
+                onChange={set("env")}
                 error={fieldErrors.env}
                 editing={editing}
               />
-              <p className="field-hint">
+              <p className="text-tiny text-default-500">
                 stdio uses no HTTP authentication. Pass process credentials
                 through environment variables.
               </p>
             </>
           ) : (
             <>
-              <Field
+              <Input
+                isRequired
+                type="url"
                 label="URL"
-                hint="The HTTP MCP endpoint. HTTPS is recommended."
-                error={fieldErrors.url}
-              >
-                <input
-                  type="url"
-                  value={form.url}
-                  onChange={set("url")}
-                  required
-                  placeholder="https://mcp.example.com/mcp"
-                  spellCheck={false}
-                />
-              </Field>
-              <div className="row">
-                <Field label="Authentication" error={fieldErrors["auth.kind"]}>
-                  <select value={form.authKind} onChange={set("authKind")}>
-                    <option value="bearer">bearer</option>
-                    <option value="header">custom header</option>
-                    <option value="none">none</option>
-                  </select>
-                </Field>
+                labelPlacement="outside"
+                placeholder="https://mcp.example.com/mcp"
+                variant="bordered"
+                spellCheck={false}
+                value={form.url}
+                onValueChange={set("url")}
+                description="The HTTP MCP endpoint. HTTPS is recommended."
+                isInvalid={Boolean(fieldErrors.url)}
+                errorMessage={fieldErrors.url}
+              />
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <Select
+                  label="Authentication"
+                  labelPlacement="outside"
+                  placeholder="Choose a scheme"
+                  variant="bordered"
+                  selectedKeys={[form.authKind]}
+                  onSelectionChange={(keys) =>
+                    set("authKind")([...keys][0] ?? "bearer")
+                  }
+                  isInvalid={Boolean(fieldErrors["auth.kind"])}
+                  errorMessage={fieldErrors["auth.kind"]}
+                >
+                  <SelectItem key="bearer">bearer</SelectItem>
+                  <SelectItem key="header">custom header</SelectItem>
+                  <SelectItem key="none">none</SelectItem>
+                </Select>
                 {form.authKind === "header" && (
-                  <Field
+                  <Input
+                    isRequired
                     label="Authentication header"
-                    hint="The API key is sent as this header's value."
-                    error={fieldErrors["auth.headerName"]}
-                  >
-                    <input
-                      value={form.headerName}
-                      onChange={set("headerName")}
-                      required
-                      maxLength={100}
-                      placeholder="X-API-Key"
-                    />
-                  </Field>
+                    labelPlacement="outside"
+                    placeholder="X-API-Key"
+                    variant="bordered"
+                    maxLength={100}
+                    value={form.headerName}
+                    onValueChange={set("headerName")}
+                    description="The API key is sent as this header's value."
+                    isInvalid={Boolean(fieldErrors["auth.headerName"])}
+                    errorMessage={fieldErrors["auth.headerName"]}
+                  />
                 )}
               </div>
               {form.authKind !== "none" && (
-                <Field
+                <Input
+                  type="password"
                   label="API key"
-                  hint={
+                  labelPlacement="outside"
+                  placeholder={editing ? "•••••••• (unchanged)" : "Token"}
+                  variant="bordered"
+                  autoComplete="new-password"
+                  isRequired={apiKeyRequired}
+                  value={form.apiKey}
+                  onValueChange={set("apiKey")}
+                  description={
                     editing
-                      ? "Blank leaves the stored key unchanged. The saved value is never returned to the browser."
+                      ? "Blank leaves the stored key unchanged."
                       : "Required. The saved value is never returned to the browser."
                   }
-                  error={fieldErrors.apiKey}
-                >
-                  <input
-                    type="password"
-                    value={form.apiKey}
-                    onChange={set("apiKey")}
-                    required={apiKeyRequired}
-                    autoComplete="new-password"
-                  />
-                </Field>
+                  isInvalid={Boolean(fieldErrors.apiKey)}
+                  errorMessage={fieldErrors.apiKey}
+                />
               )}
               <KeyValueEditor
                 label="Additional headers"
@@ -448,124 +356,109 @@ export function McpServerFormPage({ mode }) {
                 addLabel="Add header"
                 keyPlaceholder="Header name"
                 rows={form.headers}
-                onChange={(headers) =>
-                  setForm((current) => ({ ...current, headers }))
-                }
+                onChange={set("headers")}
                 error={fieldErrors.headers}
                 editing={editing}
               />
             </>
           )}
-        </fieldset>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Capabilities and timeouts</legend>
-          <p className="field-hint">
-            At least one of tools, resources, or prompts must be enabled.
-          </p>
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.tools}
-                onChange={set("tools")}
-              />
-              Tools
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.resources}
-                onChange={set("resources")}
-              />
-              Resources
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.prompts}
-                onChange={set("prompts")}
-              />
-              Prompts
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.elicitation}
-                onChange={set("elicitation")}
-              />
-              Elicitation
-            </label>
+        <SectionCard
+          title="Capabilities and timeouts"
+          description="At least one of tools, resources, or prompts must be enabled."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ToggleCard
+              label="Tools"
+              isSelected={form.tools}
+              onValueChange={set("tools")}
+            />
+            <ToggleCard
+              label="Resources"
+              isSelected={form.resources}
+              onValueChange={set("resources")}
+            />
+            <ToggleCard
+              label="Prompts"
+              isSelected={form.prompts}
+              onValueChange={set("prompts")}
+            />
+            <ToggleCard
+              label="Elicitation"
+              isSelected={form.elicitation}
+              onValueChange={set("elicitation")}
+            />
           </div>
           {fieldErrors["capabilities.tools"] && (
-            <span className="field-error">
+            <span className="text-tiny text-danger">
               {fieldErrors["capabilities.tools"]}
             </span>
           )}
-          <div className="row">
-            <Field
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Input
+              isRequired
+              type="number"
+              min={1}
+              max={600_000}
               label="Connect timeout (ms)"
-              hint="Budget for the initialize handshake."
-              error={fieldErrors["capabilities.connectTimeoutMs"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={600_000}
-                value={form.connectTimeoutMs}
-                onChange={set("connectTimeoutMs")}
-                required
-              />
-            </Field>
-            <Field
+              labelPlacement="outside"
+              placeholder="30000"
+              variant="bordered"
+              value={String(form.connectTimeoutMs)}
+              onValueChange={setNumber("connectTimeoutMs")}
+              description="Budget for the initialize handshake."
+              isInvalid={Boolean(
+                fieldErrors["capabilities.connectTimeoutMs"],
+              )}
+              errorMessage={fieldErrors["capabilities.connectTimeoutMs"]}
+            />
+            <Input
+              isRequired
+              type="number"
+              min={1}
+              max={600_000}
               label="Request timeout (ms)"
-              hint="Budget for each request after connection."
-              error={fieldErrors["capabilities.requestTimeoutMs"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={600_000}
-                value={form.requestTimeoutMs}
-                onChange={set("requestTimeoutMs")}
-                required
-              />
-            </Field>
+              labelPlacement="outside"
+              placeholder="120000"
+              variant="bordered"
+              value={String(form.requestTimeoutMs)}
+              onValueChange={setNumber("requestTimeoutMs")}
+              description="Budget for each request after connection."
+              isInvalid={Boolean(
+                fieldErrors["capabilities.requestTimeoutMs"],
+              )}
+              errorMessage={fieldErrors["capabilities.requestTimeoutMs"]}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Availability</legend>
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={set("enabled")}
-              />
-              Enabled
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.autoConnect}
-                onChange={set("autoConnect")}
-              />
-              Auto-connect for runs
-            </label>
+        <SectionCard
+          title="Availability"
+          description="Whether agents may select this server."
+          bodyClassName="gap-3 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ToggleCard
+              label="Enabled"
+              isSelected={form.enabled}
+              onValueChange={set("enabled")}
+            />
+            <ToggleCard
+              label="Auto-connect for runs"
+              isSelected={form.autoConnect}
+              onValueChange={set("autoConnect")}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <div className="form-actions">
-          <button type="submit" className="primary" disabled={saving}>
-            {saving
-              ? "Saving..."
-              : editing
-                ? "Save changes"
-                : "Create MCP server"}
-          </button>
-          <Link to="/mcp-servers">Cancel</Link>
-        </div>
+        <FormActions
+          cancelHref="/mcp-servers"
+          saving={saving}
+          isDisabled={saving}
+          label={editing ? "Save changes" : "Create MCP server"}
+        />
       </form>
     </section>
   );

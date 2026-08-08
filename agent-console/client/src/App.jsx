@@ -1,5 +1,7 @@
-import { Route, Routes } from "react-router-dom";
+import { Button } from "@heroui/react";
+import { Link, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell.jsx";
+import { EmptyState } from "./components/Bits.jsx";
 import { AgentDetailPage } from "./pages/AgentDetailPage.jsx";
 import { AgentFormPage } from "./pages/AgentFormPage.jsx";
 import { AgentsPage } from "./pages/AgentsPage.jsx";
@@ -59,8 +61,23 @@ export function App() {
 
         <Route path="/runs" element={<RunsPage />} />
         <Route path="/runs/:id" element={<RunDetailPage />} />
-        <Route path="*" element={<p className="empty">No such page.</p>} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
+  );
+}
+
+function NotFound() {
+  return (
+    <EmptyState
+      icon="search"
+      title="No such page"
+      description="The address does not match any screen in this console."
+      action={
+        <Button as={Link} to="/" color="primary" radius="md">
+          Back to dashboard
+        </Button>
+      }
+    />
   );
 }

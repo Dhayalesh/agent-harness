@@ -1,4 +1,13 @@
 import {
+  Button,
+  Chip,
+  Link as HeroLink,
+  Input,
+  Select,
+  SelectItem,
+  Tooltip,
+} from "@heroui/react";
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -6,14 +15,10 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Link,
-  useNavigate,
-  useParams,
-  useSearchParams,
-} from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
+  AgentAvatar,
   ErrorNote,
   Loading,
   StatusPill,
@@ -21,8 +26,10 @@ import {
   duration,
   relative,
   tokens,
+  useConfirm,
   when,
 } from "../components/Bits.jsx";
+import { Icon } from "../components/Icon.jsx";
 
 export function ChatPage() {
   const { agentId } = useParams();
@@ -41,8 +48,20 @@ export function ChatPage() {
   const [lastRun, setLastRun] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [atBottom, setAtBottom] = useState(true);
+  const [live, setLive] = useState(null);
+  const [confirm, confirmDialog] = useConfirm();
   const threadEnd = useRef(null);
   const composer = useRef(null);
+  const inFlight = useRef(null);
+
+  // Leaving the page stops the run rather than leaving it to finish unwatched:
+  // the server aborts its AgentCore call when this connection closes.
+  useEffect(
+    () => () => {
+      inFlight.current?.abort();
+    },
+    [],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,14 +144,13 @@ export function ChatPage() {
 
   const removeChat = async (target) => {
     const victim = target ?? chat;
-    if (
-      !victim ||
-      !window.confirm(
-        `Delete "${victim.title || victim.agentName}" and its messages?`,
-      )
-    ) {
-      return;
-    }
+    if (!victim) return;
+    const confirmed = await confirm({
+      title: "Delete chat",
+      body: `Delete "${victim.title || victim.agentName}" and its messages?`,
+      confirmLabel: "Delete chat",
+    });
+    if (!confirmed) return;
     try {
       await api.deleteChat(victim.id);
       setChats((current) => current.filter((item) => item.id !== victim.id));
@@ -154,9 +172,11 @@ export function ChatPage() {
     const content = draft.trim();
     if (!content || !agentId || sending) return;
 
+    const streaming = selectedAgent?.stream === true;
     setSending(true);
     setError(null);
     setDraft("");
+    setLive(streaming ? EMPTY_LIVE : null);
 
     let currentChat = chat;
     try {
@@ -178,7 +198,15 @@ export function ChatPage() {
         messages: [...(current?.messages ?? []), optimistic],
       }));
 
-      const result = await api.sendChatMessage(currentChat.id, content);
+      const controller = new AbortController();
+      inFlight.current = controller;
+      const result = streaming
+        ? await api.streamChatMessage(currentChat.id, content, {
+            signal: controller.signal,
+            onEvent: (event) =>
+              setLive((current) => applyLiveEvent(current, event)),
+          })
+        : await api.sendChatMessage(currentChat.id, content);
       setChat(result.chat);
       setLastRun(result.run ?? null);
       setChats((current) => [
@@ -191,7 +219,8 @@ export function ChatPage() {
         });
       }
     } catch (caught) {
-      setError(caught);
+      // An abort is this component going away, not a failure to report.
+      if (caught?.name !== "AbortError") setError(caught);
       if (currentChat?.id) {
         if (chatId !== currentChat.id) {
           navigate("/chat/" + agentId + "?chat=" + currentChat.id, {
@@ -204,7 +233,9 @@ export function ChatPage() {
           .catch(() => undefined);
       }
     } finally {
+      inFlight.current = null;
       setSending(false);
+      setLive(null);
     }
   };
 
@@ -216,67 +247,95 @@ export function ChatPage() {
   if (loading && agents.length === 0) return <Loading what="chat workspace" />;
 
   return (
-    <section className="chat-page">
+    <section className="flex min-h-[480px] min-w-0 flex-1 flex-col">
       <h1 className="sr-only">Chat</h1>
 
-      <div className="chat-layout">
+      {/*
+        The row is `minmax(0,1fr)` rather than the implicit `auto`: a grid item
+        keeps `min-height: auto`, so an auto row would size itself to the whole
+        transcript and overflow the card instead of letting the thread scroll.
+      */}
+      <div className="relative grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden rounded-large border border-divider bg-content1 shadow-sm lg:grid-cols-[276px_minmax(0,1fr)]">
         <aside
-          className={sidebarOpen ? "chat-sidebar chat-sidebar-open" : "chat-sidebar"}
+          className={`absolute inset-y-0 left-0 z-20 flex min-h-0 w-[276px] min-w-0 flex-col border-r border-divider bg-content2/60 transition-transform duration-200 lg:static lg:translate-x-0 ${
+            sidebarOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
+          }`}
           aria-label="Chat history"
         >
-          <div className="chat-sidebar-head">
-            <div className="chat-sidebar-title">
-              <span className="eyebrow">Agent playground</span>
-              <button
-                type="button"
-                className="icon-button chat-sidebar-close"
+          <div className="flex flex-col gap-2.5 border-b border-divider p-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-[0.11em] text-primary">
+                Agent playground
+              </span>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="light"
+                className="lg:hidden"
                 aria-label="Close chat history"
-                onClick={() => setSidebarOpen(false)}
+                onPress={() => setSidebarOpen(false)}
               >
-                <ChatIcon name="close" />
-              </button>
+                <Icon name="close" className="h-4 w-4" />
+              </Button>
             </div>
-            <select
+
+            <Select
               aria-label="Choose an agent"
-              value={agentId ?? ""}
-              onChange={(event) => selectAgent(event.target.value)}
+              size="sm"
+              variant="bordered"
+              placeholder="Choose an agent"
+              classNames={{ trigger: "bg-content1" }}
+              selectedKeys={agentId ? [agentId] : []}
+              disabledKeys={agents
+                .filter((agent) => !agent.enabled)
+                .map((agent) => agent.id)}
+              onSelectionChange={(keys) => selectAgent([...keys][0] ?? "")}
             >
-              <option value="">Choose an agent</option>
               {agents.map((agent) => (
-                <option key={agent.id} value={agent.id} disabled={!agent.enabled}>
+                <SelectItem key={agent.id} textValue={agent.name}>
                   {agent.name}
                   {!agent.enabled ? " (disabled)" : ""}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-            <button
-              type="button"
-              className="primary new-chat-button"
-              disabled={!agentId}
-              onClick={newChat}
+            </Select>
+
+            <Button
+              size="sm"
+              color="primary"
+              radius="md"
+              className="h-9"
+              isDisabled={!agentId}
+              onPress={newChat}
+              startContent={<Icon name="plus" className="h-4 w-4" />}
             >
-              <ChatIcon name="plus" />
               New chat
-            </button>
+            </Button>
           </div>
 
-          <div className="chat-search">
-            <ChatIcon name="search" />
-            <input
+          <div className="p-3 pb-2">
+            <Input
               type="search"
-              value={search}
+              size="sm"
+              variant="bordered"
               aria-label="Search chats"
               placeholder="Search chats"
-              onChange={(event) => setSearch(event.target.value)}
+              value={search}
+              onValueChange={setSearch}
+              startContent={
+                <Icon name="search" className="h-4 w-4 text-default-400" />
+              }
+              classNames={{ inputWrapper: "h-9 bg-content1" }}
             />
           </div>
 
-          <div className="chat-list-scroll">
+          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
             {visibleChats.length ? (
               groupChats(visibleChats).map((group) => (
-                <div className="chat-group" key={group.label}>
-                  <span className="chat-group-label">{group.label}</span>
-                  <ul className="chat-list">
+                <div className="mt-2 first:mt-0" key={group.label}>
+                  <span className="block px-2 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.1em] text-default-400">
+                    {group.label}
+                  </span>
+                  <ul className="flex flex-col gap-0.5">
                     {group.items.map((item) => (
                       <ChatListItem
                         key={item.id}
@@ -289,7 +348,7 @@ export function ChatPage() {
                 </div>
               ))
             ) : (
-              <p className="chat-list-empty muted">
+              <p className="px-3 py-4 text-tiny text-default-500">
                 {search.trim()
                   ? "No chats match that search."
                   : "No chats yet. Start one below."}
@@ -297,101 +356,121 @@ export function ChatPage() {
             )}
           </div>
 
-          <div className="chat-sidebar-foot">
+          <div className="flex items-center justify-between border-t border-divider px-4 py-2.5 text-tiny text-default-500">
             <span>
               {chats.length} {chats.length === 1 ? "chat" : "chats"}
             </span>
-            <Link to="/runs">Runs</Link>
+            <HeroLink href="/runs" size="sm">
+              Runs
+            </HeroLink>
           </div>
         </aside>
 
         {sidebarOpen && (
           <button
             type="button"
-            className="chat-scrim"
+            className="absolute inset-0 z-10 bg-black/35 backdrop-blur-sm lg:hidden"
             aria-label="Close chat history"
             onClick={() => setSidebarOpen(false)}
           />
         )}
 
-        <div className="chat-thread">
-          <header className="thread-head">
-            <button
-              type="button"
-              className="icon-button thread-menu"
+        <div className="relative flex min-h-0 min-w-0 flex-col bg-content1">
+          <header className="flex min-h-[60px] items-center gap-3 border-b border-divider px-3.5 py-2.5">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="light"
+              className="lg:hidden"
               aria-label="Open chat history"
               aria-expanded={sidebarOpen}
-              onClick={() => setSidebarOpen(true)}
+              onPress={() => setSidebarOpen(true)}
             >
-              <ChatIcon name="menu" />
-            </button>
+              <Icon name="menu" className="h-5 w-5" />
+            </Button>
 
             {selectedAgent ? (
               <>
-                <span className="agent-avatar" aria-hidden="true">
-                  {initial(selectedAgent.name)}
-                </span>
-                <div className="thread-identity">
-                  <strong>{chat?.title || selectedAgent.name}</strong>
-                  <span>
+                <AgentAvatar circle name={selectedAgent.name} size="sm" />
+                <div className="min-w-0 flex-1">
+                  <strong className="block truncate text-small font-semibold">
+                    {chat?.title || selectedAgent.name}
+                  </strong>
+                  <span className="block truncate text-tiny text-default-500">
                     {selectedAgent.resolved?.modelProvider?.model ??
                       selectedAgent.model ??
                       "Configured model"}
-                    {chat?.messageCount ? ` · ${chat.messageCount} messages` : ""}
+                    {chat?.messageCount
+                      ? ` · ${chat.messageCount} messages`
+                      : ""}
                   </span>
                 </div>
-                <div className="thread-actions">
-                  <span
-                    className={
-                      agentReady
-                        ? "readiness"
-                        : "readiness readiness-bad"
+                <div className="flex items-center gap-1">
+                  <Chip
+                    size="sm"
+                    variant="flat"
+                    color={agentReady ? "success" : "warning"}
+                    classNames={{
+                      base: "hidden h-6 rounded-full sm:flex",
+                      content: "px-1 text-tiny font-semibold",
+                    }}
+                    startContent={
+                      <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-current" />
                     }
                   >
-                    <i aria-hidden="true" />
                     {agentReady ? "Ready" : "Needs setup"}
-                  </span>
-                  <Link
-                    className="icon-button"
-                    to={"/agents/" + selectedAgent.id}
-                    aria-label="Open agent configuration"
-                    title="Agent configuration"
-                  >
-                    <ChatIcon name="settings" />
-                  </Link>
-                  {chat && (
-                    <button
-                      type="button"
-                      className="icon-button icon-button-danger"
-                      aria-label="Delete this chat"
-                      title="Delete chat"
-                      onClick={() => removeChat(chat)}
+                  </Chip>
+                  <Tooltip content="Agent configuration" size="sm">
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="light"
+                      href={`/agents/${selectedAgent.id}`}
+                      aria-label="Open agent configuration"
                     >
-                      <ChatIcon name="trash" />
-                    </button>
+                      <Icon name="settings" className="h-4 w-4" />
+                    </Button>
+                  </Tooltip>
+                  {chat && (
+                    <Tooltip content="Delete chat" size="sm" color="danger">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        color="danger"
+                        aria-label="Delete this chat"
+                        onPress={() => removeChat(chat)}
+                      >
+                        <Icon name="trash" className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
                   )}
                 </div>
               </>
             ) : (
-              <div className="thread-identity">
-                <strong>No agent selected</strong>
-                <span>Pick an agent to open a conversation</span>
+              <div className="min-w-0 flex-1">
+                <strong className="block truncate text-small font-semibold">
+                  No agent selected
+                </strong>
+                <span className="block truncate text-tiny text-default-500">
+                  Pick an agent to open a conversation
+                </span>
               </div>
             )}
           </header>
 
           {!selectedAgent ? (
-            <div className="chat-scroll">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               <AgentPicker agents={agents} onSelect={selectAgent} />
             </div>
           ) : (
             <>
               <div
-                className="chat-scroll"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
                 onScroll={trackScroll}
                 aria-live="polite"
               >
-                <div className="message-list">
+                <div className="mx-auto flex w-full max-w-[780px] flex-1 flex-col gap-6 px-4 pb-3 pt-6 sm:px-7">
                   {chat?.messages?.length ? (
                     chat.messages.map((message, index) => (
                       <Message
@@ -406,36 +485,44 @@ export function ChatPage() {
                       onSuggestion={applySuggestion}
                     />
                   )}
-                  {sending && <PendingMessage agentName={selectedAgent.name} />}
+                  {sending &&
+                    (live ? (
+                      <LiveMessage live={live} agentName={selectedAgent.name} />
+                    ) : (
+                      <PendingMessage agentName={selectedAgent.name} />
+                    ))}
                   <div ref={threadEnd} />
                 </div>
               </div>
 
-              <div className="composer-dock">
+              <div className="relative mx-auto w-full max-w-[780px] px-4 pb-4 pt-1.5 sm:px-7">
                 {!atBottom && (
-                  <button
-                    type="button"
-                    className="scroll-bottom"
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    radius="full"
+                    variant="flat"
+                    className="absolute -top-10 left-1/2 z-10 -translate-x-1/2 border border-divider bg-content1 shadow-md"
                     aria-label="Scroll to latest message"
-                    onClick={() =>
+                    onPress={() =>
                       threadEnd.current?.scrollIntoView({
                         block: "end",
                         behavior: "smooth",
                       })
                     }
                   >
-                    <ChatIcon name="down" />
-                  </button>
+                    <Icon name="down" className="h-4 w-4" />
+                  </Button>
                 )}
 
                 <ErrorNote error={error} />
 
                 {!agentReady && (
-                  <div className="warn thread-warn">
-                    <strong>
+                  <div className="mb-2.5 rounded-medium border border-warning-200 bg-warning-50 px-3 py-2.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400">
+                    <strong className="block font-semibold">
                       This agent needs configuration before it can run.
                     </strong>
-                    <ul>
+                    <ul className="my-1 list-disc space-y-0.5 pl-4">
                       {(selectedAgent.resolved?.issues ?? []).map(
                         (issue, index) => (
                           <li key={issue.code ?? index}>
@@ -444,17 +531,24 @@ export function ChatPage() {
                         ),
                       )}
                     </ul>
-                    <Link to={"/agents/" + selectedAgent.id}>
+                    <HeroLink
+                      href={`/agents/${selectedAgent.id}`}
+                      size="sm"
+                      color="warning"
+                    >
                       Review agent configuration
-                    </Link>
+                    </HeroLink>
                   </div>
                 )}
 
-                <form className="chat-composer" onSubmit={send}>
+                <form
+                  className="rounded-[16px] border border-divider bg-content1 py-2 pl-3.5 pr-2 shadow-sm transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20"
+                  onSubmit={send}
+                >
                   <label className="sr-only" htmlFor="chat-message">
                     Message {selectedAgent.name}
                   </label>
-                  <div className="composer-row">
+                  <div className="flex items-end gap-2">
                     <textarea
                       id="chat-message"
                       ref={composer}
@@ -467,32 +561,36 @@ export function ChatPage() {
                         }
                       }}
                       rows={1}
-                      placeholder={
-                        "Ask " + selectedAgent.name + " to do something…"
-                      }
+                      placeholder={`Ask ${selectedAgent.name} to do something…`}
                       disabled={sending || !agentReady}
+                      className="max-h-[208px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 text-small leading-relaxed text-foreground outline-none placeholder:text-default-400 disabled:opacity-60"
                     />
-                    <button
+                    <Button
                       type="submit"
-                      className="send-button"
+                      isIconOnly
+                      radius="full"
+                      color="primary"
+                      size="sm"
+                      className="h-9 w-9 shrink-0"
                       aria-label={sending ? "Running" : "Send message"}
-                      disabled={!draft.trim() || sending || !agentReady}
+                      isLoading={sending}
+                      isDisabled={!draft.trim() || sending || !agentReady}
                     >
-                      {sending ? (
-                        <span className="spinner" aria-hidden="true" />
-                      ) : (
-                        <ChatIcon name="send" />
-                      )}
-                    </button>
+                      {!sending && <Icon name="send" className="h-4 w-4" />}
+                    </Button>
                   </div>
-                  <div className="composer-foot">
-                    <span>Enter to send · Shift + Enter for a new line</span>
+                  <div className="flex min-h-6 items-center justify-between gap-3 px-0.5 pb-0.5 pt-1.5">
+                    <span className="hidden text-tiny text-default-400 sm:block">
+                      Enter to send · Shift + Enter for a new line
+                    </span>
                     {lastRun && (
-                      <div className="run-strip">
+                      <div className="ml-auto flex items-center gap-2.5 text-tiny text-default-500">
                         <StatusPill status={lastRun.status} />
                         <span>{tokens(lastRun.usage)}</span>
                         <span>{duration(lastRun.durationMs)}</span>
-                        <Link to={"/runs/" + lastRun.id}>Open run</Link>
+                        <HeroLink href={`/runs/${lastRun.id}`} size="sm">
+                          Open run
+                        </HeroLink>
                       </div>
                     )}
                   </div>
@@ -502,6 +600,8 @@ export function ChatPage() {
           )}
         </div>
       </div>
+
+      {confirmDialog}
     </section>
   );
 }
@@ -509,26 +609,34 @@ export function ChatPage() {
 function ChatListItem({ item, active, onRemove }) {
   const title = item.title || item.agentName || "Untitled chat";
   return (
-    <li className={active ? "chat-item chat-item-active" : "chat-item"}>
-      <Link
-        className="chat-link"
-        to={"/chat/" + item.agentId + "?chat=" + item.id}
+    <li
+      className={`group relative rounded-medium ${
+        active
+          ? "bg-primary/10 ring-1 ring-inset ring-primary/25"
+          : "hover:bg-default-100"
+      }`}
+    >
+      <HeroLink
+        href={`/chat/${item.agentId}?chat=${item.id}`}
+        className="block rounded-medium py-2 pl-2.5 pr-9 text-foreground"
       >
-        <strong>{title}</strong>
-        <span>
+        <span className="block truncate text-small font-medium">{title}</span>
+        <span className="mt-0.5 block truncate text-tiny text-default-500">
           {item.agentName ? item.agentName + " · " : ""}
           {relative(item.updatedAt ?? item.createdAt)}
         </span>
-      </Link>
-      <button
-        type="button"
-        className="icon-button chat-item-remove"
+      </HeroLink>
+      <Button
+        isIconOnly
+        size="sm"
+        variant="light"
+        color="danger"
+        className="absolute right-1 top-1/2 h-7 w-7 min-w-7 -translate-y-1/2 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
         aria-label={`Delete ${title}`}
-        title="Delete chat"
-        onClick={() => onRemove(item)}
+        onPress={() => onRemove(item)}
       >
-        <ChatIcon name="trash" />
-      </button>
+        <Icon name="trash" className="h-3.5 w-3.5" />
+      </Button>
     </li>
   );
 }
@@ -536,38 +644,43 @@ function ChatListItem({ item, active, onRemove }) {
 function AgentPicker({ agents, onSelect }) {
   const runnable = agents.filter((agent) => agent.enabled);
   return (
-    <div className="chat-empty">
-      <span className="chat-empty-mark" aria-hidden="true">
-        <ChatIcon name="spark" />
+    <div className="m-auto flex max-w-[640px] flex-col items-center px-4 pb-9 pt-7 text-center">
+      <span className="mb-3.5 grid h-12 w-12 place-items-center rounded-large bg-gradient-to-br from-primary to-secondary text-white shadow-md">
+        <Icon name="spark" className="h-5 w-5" />
       </span>
-      <h2>Choose an agent to begin</h2>
-      <p className="muted">
+      <h2 className="text-xl font-semibold tracking-tight">
+        Choose an agent to begin
+      </h2>
+      <p className="mb-4 mt-1.5 max-w-[48ch] text-small text-default-500">
         Chats keep prompts, answers, and run metadata together in MongoDB.
       </p>
       {runnable.length > 0 && (
-        <div className="agent-pick-grid">
+        <div className="grid w-full grid-cols-1 gap-2.5 text-left sm:grid-cols-2">
           {runnable.slice(0, 6).map((agent) => (
             <button
               type="button"
               key={agent.id}
               onClick={() => onSelect(agent.id)}
+              className="flex items-center gap-3 rounded-large border border-divider bg-content1 px-3.5 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-sm"
             >
-              <span className="agent-avatar" aria-hidden="true">
-                {initial(agent.name)}
+              <AgentAvatar circle name={agent.name} size="sm" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-small font-medium">
+                  {agent.name}
+                </span>
+                <span className="block truncate text-tiny text-default-500">
+                  {agent.description || "Open a new chat"}
+                </span>
               </span>
-              <span className="pick-copy">
-                <strong>{agent.name}</strong>
-                <span>{agent.description || "Open a new chat"}</span>
-              </span>
-              <ChatIcon name="arrow" />
+              <Icon name="arrow" className="h-4 w-4 text-default-400" />
             </button>
           ))}
         </div>
       )}
       {agents.length === 0 && (
-        <Link to="/agents/new" className="button-link primary">
+        <Button color="primary" radius="md" href="/agents/new">
           Create your first agent
-        </Link>
+        </Button>
       )}
     </div>
   );
@@ -587,32 +700,38 @@ function ChatWelcome({ agent, onSuggestion }) {
   ].filter(Boolean);
 
   return (
-    <div className="chat-empty chat-welcome">
-      <span className="agent-avatar agent-avatar-large" aria-hidden="true">
-        {initial(agent.name)}
-      </span>
-      <h2>Chat with {agent.name}</h2>
-      <p className="muted">
+    <div className="m-auto flex max-w-[640px] flex-col items-center px-2 pb-9 pt-7 text-center">
+      <AgentAvatar circle name={agent.name} size="lg" className="mb-3.5" />
+      <h2 className="text-xl font-semibold tracking-tight">
+        Chat with {agent.name}
+      </h2>
+      <p className="mt-1.5 max-w-[48ch] text-small text-default-500">
         {agent.description || "Start with a prompt below."}
       </p>
       {facts.length > 0 && (
-        <div className="welcome-facts">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
           {facts.map((fact) => (
-            <span className="chip" key={fact}>
+            <Chip
+              key={fact}
+              size="sm"
+              variant="flat"
+              classNames={{ base: "h-6 rounded-full", content: "text-tiny" }}
+            >
               {fact}
-            </span>
+            </Chip>
           ))}
         </div>
       )}
-      <div className="suggestion-grid">
+      <div className="mt-5 grid w-full grid-cols-1 gap-2.5 text-left sm:grid-cols-3">
         {suggestions.map((suggestion) => (
           <button
             type="button"
             key={suggestion}
             onClick={() => onSuggestion(suggestion)}
+            className="flex items-start gap-2.5 rounded-large border border-divider bg-content1 px-3.5 py-3 text-left text-small leading-snug transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-sm"
           >
-            <span>{suggestion}</span>
-            <ChatIcon name="arrow" />
+            <span className="min-w-0 flex-1">{suggestion}</span>
+            <Icon name="arrow" className="mt-0.5 h-4 w-4 text-default-400" />
           </button>
         ))}
       </div>
@@ -630,36 +749,70 @@ function Message({ message, agentName }) {
   const author = isError ? "Error" : role === "assistant" ? agentName : "You";
 
   return (
-    <article className={"message message-" + role}>
-      {role !== "user" && (
-        <span className="message-avatar" aria-hidden="true">
-          {isError ? "!" : initial(agentName)}
-        </span>
-      )}
-      <div className="message-body">
-        <header>
-          <strong>{author}</strong>
+    <article
+      className={`group grid items-start gap-3 ${
+        role === "user" ? "grid-cols-1" : "grid-cols-[30px_minmax(0,1fr)]"
+      }`}
+    >
+      {role !== "user" &&
+        (isError ? (
+          <span
+            aria-hidden="true"
+            className="grid h-[30px] w-[30px] place-items-center rounded-full bg-danger text-tiny font-bold text-white"
+          >
+            !
+          </span>
+        ) : (
+          <AgentAvatar circle name={agentName} size="xs" className="h-[30px] w-[30px]" />
+        ))}
+
+      <div className={`min-w-0 ${role === "user" ? "justify-self-end max-w-[min(86%,580px)]" : ""}`}>
+        <header
+          className={`mb-1.5 flex items-baseline gap-2 ${
+            role === "user" ? "justify-end" : ""
+          }`}
+        >
+          <strong className="text-small font-semibold">{author}</strong>
           {message.createdAt && (
-            <span title={when(message.createdAt)}>
+            <span
+              className="text-tiny text-default-400"
+              title={when(message.createdAt)}
+            >
               {clock(message.createdAt)}
             </span>
           )}
         </header>
-        <div className="message-content">
+
+        <div
+          className={`text-small ${
+            role === "user"
+              ? "rounded-[14px] rounded-tr-[4px] border border-primary-200 bg-primary-50 px-4 py-2.5 dark:border-primary-500/25 dark:bg-primary-500/10"
+              : isError
+                ? "rounded-[14px] rounded-tl-[4px] border border-danger-200 bg-danger-50 px-4 py-2.5 text-danger dark:border-danger-500/25 dark:bg-danger-500/10"
+                : ""
+          }`}
+        >
           {segments(content).map((segment, index) =>
             segment.kind === "code" ? (
               <CodeBlock key={index} value={segment.value} />
             ) : (
-              <p key={index}>{segment.value}</p>
+              <p key={index} className="message-text [&+&]:mt-3">
+                {segment.value}
+              </p>
             ),
           )}
         </div>
-        <footer className="message-actions">
+
+        <footer
+          className={`mt-2 flex items-center gap-3.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 ${
+            role === "user" ? "justify-end" : ""
+          }`}
+        >
           <CopyButton value={content} label="Copy message" />
           {message.runId && (
-            <Link className="message-run-link" to={"/runs/" + message.runId}>
+            <HeroLink href={`/runs/${message.runId}`} size="sm">
               View run
-            </Link>
+            </HeroLink>
           )}
         </footer>
       </div>
@@ -667,38 +820,257 @@ function Message({ message, agentName }) {
   );
 }
 
+const EMPTY_LIVE = {
+  status: "Starting the run",
+  reasoning: "",
+  text: "",
+  tools: [],
+  warnings: [],
+};
+
+/**
+ * The in-flight turn, as the events describe it so far.
+ *
+ * A pure reducer rather than a pile of setState calls: one event can touch two
+ * fields, and every branch has to leave the other fields alone. Unknown types
+ * fall through untouched, so a runtime that emits something newer than this
+ * console still renders everything it does understand.
+ */
+function applyLiveEvent(live, event) {
+  const current = live ?? EMPTY_LIVE;
+  switch (event?.type) {
+    case "run.preparing":
+      return { ...current, status: event.message };
+    case "session.started":
+      return { ...current, status: "Thinking" };
+    case "turn.started":
+      return { ...current, status: `Turn ${event.turn}` };
+    case "assistant.reasoning.delta":
+      return {
+        ...current,
+        status: "Thinking",
+        reasoning: current.reasoning + (event.delta ?? ""),
+      };
+    case "assistant.text.delta":
+      return {
+        ...current,
+        status: "Writing the answer",
+        text: current.text + (event.delta ?? ""),
+      };
+    case "tool.input.delta":
+      return {
+        ...current,
+        tools: upsertTool(current.tools, toolKey(event), (tool) => ({
+          ...tool,
+          name: event.toolName || tool.name,
+          input: tool.input + (event.delta ?? ""),
+        })),
+      };
+    case "tool.requested":
+    case "tool.started":
+      return {
+        ...current,
+        status: `Running ${event.call?.name ?? "a tool"}`,
+        tools: upsertTool(current.tools, event.call?.id, (tool) => ({
+          ...tool,
+          name: event.call?.name ?? tool.name,
+          input: tool.input || formatToolInput(event.call?.input),
+          state: event.type === "tool.started" ? "running" : tool.state,
+        })),
+      };
+    case "tool.progress":
+      return {
+        ...current,
+        tools: upsertTool(current.tools, event.toolCallId, (tool) => ({
+          ...tool,
+          output: [...tool.output, event.message].slice(-40),
+        })),
+      };
+    case "tool.completed":
+      return {
+        ...current,
+        tools: upsertTool(current.tools, event.result?.toolCallId, (tool) => ({
+          ...tool,
+          state: event.result?.isError ? "error" : "done",
+        })),
+      };
+    case "warning":
+      return {
+        ...current,
+        warnings: [...current.warnings, event.message].slice(-5),
+      };
+    default:
+      return current;
+  }
+}
+
+/** Deltas arrive before an id on some gateways, so the slot number is the fallback. */
+function toolKey(event) {
+  return event.toolCallId || `index-${event.index}`;
+}
+
+function upsertTool(tools, key, update) {
+  if (!key) return tools;
+  const existing = tools.find((tool) => tool.key === key);
+  if (existing) {
+    return tools.map((tool) => (tool.key === key ? update(tool) : tool));
+  }
+  return [
+    ...tools,
+    update({ key, name: "", input: "", output: [], state: "pending" }),
+  ];
+}
+
+function formatToolInput(input) {
+  if (input === undefined || input === null) return "";
+  if (typeof input === "string") return input;
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return "";
+  }
+}
+
+function LiveMessage({ live, agentName }) {
+  const busy = !live.text;
+  return (
+    <article className="grid grid-cols-[30px_minmax(0,1fr)] items-start gap-3">
+      <AgentAvatar
+        circle
+        name={agentName}
+        size="xs"
+        className="h-[30px] w-[30px] animate-pulse"
+      />
+      <div className="min-w-0">
+        <header className="mb-1.5">
+          <strong className="text-small font-semibold">{agentName}</strong>
+        </header>
+
+        {live.reasoning && (
+          <details className="mb-2.5 rounded-medium border border-divider bg-content2 px-3 py-2">
+            <summary className="flex cursor-pointer items-center gap-1.5 text-tiny font-semibold text-default-500 [&::-webkit-details-marker]:hidden">
+              <Icon name="spark" className="h-3.5 w-3.5" />
+              Thinking
+            </summary>
+            <p className="message-text mt-2 max-h-[260px] overflow-y-auto text-tiny text-default-500">
+              {live.reasoning}
+            </p>
+          </details>
+        )}
+
+        {live.tools.map((tool) => (
+          <ToolCard key={tool.key} tool={tool} />
+        ))}
+
+        {live.warnings.map((warning, index) => (
+          <p
+            className="mb-2 rounded-medium border border-warning-200 bg-warning-50 px-2.5 py-1.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400"
+            key={`${warning}-${index}`}
+          >
+            {warning}
+          </p>
+        ))}
+
+        {live.text ? (
+          <p className="message-text text-small">
+            {live.text}
+            <span
+              aria-hidden="true"
+              className="ml-0.5 inline-block h-[1.05em] w-[7px] animate-caret-blink rounded-[1px] bg-primary align-text-bottom"
+            />
+          </p>
+        ) : (
+          <p className="text-small text-default-500">
+            {live.status}
+            <TypingDots />
+          </p>
+        )}
+        {!busy && <span className="sr-only">{live.status}</span>}
+      </div>
+    </article>
+  );
+}
+
+function ToolCard({ tool }) {
+  const tone = {
+    pending: "text-primary animate-pulse",
+    running: "text-primary animate-pulse",
+    done: "text-success",
+    error: "text-danger",
+  }[tool.state];
+
+  return (
+    <div
+      className={`mb-2 overflow-hidden rounded-medium border bg-content2 ${
+        tool.state === "error" ? "border-danger-200 dark:border-danger-500/25" : "border-divider"
+      }`}
+    >
+      <div className="flex items-center gap-2 px-3 py-1.5 text-tiny text-default-500">
+        <span className={tone}>
+          <Icon
+            name={tool.state === "done" ? "check" : "tool"}
+            className="h-4 w-4"
+          />
+        </span>
+        <code className="font-semibold text-foreground">
+          {tool.name || "tool"}
+        </code>
+        {tool.input && (
+          <span className="min-w-0 truncate font-mono text-[11px]">
+            {tool.input}
+          </span>
+        )}
+      </div>
+      {tool.output.length > 0 && (
+        <pre className="message-text max-h-[180px] overflow-auto border-t border-divider px-3 py-2 text-[11px] text-default-500">
+          {tool.output.join("\n")}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 function PendingMessage({ agentName }) {
   return (
-    <article className="message message-assistant message-pending">
-      <span className="message-avatar" aria-hidden="true">
-        {initial(agentName)}
-      </span>
-      <div className="message-body">
-        <header>
-          <strong>{agentName}</strong>
+    <article className="grid grid-cols-[30px_minmax(0,1fr)] items-start gap-3">
+      <AgentAvatar
+        circle
+        name={agentName}
+        size="xs"
+        className="h-[30px] w-[30px] animate-pulse"
+      />
+      <div className="min-w-0">
+        <header className="mb-1.5">
+          <strong className="text-small font-semibold">{agentName}</strong>
         </header>
-        <p className="pending-copy">
+        <p className="text-small text-default-500">
           AgentCore is running this turn
-          <span className="typing-dots" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </span>
+          <TypingDots />
         </p>
       </div>
     </article>
   );
 }
 
+function TypingDots() {
+  return (
+    <span className="ml-1.5 inline-flex gap-[3px] align-middle" aria-hidden="true">
+      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400" />
+      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.15s]" />
+      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.3s]" />
+    </span>
+  );
+}
+
 function CodeBlock({ value }) {
   const { language, code } = splitFence(value);
   return (
-    <div className="code-block">
-      <div className="code-block-head">
+    <div className="my-3 overflow-hidden rounded-medium border border-divider bg-content2 first:mt-0 last:mb-0">
+      <div className="flex items-center justify-between gap-2.5 border-b border-divider bg-content3/40 py-1.5 pl-3 pr-2 text-[10px] font-bold uppercase tracking-[0.08em] text-default-500">
         <span>{language || "code"}</span>
         <CopyButton value={code} label="Copy code" />
       </div>
-      <pre>{code}</pre>
+      <pre className="code-scroll max-h-[420px]">{code}</pre>
     </div>
   );
 }
@@ -722,15 +1094,15 @@ function CopyButton({ value, label }) {
   };
 
   return (
-    <button type="button" className="text-button copy-button" onClick={copy}>
-      <ChatIcon name={copied ? "check" : "copy"} />
+    <button
+      type="button"
+      onClick={copy}
+      className="inline-flex items-center gap-1.5 text-tiny normal-case tracking-normal text-default-500 transition-colors hover:text-primary"
+    >
+      <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
       {copied ? "Copied" : label}
     </button>
   );
-}
-
-function initial(name) {
-  return (name ?? "?").trim().slice(0, 1).toUpperCase() || "?";
 }
 
 function countLabel(count, noun) {
@@ -795,62 +1167,4 @@ function bucketOf(iso) {
   if (days <= 7) return "Previous 7 days";
   if (days <= 30) return "Previous 30 days";
   return "Older";
-}
-
-function ChatIcon({ name }) {
-  const paths = {
-    plus: <path d="M12 5v14M5 12h14" />,
-    search: (
-      <>
-        <circle cx="11" cy="11" r="7" />
-        <path d="m20 20-3.4-3.4" />
-      </>
-    ),
-    menu: <path d="M4 7h16M4 12h16M4 17h16" />,
-    close: <path d="m6 6 12 12M18 6 6 18" />,
-    send: <path d="M12 19V5M6 11l6-6 6 6" />,
-    down: <path d="M12 5v14M6 13l6 6 6-6" />,
-    arrow: <path d="M5 12h13M13 6l6 6-6 6" />,
-    check: <path d="m5 12.5 4.5 4.5L19 7" />,
-    copy: (
-      <>
-        <rect x="9" y="9" width="11" height="11" rx="2.5" />
-        <path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H16" />
-      </>
-    ),
-    trash: (
-      <>
-        <path d="M4 7h16M10 11v6M14 11v6" />
-        <path d="M6 7h12l-1 12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2Z" />
-        <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
-      </>
-    ),
-    settings: (
-      <>
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
-      </>
-    ),
-    spark: (
-      <>
-        <path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z" />
-        <path d="m18 16 .8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8Z" />
-      </>
-    ),
-  };
-
-  return (
-    <svg
-      className="chat-icon"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {paths[name]}
-    </svg>
-  );
 }

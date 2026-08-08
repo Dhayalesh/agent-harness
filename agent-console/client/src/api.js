@@ -43,6 +43,92 @@ async function request(path, { method = "GET", body, signal } = {}) {
   return payload;
 }
 
+/**
+ * The same request, read as frames.
+ *
+ * Kept beside `request` rather than folded into it because the two fail
+ * differently: this one has already returned a 200 by the time anything can go
+ * wrong, so a failure arrives as an event and the shared error handling above
+ * would never see it. A non-2xx still comes back as the ordinary JSON shape,
+ * which is why the pre-stream branch reuses it.
+ */
+async function streamRequest(path, { body, onEvent, signal } = {}) {
+  const response = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    let payload = {};
+    try {
+      payload = text ? JSON.parse(text) : {};
+    } catch {
+      throw new ApiError(
+        `Unexpected response from the API: ${text.slice(0, 200)}`,
+        response.status,
+      );
+    }
+    throw new ApiError(
+      payload.error ?? `HTTP ${response.status}`,
+      response.status,
+      payload.details,
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed;
+  let failure;
+
+  const handle = (event) => {
+    if (event.type === "console.completed") completed = event;
+    else if (event.type === "console.failed") failure = event;
+    onEvent?.(event);
+  };
+
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    // A frame is delimited by a blank line, not by a chunk: a long tool result
+    // routinely arrives split across several reads.
+    buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const event = parseFrame(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      if (event) handle(event);
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (failure) {
+    throw new ApiError(failure.error ?? "The run failed", 502);
+  }
+  if (!completed) {
+    throw new ApiError("The stream ended before the run completed", 502);
+  }
+  return { chat: completed.chat, run: completed.run };
+}
+
+function parseFrame(frame) {
+  const data = [];
+  for (const line of frame.split("\n")) {
+    // Comment lines are the keep-alive; they exist for the network, not for us.
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (data.length === 0) return null;
+  try {
+    return JSON.parse(data.join("\n"));
+  } catch {
+    return null;
+  }
+}
+
 export const api = {
   health: () => request("/health"),
   dashboard: () => request("/dashboard"),
@@ -134,6 +220,13 @@ export const api = {
     request(`/chats/${id}/messages`, {
       method: "POST",
       body: { content },
+    }),
+  /** Same call, same `{ chat, run }` result, with the events on the way there. */
+  streamChatMessage: (id, content, { onEvent, signal } = {}) =>
+    streamRequest(`/chats/${id}/messages`, {
+      body: { content },
+      onEvent,
+      ...(signal ? { signal } : {}),
     }),
 };
 

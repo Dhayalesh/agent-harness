@@ -9,7 +9,7 @@ import {
 } from "../lib/schemas.js";
 import { Chat, chatSummaries } from "../models/chat.js";
 import { Run } from "../models/run.js";
-import { invokeStoredAgent } from "../services/invocation.js";
+import { invokeStoredAgent, streamStoredAgent } from "../services/invocation.js";
 import {
   loadAgent,
   nowIso,
@@ -88,35 +88,114 @@ chatsRouter.post("/:id/messages", asyncHandler(async (request, response) => {
   chat.updatedAt = userTimestamp;
   await chat.save();
 
-  let invocation;
-  try {
-    invocation = await invokeStoredAgent({
-      agentId: chat.agentId,
-      prompt: replayPrompt,
-      runtimeSessionId: chat.runtimeSessionId,
-      permissionMode: input.permissionMode,
-      includeEvents: input.includeEvents,
-      chatId: chat._id.toString(),
+  const invocationInput = {
+    agentId: chat.agentId,
+    prompt: replayPrompt,
+    runtimeSessionId: chat.runtimeSessionId,
+    permissionMode: input.permissionMode,
+    includeEvents: input.includeEvents,
+    chatId: chat._id.toString(),
+  };
+
+  // Same rule the runtime applies one hop further on: the caller's Accept decides,
+  // and the stored preference only answers for a caller that stated nothing. A
+  // client that cannot read frames must never be sent them.
+  if (!wantsEventStream(request, agent)) {
+    let invocation;
+    try {
+      invocation = await invokeStoredAgent(invocationInput);
+    } catch (error) {
+      await appendFailure(chat, error);
+      throw error;
+    }
+    await appendResult(chat, invocation);
+    response.status(201).json({
+      chat: chatDetail(chat),
+      run: invocation.run,
+      events: invocation.events,
     });
-  } catch (error) {
-    const timestamp = nowIso();
-    chat.messages.push({
-      id: randomUUID(),
-      role: "error",
-      content: error.message,
-      createdAt: timestamp,
-      error: {
-        code: "INVOCATION_FAILED",
-        message: error.message,
-        recoverable: error.status === 409 || error.status === 429,
-      },
-    });
-    chat.lastMessageAt = timestamp;
-    chat.updatedAt = timestamp;
-    await chat.save();
-    throw error;
+    return;
   }
 
+  // Past this point the status line is already sent, so a failure travels as a
+  // frame rather than as an HTTP error.
+  openEventStream(response);
+  const abort = new AbortController();
+  response.once("close", () => {
+    if (!response.writableEnded) abort.abort();
+  });
+
+  try {
+    const invocation = await streamStoredAgent({
+      ...invocationInput,
+      signal: abort.signal,
+      onEvent: (event) => writeEvent(response, event.type, event),
+    });
+    await appendResult(chat, invocation);
+    await writeEvent(response, CONSOLE_COMPLETED, {
+      type: CONSOLE_COMPLETED,
+      chat: chatDetail(chat),
+      run: invocation.run,
+    });
+  } catch (error) {
+    await appendFailure(chat, error);
+    await writeEvent(response, CONSOLE_FAILED, {
+      type: CONSOLE_FAILED,
+      chat: chatDetail(chat),
+      error: error.message,
+    });
+  }
+  response.end();
+}));
+
+/**
+ * The two events the console adds to the harness protocol.
+ *
+ * Namespaced so a consumer can tell them apart from anything the runtime emits:
+ * these carry the saved chat and run, which only this layer knows about.
+ */
+const CONSOLE_COMPLETED = "console.completed";
+const CONSOLE_FAILED = "console.failed";
+
+function wantsEventStream(request, agent) {
+  const accept = String(request.headers.accept ?? "");
+  if (request.query.stream === "true" || accept.includes("text/event-stream")) {
+    return true;
+  }
+  if (request.query.stream === "false" || accept.includes("application/json")) {
+    return false;
+  }
+  return agent.stream === true;
+}
+
+function openEventStream(response) {
+  response.writeHead(200, {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    connection: "keep-alive",
+    // Proxies that buffer by default would hold every frame until the run ends.
+    "x-accel-buffering": "no",
+  });
+  response.flushHeaders();
+}
+
+/** Resolves once the socket has taken the frame, so a slow reader slows the run. */
+function writeEvent(response, name, data) {
+  if (response.writableEnded) return Promise.resolve();
+  const frame = `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
+  if (response.write(frame)) return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => {
+      response.off("drain", done);
+      response.off("close", done);
+      resolve();
+    };
+    response.once("drain", done);
+    response.once("close", done);
+  });
+}
+
+async function appendResult(chat, invocation) {
   const timestamp = nowIso();
   chat.messages.push({
     id: randomUUID(),
@@ -132,12 +211,25 @@ chatsRouter.post("/:id/messages", asyncHandler(async (request, response) => {
   chat.lastMessageAt = timestamp;
   chat.updatedAt = timestamp;
   await chat.save();
-  response.status(201).json({
-    chat: chatDetail(chat),
-    run: invocation.run,
-    events: invocation.events,
+}
+
+async function appendFailure(chat, error) {
+  const timestamp = nowIso();
+  chat.messages.push({
+    id: randomUUID(),
+    role: "error",
+    content: error.message,
+    createdAt: timestamp,
+    error: {
+      code: "INVOCATION_FAILED",
+      message: error.message,
+      recoverable: error.status === 409 || error.status === 429,
+    },
   });
-}));
+  chat.lastMessageAt = timestamp;
+  chat.updatedAt = timestamp;
+  await chat.save();
+}
 
 async function loadChat(id) {
   const chat = await Chat.findById(requireObjectId(id, "chat"));

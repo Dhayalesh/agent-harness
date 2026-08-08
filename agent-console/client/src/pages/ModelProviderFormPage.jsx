@@ -1,7 +1,20 @@
+import { Button, Input, Select, SelectItem } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
-import { ErrorNote, Field, Loading } from "../components/Bits.jsx";
+import {
+  ErrorNote,
+  FormActions,
+  Loading,
+  PageHeader,
+  SectionCard,
+  ToggleCard,
+} from "../components/Bits.jsx";
+import {
+  KeyValueEditor,
+  rowsFromSecretMap,
+  secretMapFromRows,
+} from "../components/MapEditor.jsx";
 
 const EMPTY = {
   name: "",
@@ -20,78 +33,6 @@ const EMPTY = {
   enabled: true,
   isDefault: false,
 };
-
-const rowsFromSecretMap = (record, names) => {
-  if (record) {
-    return Object.entries(record).map(([key, value]) => ({ key, value }));
-  }
-  return (names ?? []).map((key) => ({ key, value: "" }));
-};
-
-const secretMapFromRows = (rows) =>
-  Object.fromEntries(
-    rows
-      .filter((row) => row.key.trim())
-      .map((row) => [row.key.trim(), row.value]),
-  );
-
-function KeyValueEditor({ rows, onChange, error, editing }) {
-  const setRow = (index, key, value) =>
-    onChange(
-      rows.map((row, position) =>
-        position === index ? { ...row, [key]: value } : row,
-      ),
-    );
-
-  return (
-    <div className="field key-value-editor">
-      <span className="field-label">Additional headers</span>
-      <span className="field-hint">
-        Optional static request headers. Authorization is supplied by the API
-        key above.
-        {editing &&
-          " Existing values are hidden; leave a displayed value blank to keep it, or remove its row to clear it."}
-      </span>
-      {rows.map((row, index) => (
-        <div className="key-value-row" key={index}>
-          <input
-            aria-label={`Header ${index + 1} name`}
-            placeholder="Header name"
-            value={row.key}
-            onChange={(event) => setRow(index, "key", event.target.value)}
-          />
-          <input
-            aria-label={`Header ${index + 1} value`}
-            placeholder={
-              editing && !row.value ? "stored value (unchanged)" : "Value"
-            }
-            value={row.value}
-            onChange={(event) => setRow(index, "value", event.target.value)}
-          />
-          <button
-            type="button"
-            className="danger"
-            aria-label={`Remove header ${index + 1}`}
-            onClick={() =>
-              onChange(rows.filter((_, position) => position !== index))
-            }
-          >
-            Remove
-          </button>
-        </div>
-      ))}
-      <div>
-        <button
-          type="button"
-          onClick={() => onChange([...rows, { key: "", value: "" }])}
-        >
-          Add header
-        </button>
-      </div>
-      {error && <span className="field-error">{error}</span>}
-    </div>
-  );
-}
 
 export function ModelProviderFormPage({ mode }) {
   const { id } = useParams();
@@ -150,17 +91,14 @@ export function ModelProviderFormPage({ mode }) {
       <Loading what="model provider" />
     );
 
-  const set = (key) => (event) => {
-    const value =
-      event.target.type === "checkbox"
-        ? event.target.checked
-        : event.target.type === "number"
-          ? event.target.value === ""
-            ? ""
-            : Number(event.target.value)
-          : event.target.value;
+  const set = (key) => (value) =>
     setForm((current) => ({ ...current, [key]: value }));
-  };
+
+  const setNumber = (key) => (value) =>
+    setForm((current) => ({
+      ...current,
+      [key]: value === "" ? "" : Number(value),
+    }));
 
   const submit = async (event) => {
     event.preventDefault();
@@ -208,205 +146,216 @@ export function ModelProviderFormPage({ mode }) {
 
   return (
     <section>
-      <div className="page-head">
-        <div>
-          <h1>{editing ? `Edit ${form.name}` : "New model provider"}</h1>
-          <p className="muted">
-            Configure the endpoint, credential, and limits the hosted runtime
-            uses for model calls.
-          </p>
-        </div>
-        <Link to="/model-providers">Cancel</Link>
-      </div>
+      <PageHeader
+        eyebrow="Model provider"
+        title={editing ? `Edit ${form.name}` : "New model provider"}
+        description="Configure the endpoint, credential, and limits the hosted runtime uses for model calls."
+        actions={
+          <Button variant="light" radius="md" href="/model-providers">
+            Cancel
+          </Button>
+        }
+      />
 
       <ErrorNote error={error} />
 
-      <form className="form" onSubmit={submit}>
-        <fieldset>
-          <legend>Identity and model</legend>
-          <Field
+      <form className="flex max-w-[860px] flex-col gap-4" onSubmit={submit}>
+        <SectionCard
+          title="Identity and model"
+          description="Which endpoint answers, and with which model."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <Input
+            isRequired
             label="Name"
-            hint="Letters, digits, dot, dash, or underscore. Unique."
-            error={fieldErrors.name}
-          >
-            <input
-              value={form.name}
-              onChange={set("name")}
-              required
-              maxLength={100}
+            labelPlacement="outside"
+            placeholder="openrouter-sonnet"
+            variant="bordered"
+            maxLength={100}
+            value={form.name}
+            onValueChange={set("name")}
+            description="Letters, digits, dot, dash, or underscore. Unique."
+            isInvalid={Boolean(fieldErrors.name)}
+            errorMessage={fieldErrors.name}
+          />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Select
+              label="Provider"
+              labelPlacement="outside"
+              placeholder="Choose an adapter"
+              variant="bordered"
+              selectedKeys={[form.provider]}
+              onSelectionChange={(keys) =>
+                set("provider")([...keys][0] ?? "openrouter")
+              }
+              isInvalid={Boolean(fieldErrors.provider)}
+              errorMessage={fieldErrors.provider}
+            >
+              <SelectItem key="openrouter">openrouter</SelectItem>
+              <SelectItem key="openai-compatible">openai-compatible</SelectItem>
+            </Select>
+            <Input
+              isRequired
+              label="Model"
+              labelPlacement="outside"
+              placeholder="anthropic/claude-sonnet-4.6"
+              variant="bordered"
+              maxLength={300}
+              value={form.model}
+              onValueChange={set("model")}
+              isInvalid={Boolean(fieldErrors.model)}
+              errorMessage={fieldErrors.model}
             />
-          </Field>
-          <div className="row">
-            <Field label="Provider" error={fieldErrors.provider}>
-              <select value={form.provider} onChange={set("provider")}>
-                <option value="openrouter">openrouter</option>
-                <option value="openai-compatible">openai-compatible</option>
-              </select>
-            </Field>
-            <Field label="Model" error={fieldErrors.model}>
-              <input
-                value={form.model}
-                onChange={set("model")}
-                required
-                maxLength={300}
-              />
-            </Field>
           </div>
-          <Field
+          <Input
+            type="url"
             label="Base URL"
-            hint={
+            labelPlacement="outside"
+            placeholder="https://api.example.com/v1"
+            variant="bordered"
+            spellCheck={false}
+            isRequired={form.provider === "openai-compatible"}
+            value={form.baseURL}
+            onValueChange={set("baseURL")}
+            description={
               form.provider === "openrouter"
                 ? "Optional. Blank uses OpenRouter's default endpoint."
                 : "Required for an OpenAI-compatible provider."
             }
-            error={fieldErrors.baseURL}
-          >
-            <input
-              type="url"
-              value={form.baseURL}
-              onChange={set("baseURL")}
-              placeholder="https://api.example.com/v1"
-              required={form.provider === "openai-compatible"}
-              spellCheck={false}
-            />
-          </Field>
-        </fieldset>
+            isInvalid={Boolean(fieldErrors.baseURL)}
+            errorMessage={fieldErrors.baseURL}
+          />
+        </SectionCard>
 
-        <fieldset>
-          <legend>Authentication</legend>
-          <Field
+        <SectionCard
+          title="Authentication"
+          description="The credential is stored server-side and never returned to the browser."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <Input
+            isReadOnly
             label="Authentication"
-            hint="The hosted runtime supports Authorization: Bearer for model providers."
-          >
-            <input value="bearer" readOnly aria-readonly="true" />
-          </Field>
-          <Field
+            labelPlacement="outside"
+            variant="bordered"
+            value="bearer"
+            description="The hosted runtime supports Authorization: Bearer for model providers."
+          />
+          <Input
+            type="password"
             label="API key"
-            hint={
+            labelPlacement="outside"
+            placeholder={editing ? "•••••••• (unchanged)" : "sk-…"}
+            variant="bordered"
+            autoComplete="new-password"
+            isRequired={!editing || !form.hasApiKey}
+            value={form.apiKey}
+            onValueChange={set("apiKey")}
+            description={
               editing
-                ? "Blank leaves the stored key unchanged. The saved value is never returned to the browser."
+                ? "Blank leaves the stored key unchanged."
                 : "Required. The saved value is never returned to the browser."
             }
-            error={fieldErrors.apiKey}
-          >
-            <input
-              type="password"
-              value={form.apiKey}
-              onChange={set("apiKey")}
-              required={!editing || !form.hasApiKey}
-              autoComplete="new-password"
-            />
-          </Field>
+            isInvalid={Boolean(fieldErrors.apiKey)}
+            errorMessage={fieldErrors.apiKey}
+          />
           <KeyValueEditor
+            label="Additional headers"
+            hint="Optional static request headers. Authorization is supplied by the API key above."
+            addLabel="Add header"
+            keyPlaceholder="Header name"
             rows={form.headers}
-            onChange={(headers) =>
-              setForm((current) => ({ ...current, headers }))
-            }
+            onChange={set("headers")}
             error={fieldErrors.headers}
             editing={editing}
           />
-        </fieldset>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Capabilities</legend>
-          <div className="row">
-            <Field
+        <SectionCard
+          title="Capabilities"
+          description="What the console and runtime may assume about this model."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Input
+              isRequired
+              type="number"
+              min={1}
+              max={10_000_000}
               label="Context window"
-              hint="Total model context in tokens."
-              error={fieldErrors["capabilities.contextWindow"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={10_000_000}
-                value={form.contextWindow}
-                onChange={set("contextWindow")}
-                required
-              />
-            </Field>
-            <Field
+              labelPlacement="outside"
+              placeholder="200000"
+              variant="bordered"
+              value={String(form.contextWindow)}
+              onValueChange={setNumber("contextWindow")}
+              description="Total model context in tokens."
+              isInvalid={Boolean(fieldErrors["capabilities.contextWindow"])}
+              errorMessage={fieldErrors["capabilities.contextWindow"]}
+            />
+            <Input
+              isRequired
+              type="number"
+              min={1}
+              max={10_000_000}
               label="Max output tokens"
-              hint="Must be smaller than the context window."
-              error={fieldErrors["capabilities.maxOutputTokens"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={10_000_000}
-                value={form.maxOutputTokens}
-                onChange={set("maxOutputTokens")}
-                required
-              />
-            </Field>
+              labelPlacement="outside"
+              placeholder="8192"
+              variant="bordered"
+              value={String(form.maxOutputTokens)}
+              onValueChange={setNumber("maxOutputTokens")}
+              description="Must be smaller than the context window."
+              isInvalid={Boolean(fieldErrors["capabilities.maxOutputTokens"])}
+              errorMessage={fieldErrors["capabilities.maxOutputTokens"]}
+            />
           </div>
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.supportsTools}
-                onChange={set("supportsTools")}
-              />
-              Supports tools
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.supportsStreaming}
-                onChange={set("supportsStreaming")}
-              />
-              Supports streaming
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.supportsReasoning}
-                onChange={set("supportsReasoning")}
-              />
-              Supports reasoning
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.reportsCost}
-                onChange={set("reportsCost")}
-              />
-              Reports cost
-            </label>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ToggleCard
+              label="Supports tools"
+              isSelected={form.supportsTools}
+              onValueChange={set("supportsTools")}
+            />
+            <ToggleCard
+              label="Supports streaming"
+              isSelected={form.supportsStreaming}
+              onValueChange={set("supportsStreaming")}
+            />
+            <ToggleCard
+              label="Supports reasoning"
+              isSelected={form.supportsReasoning}
+              onValueChange={set("supportsReasoning")}
+            />
+            <ToggleCard
+              label="Reports cost"
+              isSelected={form.reportsCost}
+              onValueChange={set("reportsCost")}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Availability</legend>
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={set("enabled")}
-              />
-              Enabled
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.isDefault}
-                onChange={set("isDefault")}
-              />
-              Default provider
-            </label>
+        <SectionCard
+          title="Availability"
+          description="Whether agents may select this provider."
+          bodyClassName="gap-3 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <ToggleCard
+              label="Enabled"
+              isSelected={form.enabled}
+              onValueChange={set("enabled")}
+            />
+            <ToggleCard
+              label="Default provider"
+              isSelected={form.isDefault}
+              onValueChange={set("isDefault")}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <div className="form-actions">
-          <button type="submit" className="primary" disabled={saving}>
-            {saving
-              ? "Saving..."
-              : editing
-                ? "Save changes"
-                : "Create provider"}
-          </button>
-          <Link to="/model-providers">Cancel</Link>
-        </div>
+        <FormActions
+          cancelHref="/model-providers"
+          saving={saving}
+          isDisabled={saving}
+          label={editing ? "Save changes" : "Create provider"}
+        />
       </form>
     </section>
   );

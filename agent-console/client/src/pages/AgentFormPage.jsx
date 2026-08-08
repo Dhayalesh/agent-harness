@@ -1,7 +1,30 @@
+import {
+  Accordion,
+  AccordionItem,
+  Alert,
+  Button,
+  Checkbox,
+  CheckboxGroup,
+  Chip,
+  Code,
+  Link as HeroLink,
+  Input,
+  Select,
+  SelectItem,
+  Textarea,
+} from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
-import { ErrorNote, Field, Loading } from "../components/Bits.jsx";
+import {
+  ErrorNote,
+  Field,
+  FormActions,
+  Loading,
+  PageHeader,
+  SectionCard,
+  ToggleCard,
+} from "../components/Bits.jsx";
 
 const EMPTY = {
   name: "",
@@ -101,26 +124,14 @@ export function AgentFormPage({ mode }) {
   if (!form)
     return error ? <ErrorNote error={error} /> : <Loading what="agent" />;
 
-  const set = (key) => (event) => {
-    const value =
-      event.target.type === "checkbox"
-        ? event.target.checked
-        : event.target.type === "number"
-          ? event.target.value === ""
-            ? ""
-            : Number(event.target.value)
-          : event.target.value;
+  const set = (key) => (value) =>
     setForm((current) => ({ ...current, [key]: value }));
-  };
 
-  const toggleListValue = (key, value) => {
+  const setNumber = (key) => (value) =>
     setForm((current) => ({
       ...current,
-      [key]: current[key].includes(value)
-        ? current[key].filter((item) => item !== value)
-        : [...current[key], value],
+      [key]: value === "" ? "" : Number(value),
     }));
-  };
 
   const selectedProvider = catalogue.modelProviders.find(
     (provider) => provider.id === form.modelProviderId,
@@ -213,333 +224,422 @@ export function AgentFormPage({ mode }) {
     }
   };
 
+  const cancelHref = editing ? `/agents/${id}` : "/agents";
+
   return (
     <section>
-      <div className="page-head">
-        <div>
-          <span className="eyebrow">Agent definition</span>
-          <h1>{editing ? "Edit " + form.name : "New agent"}</h1>
-          <p className="muted">
-            Compose a model, local tools, MCP servers, and skills into one
-            runnable agent.
-          </p>
-        </div>
-        <Link to={editing ? "/agents/" + id : "/agents"}>Cancel</Link>
-      </div>
+      <PageHeader
+        eyebrow="Agent definition"
+        title={editing ? `Edit ${form.name}` : "New agent"}
+        description="Compose a model, local tools, MCP servers, and skills into one runnable agent."
+        actions={
+          <Button variant="light" radius="md" href={cancelHref}>
+            Cancel
+          </Button>
+        }
+      />
 
       <ErrorNote error={error} />
 
-      <form className="form form-wide" onSubmit={submit}>
-        <fieldset>
-          <legend>Identity</legend>
-          <div className="row">
-            <Field
+      <form className="flex max-w-[980px] flex-col gap-4" onSubmit={submit}>
+        <SectionCard
+          title="Identity"
+          description="How this agent is named and offered in the console."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Input
+              isRequired
               label="Name"
-              hint="Letters, digits, dot, dash, and underscore."
-              error={fieldErrors.name}
-            >
-              <input
-                value={form.name}
-                onChange={set("name")}
-                required
-                maxLength={100}
-              />
-            </Field>
-            <Field label="Description" error={fieldErrors.description}>
-              <input
-                value={form.description}
-                onChange={set("description")}
-                maxLength={1000}
-              />
-            </Field>
+              labelPlacement="outside"
+              placeholder="research-assistant"
+              variant="bordered"
+              maxLength={100}
+              value={form.name}
+              onValueChange={set("name")}
+              description="Letters, digits, dot, dash, and underscore."
+              isInvalid={Boolean(fieldErrors.name)}
+              errorMessage={fieldErrors.name}
+            />
+            <Input
+              label="Description"
+              labelPlacement="outside"
+              placeholder="What this agent is for"
+              variant="bordered"
+              maxLength={1000}
+              value={form.description}
+              onValueChange={set("description")}
+              isInvalid={Boolean(fieldErrors.description)}
+              errorMessage={fieldErrors.description}
+            />
           </div>
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={set("enabled")}
-              />
-              Enabled
-            </label>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.isDefault}
-                onChange={set("isDefault")}
-              />
-              Default agent
-            </label>
+          <div className="flex flex-wrap gap-3">
+            <ToggleCard
+              label="Enabled"
+              hint="Disabled agents cannot be invoked."
+              isSelected={form.enabled}
+              onValueChange={set("enabled")}
+            />
+            <ToggleCard
+              label="Default agent"
+              hint="Preselected in the chat playground."
+              isSelected={form.isDefault}
+              onValueChange={set("isDefault")}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Model and instructions</legend>
-          <div className="row">
-            <Field label="Model provider" error={fieldErrors.modelProviderId}>
-              <select
-                value={form.modelProviderId}
-                onChange={set("modelProviderId")}
-                required
-              >
-                <option value="">Choose a provider</option>
-                {catalogue.modelProviders.map((provider) => (
-                  <option
-                    key={provider.id}
-                    value={provider.id}
-                    disabled={provider.enabled === false}
-                  >
-                    {provider.name} · {provider.model}
-                    {provider.enabled === false ? " (disabled)" : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field
-              label="Model override"
-              hint="Blank uses the model configured on the provider."
-              error={fieldErrors.model}
+        <SectionCard
+          title="Model and instructions"
+          description="The provider that answers and the prompt it always receives."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Select
+              isRequired
+              label="Model provider"
+              labelPlacement="outside"
+              placeholder="Choose a provider"
+              variant="bordered"
+              selectedKeys={form.modelProviderId ? [form.modelProviderId] : []}
+              disabledKeys={catalogue.modelProviders
+                .filter((provider) => provider.enabled === false)
+                .map((provider) => provider.id)}
+              onSelectionChange={(keys) =>
+                set("modelProviderId")([...keys][0] ?? "")
+              }
+              isInvalid={Boolean(fieldErrors.modelProviderId)}
+              errorMessage={fieldErrors.modelProviderId}
             >
-              <input
-                value={form.model}
-                onChange={set("model")}
-                maxLength={300}
-              />
-            </Field>
+              {catalogue.modelProviders.map((provider) => (
+                <SelectItem
+                  key={provider.id}
+                  textValue={`${provider.name} · ${provider.model}`}
+                  description={provider.model}
+                >
+                  {provider.name}
+                  {provider.enabled === false ? " (disabled)" : ""}
+                </SelectItem>
+              ))}
+            </Select>
+            <Input
+              label="Model override"
+              labelPlacement="outside"
+              placeholder="anthropic/claude-sonnet-4.6"
+              variant="bordered"
+              maxLength={300}
+              value={form.model}
+              onValueChange={set("model")}
+              description="Blank uses the model configured on the provider."
+              isInvalid={Boolean(fieldErrors.model)}
+              errorMessage={fieldErrors.model}
+            />
           </div>
+
           {catalogue.modelProviders.length === 0 && (
-            <p className="warn">
-              Add a <Link to="/model-providers/new">model provider</Link> before
-              saving this agent.
-            </p>
-          )}
-          <div className="toggle-row">
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={form.stream}
-                onChange={set("stream")}
-              />
-              <span>
-                <strong>Stream responses</strong>
-                <small>
-                  {streamingSupported
-                    ? "Sent to the runtime as a preference"
-                    : "This provider does not support streaming"}
-                </small>
+            <Alert
+              color="warning"
+              variant="flat"
+              classNames={{ base: "items-center py-2" }}
+            >
+              <span className="text-tiny">
+                Add a <HeroLink href="/model-providers/new" size="sm">model provider</HeroLink>{" "}
+                before saving this agent.
               </span>
-            </label>
-          </div>
-          <p className="field-hint">
+            </Alert>
+          )}
+
+          <ToggleCard
+            label="Stream responses"
+            hint={
+              streamingSupported
+                ? "Sent to the runtime as a preference"
+                : "This provider does not support streaming"
+            }
+            isSelected={form.stream}
+            onValueChange={set("stream")}
+            className="w-full sm:w-auto"
+          />
+          <p className="text-tiny text-default-500">
             Asks the runtime to answer as an event stream, which raises the
-            AgentCore ceiling for one turn from 15 to 60 minutes. The console
-            still records a completed run, so it reads the buffered response
-            until it learns to consume the stream.
+            AgentCore ceiling for one turn from 15 to 60 minutes. The chat page
+            renders thinking, tool calls, and the answer as they arrive.
           </p>
           {form.stream && !streamingSupported && (
-            <p className="warn compact-warn">
-              {selectedProvider?.name} reports no streaming support, so this
-              agent will not pass validation until one of the two changes.
-            </p>
-          )}
-          <Field
-            label="System prompt"
-            hint="The durable instructions sent on every turn."
-            error={fieldErrors.systemPrompt}
-          >
-            <textarea
-              value={form.systemPrompt}
-              onChange={set("systemPrompt")}
-              rows={10}
-              required
-            />
-          </Field>
-        </fieldset>
-
-        <fieldset>
-          <legend>Local tools</legend>
-          <p className="field-hint">
-            Only selected tools are offered. MCP tools are discovered from the
-            servers below.
-          </p>
-          <div className="checks">
-            {catalogue.tools.map((tool) => (
-              <label className="check" key={tool.name}>
-                <input
-                  type="checkbox"
-                  checked={form.tools.includes(tool.name)}
-                  onChange={() => toggleListValue("tools", tool.name)}
-                />
-                <code>{tool.name}</code>
-                {!tool.readOnly && <span className="tag-write">writes</span>}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>Integrations</legend>
-          <div className="integration-section">
-            <div className="section-copy">
-              <strong>MCP servers</strong>
-              <span className="field-hint">
-                The runtime connects these servers for every turn.
+            <Alert
+              color="warning"
+              variant="flat"
+              classNames={{ base: "items-center py-2" }}
+            >
+              <span className="text-tiny">
+                {selectedProvider?.name} reports no streaming support, so this
+                agent will not pass validation until one of the two changes.
               </span>
-            </div>
+            </Alert>
+          )}
+
+          <Textarea
+            isRequired
+            label="System prompt"
+            labelPlacement="outside"
+            placeholder="You are a careful research assistant…"
+            variant="bordered"
+            minRows={10}
+            maxRows={26}
+            value={form.systemPrompt}
+            onValueChange={set("systemPrompt")}
+            description="The durable instructions sent on every turn."
+            isInvalid={Boolean(fieldErrors.systemPrompt)}
+            errorMessage={fieldErrors.systemPrompt}
+          />
+        </SectionCard>
+
+        <SectionCard
+          title="Local tools"
+          description="Only selected tools are offered. MCP tools are discovered from the servers below."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <CheckboxGroup
+            aria-label="Local tools"
+            value={form.tools}
+            onValueChange={set("tools")}
+            classNames={{
+              wrapper:
+                "grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3 w-full",
+            }}
+          >
+            {catalogue.tools.map((tool) => (
+              <Checkbox
+                key={tool.name}
+                value={tool.name}
+                classNames={{
+                  base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-primary/40",
+                  label: "flex w-full items-center gap-2",
+                }}
+              >
+                <Code size="sm" className="text-tiny">
+                  {tool.name}
+                </Code>
+                {!tool.readOnly && (
+                  <Chip
+                    size="sm"
+                    variant="flat"
+                    color="warning"
+                    classNames={{
+                      base: "ml-auto h-5 rounded-full",
+                      content:
+                        "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
+                    }}
+                  >
+                    writes
+                  </Chip>
+                )}
+              </Checkbox>
+            ))}
+          </CheckboxGroup>
+        </SectionCard>
+
+        <SectionCard
+          title="Integrations"
+          description="MCP servers and reusable skills."
+          bodyClassName="gap-6 px-5 py-4"
+        >
+          <Field
+            label="MCP servers"
+            hint="The runtime connects these servers for every turn."
+          >
             {catalogue.mcpServers.length ? (
-              <div className="checks">
+              <CheckboxGroup
+                aria-label="MCP servers"
+                value={form.mcpServerIds}
+                onValueChange={set("mcpServerIds")}
+                classNames={{
+                  wrapper: "grid grid-cols-1 gap-2 sm:grid-cols-2 w-full mt-1",
+                }}
+              >
                 {catalogue.mcpServers.map((server) => (
-                  <label className="check" key={server.id}>
-                    <input
-                      type="checkbox"
-                      checked={form.mcpServerIds.includes(server.id)}
-                      onChange={() =>
-                        toggleListValue("mcpServerIds", server.id)
-                      }
-                    />
-                    <span>
-                      <strong>{server.name}</strong>
-                      <small>{server.transport}</small>
+                  <Checkbox
+                    key={server.id}
+                    value={server.id}
+                    classNames={{
+                      base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-primary/40",
+                      label: "w-full min-w-0",
+                    }}
+                  >
+                    <span className="block truncate text-small font-medium">
+                      {server.name}
                     </span>
-                  </label>
+                    <span className="block truncate text-tiny text-default-500">
+                      {server.transport}
+                    </span>
+                  </Checkbox>
                 ))}
-              </div>
+              </CheckboxGroup>
             ) : (
-              <p className="field-hint">
+              <p className="text-tiny text-default-500">
                 No servers configured.{" "}
-                <Link to="/mcp-servers/new">Add one</Link>.
+                <HeroLink href="/mcp-servers/new" size="sm">
+                  Add one
+                </HeroLink>
+                .
               </p>
             )}
-          </div>
+          </Field>
 
-          <div className="integration-section">
-            <div className="section-copy">
-              <strong>Skills</strong>
-              <span className="field-hint">
-                Skill documents are loaded from S3 and inlined into the run.
-              </span>
-            </div>
+          <Field
+            label="Skills"
+            hint="Skill documents are loaded from S3 and inlined into the run."
+          >
             {catalogue.skills.length ? (
-              <div className="skill-picker">
+              <div className="mt-1 grid gap-2">
                 {catalogue.skills.map((skill) => {
                   const selected = selectedSkill(skill.id);
                   return (
                     <div
-                      className={
-                        selected
-                          ? "skill-option skill-option-selected"
-                          : "skill-option"
-                      }
                       key={skill.id}
+                      className={`rounded-medium border bg-content2 ${
+                        selected ? "border-primary/40" : "border-divider"
+                      }`}
                     >
-                      <label className="check">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(selected)}
-                          onChange={() => toggleSkill(skill.id)}
-                        />
-                        <span>
-                          <strong>{skill.name}</strong>
-                          <small>{skill.uri}</small>
+                      <Checkbox
+                        isSelected={Boolean(selected)}
+                        onValueChange={() => toggleSkill(skill.id)}
+                        classNames={{
+                          base: "m-0 inline-flex max-w-full w-full items-center px-3 py-2",
+                          label: "w-full min-w-0",
+                        }}
+                      >
+                        <span className="block truncate text-small font-medium">
+                          {skill.name}
                         </span>
-                      </label>
+                        <span className="block truncate text-tiny text-default-500">
+                          {skill.uri}
+                        </span>
+                      </Checkbox>
+
                       {selected && (
-                        <details>
-                          <summary>Allowed tool override</summary>
-                          <p className="field-hint">
-                            Leave inherited to use the skill document&apos;s own
-                            allowed-tools.
-                          </p>
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => useSkillDefaults(skill.id)}
+                        <Accordion
+                          isCompact
+                          className="px-2 pb-1"
+                          itemClasses={{
+                            trigger: "py-1.5",
+                            title: "text-tiny text-default-500",
+                            content: "pb-3 pt-0",
+                          }}
+                        >
+                          <AccordionItem
+                            key="tools"
+                            aria-label="Allowed tool override"
+                            title="Allowed tool override"
                           >
-                            Use skill defaults
-                          </button>
-                          <div className="mini-checks">
-                            {form.tools.map((tool) => (
-                              <label key={tool}>
-                                <input
-                                  type="checkbox"
-                                  checked={
+                            <p className="mb-2 text-tiny text-default-500">
+                              Leave inherited to use the skill document&apos;s
+                              own allowed-tools.
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="light"
+                              color="primary"
+                              className="mb-2 h-7 px-2"
+                              onPress={() => useSkillDefaults(skill.id)}
+                            >
+                              Use skill defaults
+                            </Button>
+                            <div className="flex flex-wrap gap-x-4 gap-y-2">
+                              {form.tools.map((tool) => (
+                                <Checkbox
+                                  key={tool}
+                                  size="sm"
+                                  isSelected={
                                     selected.allowedTools?.includes(tool) ??
                                     false
                                   }
-                                  onChange={() =>
+                                  onValueChange={() =>
                                     toggleSkillTool(skill.id, tool)
                                   }
-                                />
-                                <code>{tool}</code>
-                              </label>
-                            ))}
-                          </div>
-                        </details>
+                                >
+                                  <span className="font-mono text-tiny">
+                                    {tool}
+                                  </span>
+                                </Checkbox>
+                              ))}
+                            </div>
+                          </AccordionItem>
+                        </Accordion>
                       )}
                     </div>
                   );
                 })}
               </div>
             ) : (
-              <p className="field-hint">
-                No skills configured. <Link to="/skills/new">Add one</Link>.
+              <p className="text-tiny text-default-500">
+                No skills configured.{" "}
+                <HeroLink href="/skills/new" size="sm">
+                  Add one
+                </HeroLink>
+                .
               </p>
             )}
-          </div>
-        </fieldset>
+          </Field>
+        </SectionCard>
 
-        <fieldset>
-          <legend>Limits</legend>
-          <div className="row three-column">
-            <Field label="Max turns" error={fieldErrors["limits.maxTurns"]}>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={form.maxTurns}
-                onChange={set("maxTurns")}
-                required
-              />
-            </Field>
-            <Field
+        <SectionCard
+          title="Limits"
+          description="Ceilings applied to a single turn."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <Input
+              isRequired
+              type="number"
+              min={1}
+              max={1000}
+              label="Max turns"
+              labelPlacement="outside"
+              placeholder="12"
+              variant="bordered"
+              value={String(form.maxTurns)}
+              onValueChange={setNumber("maxTurns")}
+              isInvalid={Boolean(fieldErrors["limits.maxTurns"])}
+              errorMessage={fieldErrors["limits.maxTurns"]}
+            />
+            <Input
+              type="number"
+              min={1}
+              max={10000000}
               label="Max input tokens"
-              hint="Blank derives from the provider."
-              error={fieldErrors["limits.maxInputTokens"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={10000000}
-                value={form.maxInputTokens}
-                onChange={set("maxInputTokens")}
-              />
-            </Field>
-            <Field
+              labelPlacement="outside"
+              placeholder="provider default"
+              variant="bordered"
+              value={String(form.maxInputTokens)}
+              onValueChange={setNumber("maxInputTokens")}
+              description="Blank derives from the provider."
+              isInvalid={Boolean(fieldErrors["limits.maxInputTokens"])}
+              errorMessage={fieldErrors["limits.maxInputTokens"]}
+            />
+            <Input
+              type="number"
+              min={1}
+              max={10000000}
               label="Max output tokens"
-              hint="Blank derives from the provider."
-              error={fieldErrors["limits.maxOutputTokens"]}
-            >
-              <input
-                type="number"
-                min={1}
-                max={10000000}
-                value={form.maxOutputTokens}
-                onChange={set("maxOutputTokens")}
-              />
-            </Field>
+              labelPlacement="outside"
+              placeholder="provider default"
+              variant="bordered"
+              value={String(form.maxOutputTokens)}
+              onValueChange={setNumber("maxOutputTokens")}
+              description="Blank derives from the provider."
+              isInvalid={Boolean(fieldErrors["limits.maxOutputTokens"])}
+              errorMessage={fieldErrors["limits.maxOutputTokens"]}
+            />
           </div>
-        </fieldset>
+        </SectionCard>
 
-        <div className="form-actions">
-          <button
-            type="submit"
-            className="primary"
-            disabled={saving || !form.modelProviderId}
-          >
-            {saving ? "Saving…" : editing ? "Save changes" : "Create agent"}
-          </button>
-          <Link to={editing ? "/agents/" + id : "/agents"}>Cancel</Link>
-        </div>
+        <FormActions
+          cancelHref={cancelHref}
+          saving={saving}
+          isDisabled={saving || !form.modelProviderId}
+          label={editing ? "Save changes" : "Create agent"}
+        />
       </form>
     </section>
   );
