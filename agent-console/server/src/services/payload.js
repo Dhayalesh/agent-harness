@@ -5,7 +5,6 @@ export async function buildPayload({
   prompt,
   sessionId,
   permissionMode,
-  includeEvents,
 }) {
   const resolved = await resolveAgentForInvocation(agentId);
   const agent = resolved.agent.value;
@@ -68,7 +67,11 @@ export async function buildPayload({
     permissionMode: permissionMode ?? "default",
     permissionRules,
     permissionFallback: "deny",
-    includeEvents: Boolean(includeEvents),
+    // Always requested from the harness now, regardless of what the caller asked
+    // this API to echo back: trace-building (services/trace-builder.js) needs the
+    // event stream unconditionally. Whether *this* API's own response includes
+    // `events` is decided separately, in invocation.js.
+    includeEvents: true,
     // Only present when the agent asked for it. The runtime payload schema is
     // strict, so an agent that never opted in keeps sending the payload a runtime
     // built before this field still accepts.

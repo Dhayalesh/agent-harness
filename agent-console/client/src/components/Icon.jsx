@@ -117,6 +117,8 @@ const paths = {
       <path d="M20 5v6h-6" />
     </>
   ),
+  // A mini waterfall: bars of different lengths, reads distinctly from `runs`.
+  waterfall: <path d="M4 6h11M4 12h15M4 18h7" />,
 };
 
 export function Icon({ name, className = "h-4 w-4", strokeWidth = 1.8 }) {

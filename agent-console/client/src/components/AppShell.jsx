@@ -24,7 +24,10 @@ const navigation = [
   },
   {
     label: "Observe",
-    items: [{ to: "/runs", label: "Runs", icon: "runs" }],
+    items: [
+      { to: "/runs", label: "Runs", icon: "runs" },
+      { to: "/observability", label: "Observability", icon: "waterfall" },
+    ],
   },
 ];
 

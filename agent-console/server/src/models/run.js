@@ -17,6 +17,29 @@ const toolSummarySchema = new mongoose.Schema(
   { _id: false, suppressReservedKeysWarning: true },
 );
 
+/**
+ * One span: a generation (model call) or a tool call. `parentId` pointing at a
+ * generation span's own `id` is what makes "turn" a derivable grouping instead
+ * of a stored one — see docs/observability-platform-plan.md §2.
+ */
+const spanSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    parentId: { type: String, default: null },
+    type: { type: String, enum: ["generation", "tool"], required: true },
+    name: { type: String, required: true },
+    startedAt: { type: String, required: true },
+    endedAt: String,
+    status: { type: String, enum: ["success", "error"], default: "success" },
+    input: String,
+    output: String,
+    reasoning: String,
+    usage: { type: mongoose.Schema.Types.Mixed, default: null },
+    cost: { type: mongoose.Schema.Types.Mixed, default: null },
+  },
+  { _id: false },
+);
+
 const runSchema = new mongoose.Schema(
   {
     agentId: { type: String, required: true, index: true },
@@ -34,6 +57,9 @@ const runSchema = new mongoose.Schema(
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
     tools: { type: [toolSummarySchema], default: [] },
+    // Undefined rather than [] by default so a run predating this feature (or one
+    // whose harness didn't return events) reads as "no trace data", not "empty trace".
+    trace: { type: [spanSchema], default: undefined },
     agentRuntimeArn: String,
     agentRuntimeQualifier: String,
     runtimeSessionId: String,

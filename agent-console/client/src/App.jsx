@@ -11,8 +11,10 @@ import { McpServerFormPage } from "./pages/McpServerFormPage.jsx";
 import { McpServersPage } from "./pages/McpServersPage.jsx";
 import { ModelProviderFormPage } from "./pages/ModelProviderFormPage.jsx";
 import { ModelProvidersPage } from "./pages/ModelProvidersPage.jsx";
+import { ObservabilityPage } from "./pages/ObservabilityPage.jsx";
 import { RunDetailPage } from "./pages/RunDetailPage.jsx";
 import { RunsPage } from "./pages/RunsPage.jsx";
+import { TraceDetailPage } from "./pages/TraceDetailPage.jsx";
 import { SkillFormPage } from "./pages/SkillFormPage.jsx";
 import { SkillsPage } from "./pages/SkillsPage.jsx";
 
@@ -61,6 +63,9 @@ export function App() {
 
         <Route path="/runs" element={<RunsPage />} />
         <Route path="/runs/:id" element={<RunDetailPage />} />
+
+        <Route path="/observability" element={<ObservabilityPage />} />
+        <Route path="/observability/:id" element={<TraceDetailPage />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

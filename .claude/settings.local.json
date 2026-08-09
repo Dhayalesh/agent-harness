@@ -8,7 +8,15 @@
       "Bash(grep -E 'node_modules|\\\\.env$|\\\\.DS_Store')",
       "Bash(rm -f \"c:/Users/bdhayalesh/Desktop/Claude-harness/agent-console/client/src/__smoke.jsx\")",
       "Bash(npm test *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(node --check src/services/trace-builder.js)",
+      "Bash(node --check src/models/run.js)",
+      "Bash(node --check src/services/payload.js)",
+      "Bash(node --check src/services/invocation.js)",
+      "Bash(node --check src/routes/runs.js)",
+      "Bash(curl -s -X POST http://127.0.0.1:4000/api/agents/6a7833420edf72abe3457e75/invoke -H 'content-type: application/json' -d '{ *)",
+      "Bash(tee /tmp/claude-1000/-home-pravin-home-pravin-true-ai-agent-harness/e23bd2c2-fa08-43f7-98ad-cfc347bd5fff/scratchpad/invoke-result.json)",
+      "Bash(python3 -m json.tool)"
     ]
   }
 }

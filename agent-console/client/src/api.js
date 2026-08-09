@@ -206,6 +206,7 @@ export const api = {
   },
   getRun: (id) => request(`/runs/${id}`),
   deleteRun: (id) => request(`/runs/${id}`, { method: "DELETE" }),
+  getRunTrace: (id) => request(`/runs/${id}/trace`),
 
   listChats: ({ agentId } = {}) => {
     const params = new URLSearchParams();

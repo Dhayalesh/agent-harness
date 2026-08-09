@@ -8,6 +8,7 @@ import {
 import { buildPayload } from "./payload.js";
 import { nowIso } from "./platform.js";
 import { RunTotals } from "./run-totals.js";
+import { buildSpans, TraceBuilder } from "./trace-builder.js";
 
 export async function invokeStoredAgent({
   agentId,
@@ -22,7 +23,6 @@ export async function invokeStoredAgent({
     prompt,
     sessionId: runtimeSessionId,
     permissionMode,
-    includeEvents,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({ resolved, runtime, runtimeSessionId, prompt, chatId });
@@ -39,12 +39,13 @@ export async function invokeStoredAgent({
     throw error;
   }
 
-  applyRuntimeResult(run, invocation.result, invocation);
+  const spans = buildSpans(invocation.result.events, { prompt });
+  applyRuntimeResult(run, invocation.result, invocation, spans);
   await run.save();
 
   return {
     run,
-    events: invocation.result.events,
+    events: includeEvents ? invocation.result.events : undefined,
     result: invocation.result,
     runtime,
     payload,
@@ -79,7 +80,6 @@ export async function streamStoredAgent({
     prompt,
     sessionId: runtimeSessionId,
     permissionMode,
-    includeEvents,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({ resolved, runtime, runtimeSessionId, prompt, chatId });
@@ -99,10 +99,12 @@ export async function streamStoredAgent({
   }
 
   const totals = new RunTotals();
+  const traceBuilder = new TraceBuilder({ prompt });
   const collected = [];
   try {
     for await (const event of stream.events) {
       totals.observe(event);
+      traceBuilder.observe(event);
       if (includeEvents) collected.push(event);
       if (onEvent) await onEvent(event);
     }
@@ -120,7 +122,7 @@ export async function streamStoredAgent({
       message: error.message,
       recoverable: error.status === 429 || error.status === 409,
     };
-    applyRuntimeResult(run, result, stream);
+    applyRuntimeResult(run, result, stream, traceBuilder.spans());
     await run.save();
     throw error;
   }
@@ -130,7 +132,7 @@ export async function streamStoredAgent({
     durationMs: Date.now() - started,
     runtimeSessionId,
   });
-  applyRuntimeResult(run, result, stream);
+  applyRuntimeResult(run, result, stream, traceBuilder.spans());
   await run.save();
 
   return {
@@ -174,7 +176,7 @@ async function failRun(run, error) {
  * One place both paths write their outcome, so a run's stored fields do not
  * depend on which transport produced it.
  */
-function applyRuntimeResult(run, result, invocation) {
+function applyRuntimeResult(run, result, invocation, spans = []) {
   run.status = result.status;
   run.output = result.output ?? "";
   run.stopReason = result.stopReason;
@@ -190,6 +192,7 @@ function applyRuntimeResult(run, result, invocation) {
   run.durationMs = result.durationMs;
   run.runtimeSessionId = invocation.runtimeSessionId;
   run.traceId = invocation.traceId;
+  run.trace = spans;
   if (result.error) run.error = result.error;
   run.updatedAt = nowIso();
 }

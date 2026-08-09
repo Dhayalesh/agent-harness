@@ -51,6 +51,38 @@ runsRouter.get(
   }),
 );
 
+/**
+ * The trace tree for one run: spans built by TraceBuilder at invocation time
+ * (services/trace-builder.js), stored on the run rather than in a separate
+ * collection for now — see docs/observability-platform-plan.md §6.
+ */
+runsRouter.get(
+  "/:id/trace",
+  asyncHandler(async (request, response) => {
+    if (!mongoose.isValidObjectId(request.params.id)) {
+      throw notFound(`No run with id ${request.params.id}`);
+    }
+    const run = await Run.findById(request.params.id).select(
+      "agentName status createdAt durationMs error trace",
+    );
+    if (!run) throw notFound(`No run with id ${request.params.id}`);
+    response.json({
+      run: {
+        id: run._id.toString(),
+        agentName: run.agentName,
+        status: run.status,
+        createdAt: run.createdAt,
+        durationMs: run.durationMs,
+        // `error` is a nested (not sub-schema) path, so Mongoose auto-vivifies it to
+        // `{}` on a successful run rather than leaving it undefined; a real error
+        // always has a `code`.
+        error: run.error?.code ? run.error : null,
+      },
+      spans: run.trace ?? [],
+    });
+  }),
+);
+
 runsRouter.delete(
   "/:id",
   asyncHandler(async (request, response) => {

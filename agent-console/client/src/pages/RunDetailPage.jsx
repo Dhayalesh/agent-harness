@@ -76,6 +76,14 @@ export function RunDetailPage() {
             <Button
               variant="bordered"
               radius="md"
+              href={`/observability/${run.id}`}
+              startContent={<Icon name="waterfall" className="h-4 w-4" />}
+            >
+              View trace
+            </Button>
+            <Button
+              variant="bordered"
+              radius="md"
               href={`/agents/${run.agentId}`}
               startContent={<Icon name="agents" className="h-4 w-4" />}
             >
