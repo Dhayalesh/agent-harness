@@ -36,11 +36,17 @@ export class RetryModelProvider implements ModelProvider {
   }
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
+    const requestContext = {
+      ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
+      ...(request.turnId === undefined ? {} : { turnId: request.turnId }),
+      ...(request.modelRequestId === undefined ? {} : { modelRequestId: request.modelRequestId }),
+    };
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       const started = Date.now();
       let emitted = false;
       emitLog(this.logSink, {
         ...this.logContext,
+        ...requestContext,
         event: 'model.attempt.started',
         provider: this.provider.name,
         attempt,
@@ -53,6 +59,7 @@ export class RetryModelProvider implements ModelProvider {
         }
         emitLog(this.logSink, {
           ...this.logContext,
+          ...requestContext,
           event: 'model.attempt.completed',
           provider: this.provider.name,
           attempt,
@@ -68,6 +75,7 @@ export class RetryModelProvider implements ModelProvider {
           this.isRetryable(error);
         emitLog(this.logSink, {
           ...this.logContext,
+          ...requestContext,
           level: retryable ? 'warn' : 'error',
           event: 'model.attempt.failed',
           provider: this.provider.name,
@@ -84,6 +92,7 @@ export class RetryModelProvider implements ModelProvider {
         const delay = Math.min(this.maximumDelayMs, this.initialDelayMs * 2 ** (attempt - 1));
         emitLog(this.logSink, {
           ...this.logContext,
+          ...requestContext,
           level: 'warn',
           event: 'model.retry.scheduled',
           provider: this.provider.name,

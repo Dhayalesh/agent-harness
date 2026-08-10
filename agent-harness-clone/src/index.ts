@@ -232,6 +232,7 @@ export {
   emitLog,
   MetricsSink,
   NotificationSink,
+  parseLogLevel,
   redactCredentials,
   safeSerialize,
   StructuredLogSink,

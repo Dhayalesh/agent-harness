@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
 import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
-import { emitLog, StructuredLogSink } from '../services/observability.js';
+import { emitLog, parseLogLevel, StructuredLogSink } from '../services/observability.js';
 import { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './server.js';
 
 /**
@@ -62,6 +62,7 @@ const shellEnvironmentExtras = (process.env.AGENT_SHELL_ENV_ALLOWLIST ?? '')
  * still readable somewhere rather than silently empty.
  */
 const logGroupName = (process.env.AGENT_LOG_GROUP?.trim() || 'agentcore').trim();
+const logLevel = parseLogLevel(process.env.AGENT_LOG_LEVEL);
 // `AWS_REGION` is what the SDK itself reads. `PLATFORM_CONTENT_S3_REGION` is accepted
 // after it because a deployment already configured for S3 skill reads has named its
 // region once, and making it name the same value twice to get logs is a trap rather
@@ -88,7 +89,7 @@ const logSink = new StructuredLogSink(
     process.stdout.write(`${line}\n`);
     cloudWatch?.write(line);
   },
-  { context: {} },
+  { context: {}, minimumLevel: logLevel },
 );
 
 const running = await startHeadlessServer({
@@ -152,6 +153,7 @@ emitLog(logSink, {
   authenticated: serviceKey !== undefined,
   permissionCeiling: permissionCeiling ?? 'none',
   logDestination: cloudWatch ? `stdout+cloudwatch:${logGroupName}` : 'stdout',
+  logLevel,
   ...(cloudWatch && region ? { region } : {}),
   shellEnvExtras: shellEnvironmentExtras,
   pid: process.pid,

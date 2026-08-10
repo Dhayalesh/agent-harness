@@ -84,6 +84,12 @@ export class McpConnection {
       event: 'mcp.connection.started',
       serverName,
       transport: 'stdio',
+    });
+    emitMcp(options, {
+      level: 'debug',
+      event: 'mcp.connection.details',
+      serverName,
+      transport: 'stdio',
       command: parameters.command,
       args: parameters.args ?? [],
     });
@@ -130,6 +136,12 @@ export class McpConnection {
       event: 'mcp.connection.started',
       serverName,
       transport: 'http',
+    });
+    emitMcp(options, {
+      level: 'debug',
+      event: 'mcp.connection.details',
+      serverName,
+      transport: 'http',
       url: url.toString(),
     });
     const client = createClient(serverName, options);
@@ -171,7 +183,7 @@ export class McpConnection {
     const discovered = await this.request('tools/list', {}, () =>
       this.client.listTools(undefined, this.requestOptions()),
     );
-    return discovered.tools.map((remote): Tool<Record<string, unknown>> => ({
+    const tools = discovered.tools.map((remote): Tool<Record<string, unknown>> => ({
       name: `mcp__${normalize(this.serverName)}__${normalize(remote.name)}`,
       description: remote.description ?? `MCP tool ${remote.name} from ${this.serverName}`,
       inputSchema: z.record(z.string(), z.unknown()),
@@ -222,6 +234,14 @@ export class McpConnection {
         };
       },
     }));
+    this.log({
+      event: 'mcp.tools.discovered',
+      serverName: this.serverName,
+      toolCount: tools.length,
+      remoteTools: discovered.tools.map((tool) => tool.name),
+      tools: tools.map((tool) => tool.name),
+    });
+    return tools;
   }
 
   async listResources(): Promise<McpResource[]> {
@@ -345,6 +365,15 @@ export class McpConnection {
       event: 'mcp.request.started',
       serverName: this.serverName,
       operation,
+      requestSummary: summarizeMcpValue(request),
+      ...fields,
+      mcpRequestId,
+    });
+    this.log({
+      level: 'debug',
+      event: 'mcp.request.input',
+      serverName: this.serverName,
+      operation,
       request,
       ...fields,
       mcpRequestId,
@@ -361,6 +390,19 @@ export class McpConnection {
         event: 'mcp.request.completed',
         serverName: this.serverName,
         operation,
+        remoteError,
+        outcome: remoteError ? 'failure' : 'success',
+        responseSummary: summarizeMcpValue(response),
+        durationMs: Date.now() - started,
+        ...fields,
+        mcpRequestId,
+      });
+      this.log({
+        level: 'debug',
+        event: 'mcp.request.output',
+        serverName: this.serverName,
+        operation,
+        request,
         response,
         remoteError,
         durationMs: Date.now() - started,
@@ -374,7 +416,18 @@ export class McpConnection {
         event: 'mcp.request.failed',
         serverName: this.serverName,
         operation,
+        outcome: 'failure',
         durationMs: Date.now() - started,
+        error: describeError(error),
+        ...fields,
+        mcpRequestId,
+      });
+      this.log({
+        level: 'debug',
+        event: 'mcp.request.failure_details',
+        serverName: this.serverName,
+        operation,
+        request,
         error: describeError(error),
         ...fields,
         mcpRequestId,
@@ -385,6 +438,52 @@ export class McpConnection {
 
   private log(entry: Parameters<LogSink['log']>[0]): void {
     emitLog(this.logSink, { ...this.logContext, ...entry });
+  }
+}
+
+function summarizeMcpValue(value: unknown): Record<string, unknown> {
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  let bytes: number | undefined;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized !== undefined) bytes = Buffer.byteLength(serialized, 'utf8');
+  } catch {
+    // Logging a summary must never make an MCP request fail.
+  }
+
+  if (value === null || typeof value !== 'object') {
+    return { type, ...(bytes === undefined ? {} : { bytes }) };
+  }
+  try {
+    const record = value as Record<string, unknown>;
+    const collection = ['tools', 'resources', 'prompts', 'content', 'messages']
+      .map((key) => ({ key, value: record[key] }))
+      .find((candidate) => Array.isArray(candidate.value));
+    const items = collection?.value as unknown[] | undefined;
+    const itemNames = items
+      ?.map((item) =>
+        item !== null &&
+        typeof item === 'object' &&
+        typeof (item as { name?: unknown }).name === 'string'
+          ? (item as { name: string }).name
+          : undefined,
+      )
+      .filter((name): name is string => name !== undefined);
+    return {
+      type,
+      ...(bytes === undefined ? {} : { bytes }),
+      keys: Object.keys(record).sort(),
+      ...(collection === undefined
+        ? {}
+        : {
+            collection: collection.key,
+            itemCount: items?.length ?? 0,
+            ...(itemNames && itemNames.length > 0 ? { itemNames } : {}),
+          }),
+    };
+  } catch {
+    // Request/response introspection is diagnostic only and must never alter MCP behavior.
+    return { type, ...(bytes === undefined ? {} : { bytes }), unreadable: true };
   }
 }
 
@@ -407,12 +506,25 @@ function createClient(serverName: string, options: McpConnectionOptions): Client
       emitMcp(options, {
         event: 'mcp.elicitation.started',
         serverName,
+        requestSummary: summarizeMcpValue(request.params),
+      });
+      emitMcp(options, {
+        level: 'debug',
+        event: 'mcp.elicitation.input',
+        serverName,
         request: request.params,
       });
       try {
         const response = await elicitationHandler(request.params);
         emitMcp(options, {
           event: 'mcp.elicitation.completed',
+          serverName,
+          responseSummary: summarizeMcpValue(response),
+          durationMs: Date.now() - started,
+        });
+        emitMcp(options, {
+          level: 'debug',
+          event: 'mcp.elicitation.output',
           serverName,
           request: request.params,
           response,
@@ -424,8 +536,14 @@ function createClient(serverName: string, options: McpConnectionOptions): Client
           level: 'error',
           event: 'mcp.elicitation.failed',
           serverName,
-          request: request.params,
           durationMs: Date.now() - started,
+          error: describeError(error),
+        });
+        emitMcp(options, {
+          level: 'debug',
+          event: 'mcp.elicitation.failure_details',
+          serverName,
+          request: request.params,
           error: describeError(error),
         });
         throw error;

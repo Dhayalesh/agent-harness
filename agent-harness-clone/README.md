@@ -144,6 +144,7 @@ where the process listens and what it will allow a payload to do:
 | `AGENT_SHELL_ENV_ALLOWLIST`                 | Extra variables spawned commands may see.                     |
 | `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.          |
 | `AGENT_LOG_GROUP`                           | Direct CloudWatch group. Set `-` for stdout only.             |
+| `AGENT_LOG_LEVEL`                           | `debug`, `info`, `warn`, or `error`. Defaults to `info`.      |
 | `AWS_REGION`                                | SDK region for CloudWatch and S3 skill reads.                 |
 
 Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns
@@ -194,30 +195,53 @@ runtime log stream. Unless `AGENT_LOG_GROUP=-`, it also uses the AWS SDK to deli
 same records to the configured group. That writer and S3 skill loading both use the
 host's ambient credentials rather than credentials from an invocation.
 
-Logging is enabled by default and covers the full path: server startup and shutdown,
-HTTP request acceptance or rejection, the invocation payload, validation, workspace
-and agent preparation, model requests and responses (including retries and token
-usage), MCP connection and request/response traffic, tool inputs and results, session
-events, cleanup, and the final result or failure. Every invocation record carries an
-`invocationId`; HTTP runs also carry a `requestId`, the AgentCore `runtimeSessionId`,
-and the AWS `traceId` when those headers are present. Session, turn, and tool-call ids
-are added as soon as they exist.
+Logging is enabled by default. Each JSON record has a stable, readable envelope:
+`timestamp`, `level`, `category`, `event`, `message`, `outcome`, `component`,
+`schemaVersion`, and a monotonic `logSequence`. The default `info` level records concise
+lifecycle milestones and size/count summaries, not raw prompts, token deltas, model
+responses, tool inputs/results, or MCP bodies. Set `AGENT_LOG_LEVEL=debug` temporarily
+when reproducing a run to include those redacted details.
+
+The normal lifecycle is explicit rather than inferred from large payloads. Depending on
+the run, it includes records such as:
+
+```text
+invocation.started
+invocation.payload.validated
+skill.materialization.completed
+skill.load.completed
+model.request.started
+tool.execution.started
+mcp.request.started
+mcp.request.completed
+tool.execution.completed
+output.completed
+invocation.cleanup.completed
+invocation.completed
+```
+
+Failures and permission denials produce a terminal `*.failed` or `*.denied` record even
+when a tool never begins execution. Every invocation record carries an `invocationId`;
+HTTP runs also carry a `requestId`, the AgentCore `runtimeSessionId`, and the AWS
+`traceId` when those headers are present. The chain adds `sessionId`, `turnId`,
+`modelRequestId`, `toolCallId`, and `mcpRequestId` as each operation begins.
 
 For example, use the invocation id from `http.request.started` to reconstruct a run in
 CloudWatch Logs Insights:
 
 ```text
-fields @timestamp, event, invocationId, sessionId, turnId, toolCallId, durationMs
+fields @timestamp, logSequence, level, event, message, outcome, sessionId, turnId,
+  modelRequestId, toolCallId, mcpRequestId, durationMs
 | filter invocationId = <invocation-id>
-| sort @timestamp asc
+| sort logSequence asc
 ```
 
-Payloads, MCP headers, tool arguments, and model output can contain secrets. Before a
+Payloads, MCP headers, tool arguments, and model output can contain secrets. Before any
 record is written, credential-shaped keys and token patterns are replaced with
-`[redacted]`; normal token-usage counters remain visible. Records larger than one
-CloudWatch-safe line are emitted as ordered `log.chunk` records with `chunkId`,
-`chunkIndex`, and `chunkCount`, so no invocation payload or tool result silently
-disappears.
+`[redacted]`; diagnostic error `code` values and normal token-usage counters remain
+visible. Records larger than one CloudWatch-safe line are emitted as ordered
+`log.chunk` records with `chunkId`, `chunkIndex`, `chunkCount`, and the original
+correlation IDs so a debug record can be reassembled without losing its trace.
 
 Each invocation gets its own workspace directory named for the session, so concurrent
 payloads cannot read each other's files. Directories are not deleted: a run's output is

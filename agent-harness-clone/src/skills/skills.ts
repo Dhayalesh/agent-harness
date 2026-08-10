@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { Tool } from '../tools/tool.js';
 
 export type Skill = {
@@ -87,7 +88,10 @@ export function parseSkill(content: string, source?: string): Skill {
 
 const skillInput = z.object({ name: z.string().min(1) });
 
-export function createSkillTool(registry: SkillRegistry): Tool<z.infer<typeof skillInput>> {
+export function createSkillTool(
+  registry: SkillRegistry,
+  options: { logSink?: LogSink; logContext?: LogContext } = {},
+): Tool<z.infer<typeof skillInput>> {
   return {
     name: 'skill',
     description: `Load a reusable workflow. Available skills: ${registry
@@ -103,20 +107,61 @@ export function createSkillTool(registry: SkillRegistry): Tool<z.infer<typeof sk
     },
     kind: 'read',
     concurrencySafe: true,
-    async execute({ name }) {
-      const skill = registry.get(name);
-      if (!skill) throw new Error(`Unknown skill: ${name}`);
-      return {
-        content: [
+    async execute({ name }, context) {
+      const started = Date.now();
+      const correlation = {
+        ...(options.logContext ?? {}),
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        toolCallId: context.toolCallId,
+        skillName: name,
+      };
+      emitLog(options.logSink, {
+        ...correlation,
+        event: 'skill.load.started',
+      });
+      try {
+        const skill = registry.get(name);
+        if (!skill) throw new Error(`Unknown skill: ${name}`);
+        const content = [
           `<skill name="${skill.name}">`,
           skill.instructions,
           skill.allowedTools?.length ? `Allowed tools: ${skill.allowedTools.join(', ')}` : '',
           '</skill>',
         ]
           .filter(Boolean)
-          .join('\n'),
-        metadata: { skill: skill.name, source: skill.source },
-      };
+          .join('\n');
+        const metadata = { skill: skill.name, source: skill.source };
+        emitLog(options.logSink, {
+          ...correlation,
+          event: 'skill.load.completed',
+          durationMs: Date.now() - started,
+          instructionChars: skill.instructions.length,
+          contentChars: content.length,
+          allowedToolCount: skill.allowedTools?.length ?? 0,
+          sourceKind: skill.source === undefined ? 'inline' : 'file',
+        });
+        return { content, metadata };
+      } catch (error) {
+        emitLog(options.logSink, {
+          ...correlation,
+          level: 'error',
+          event: 'skill.load.failed',
+          durationMs: Date.now() - started,
+          error: describeError(error),
+        });
+        throw error;
+      }
     },
+  };
+}
+
+function describeError(error: unknown): { name: string; message: string; code?: string } {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  return {
+    name: error.name,
+    message: error.message,
+    ...(code === undefined ? {} : { code }),
   };
 }

@@ -4,7 +4,7 @@ import { AgentHarnessError } from '../core/errors.js';
 import type { RunProgressReporter } from '../core/events.js';
 import type { McpConnection, McpElicitationHandler } from '../mcp/client.js';
 import type { ModelProvider } from '../models/provider.js';
-import type { LogContext, LogSink } from '../services/observability.js';
+import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { Skill } from '../skills/skills.js';
 import { createSkillTool, parseSkill, SkillRegistry } from '../skills/skills.js';
 import type { Tool } from '../tools/tool.js';
@@ -260,7 +260,16 @@ export class PlatformAgentRegistry {
     try {
       const tools = [
         ...this.localToolsFor(record),
-        ...(record.skills.length > 0 ? [createSkillTool(skills)] : []),
+        ...(record.skills.length > 0
+          ? [
+              createSkillTool(skills, {
+                ...(this.options.logSink === undefined ? {} : { logSink: this.options.logSink }),
+                ...(this.options.logContext === undefined
+                  ? {}
+                  : { logContext: this.options.logContext }),
+              }),
+            ]
+          : []),
         ...(await mcpTools(mcpRecords, mcpConnections)),
       ];
       return {
@@ -323,38 +332,75 @@ export class PlatformAgentRegistry {
       // The address is parsed and the reader for its bucket resolved together. Readers
       // are cached per bucket inside `SkillContentStores`, so a run touching two
       // buckets builds two rather than one per skill.
-      const { location, store } = this.skillContent.locate(
-        skill.uri,
-        `Agent '${record.name}' skill '${skill.name}'`,
-      );
-      const body = await load(store, location.key, skill, record.name);
-
-      // Written as `<name>/SKILL.md`, the layout `loadSkillsDirectory` reads, so a
-      // downloaded skill is an ordinary skill file rather than a special case. The
-      // whole document goes to disk, front matter included, so what is on disk is
-      // what is in the bucket.
-      const source = await directory.write(skill.name, body);
-      // Parsed with the source path, so a document with no `name` in its front matter
-      // falls back to the directory it was just written to — which is the record's
-      // name. The record is the authority on the name either way; the front matter is
-      // read for the description and the tool list.
-      const parsed = parseSkill(body, source);
-
-      // An override was checked against the agent's tools by the schema; a default
-      // from the document was not, because it did not exist until just now.
-      const allowedTools = entry.allowedTools ?? parsed.allowedTools;
-      if (entry.allowedTools === undefined) {
-        assertAllowedToolsAvailable(record, skill.name, allowedTools);
-      }
-
-      records.push(skill);
-      skills.push({
-        name: skill.name,
-        description: parsed.description,
-        instructions: parsed.instructions,
-        ...(allowedTools === undefined ? {} : { allowedTools: [...allowedTools] }),
-        source,
+      const started = Date.now();
+      const skillUri = safeSkillUri(skill.uri);
+      let contentBytes: number | undefined;
+      let instructionChars: number | undefined;
+      this.log({
+        event: 'skill.materialization.started',
+        agentName: record.name,
+        skillName: skill.name,
+        skillUri,
       });
+      try {
+        const { location, store } = this.skillContent.locate(
+          skill.uri,
+          `Agent '${record.name}' skill '${skill.name}'`,
+        );
+        const body = await load(store, location.key, skill, record.name);
+        contentBytes = Buffer.byteLength(body, 'utf8');
+
+        // Written as `<name>/SKILL.md`, the layout `loadSkillsDirectory` reads, so a
+        // downloaded skill is an ordinary skill file rather than a special case. The
+        // whole document goes to disk, front matter included, so what is on disk is
+        // what is in the bucket.
+        const source = await directory.write(skill.name, body);
+        // Parsed with the source path, so a document with no `name` in its front matter
+        // falls back to the directory it was just written to — which is the record's
+        // name. The record is the authority on the name either way; the front matter is
+        // read for the description and the tool list.
+        const parsed = parseSkill(body, source);
+        instructionChars = parsed.instructions.length;
+
+        // An override was checked against the agent's tools by the schema; a default
+        // from the document was not, because it did not exist until just now.
+        const allowedTools = entry.allowedTools ?? parsed.allowedTools;
+        if (entry.allowedTools === undefined) {
+          assertAllowedToolsAvailable(record, skill.name, allowedTools);
+        }
+
+        records.push(skill);
+        skills.push({
+          name: skill.name,
+          description: parsed.description,
+          instructions: parsed.instructions,
+          ...(allowedTools === undefined ? {} : { allowedTools: [...allowedTools] }),
+          source,
+        });
+        this.log({
+          event: 'skill.materialization.completed',
+          agentName: record.name,
+          skillName: skill.name,
+          skillUri,
+          contentBytes,
+          instructionChars,
+          allowedToolCount: allowedTools?.length ?? 0,
+          durationMs: Date.now() - started,
+        });
+      } catch (error) {
+        this.log({
+          level: 'error',
+          event: 'skill.materialization.failed',
+          agentName: record.name,
+          skillName: skill.name,
+          skillUri,
+          ...(contentBytes === undefined ? {} : { contentBytes }),
+          ...(instructionChars === undefined ? {} : { instructionChars }),
+          durationMs: Date.now() - started,
+          error: describeLogError(error, skillUri),
+        });
+        throw error;
+      }
     }
     return { records, skills };
   }
@@ -393,6 +439,37 @@ export class PlatformAgentRegistry {
       );
     });
   }
+
+  private log(entry: Parameters<LogSink['log']>[0]): void {
+    emitLog(this.options.logSink, { ...(this.options.logContext ?? {}), ...entry });
+  }
+}
+
+function safeSkillUri(value: string): string {
+  try {
+    const uri = new URL(value);
+    uri.username = '';
+    uri.password = '';
+    uri.search = '';
+    uri.hash = '';
+    return uri.toString();
+  } catch {
+    const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(value)?.[1]?.toLowerCase();
+    return scheme === undefined ? '[invalid-uri]' : `${scheme}:[invalid-uri]`;
+  }
+}
+
+function describeLogError(
+  error: unknown,
+  skillUri: string,
+): { name: string; message: string; code?: string } {
+  if (!(error instanceof Error)) return { name: 'Error', message: String(error) };
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+  return {
+    name: error.name,
+    message: code === 'S3_URI_INVALID' ? `Skill URI is invalid: ${skillUri}` : error.message,
+    ...(code === undefined ? {} : { code }),
+  };
 }
 
 /**

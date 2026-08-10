@@ -7,6 +7,7 @@ import {
   isSerializableEvent,
   ScriptedModelProvider,
   type AgentEvent,
+  type HarnessLogEntry,
   type Tool,
 } from '../../src/index.js';
 
@@ -89,6 +90,7 @@ test('executes a tool and returns its result to the next model request', async (
 });
 
 test('returns invalid tool input as a controlled tool error', async () => {
+  const logs: HarnessLogEntry[] = [];
   const inputSchema = z.object({ value: z.string() });
   const tool: Tool<z.infer<typeof inputSchema>> = {
     name: 'strict_tool',
@@ -111,13 +113,31 @@ test('returns invalid tool input as a controlled tool error', async () => {
       { type: 'completed', stopReason: 'end_turn' },
     ],
   ]);
-  const session = createAgentSession({ provider, tools: [tool] });
+  const session = createAgentSession({
+    provider,
+    tools: [tool],
+    logSink: { log: (entry) => logs.push(structuredClone(entry)) },
+  });
   const events = await collect(session.run({ prompt: 'Call it' }));
   const completed = events.find(
     (event) => event.type === 'tool.completed' && event.result.toolCallId === 'bad-call',
   );
   assert.equal(completed?.type, 'tool.completed');
   if (completed?.type === 'tool.completed') assert.equal(completed.result.isError, true);
+  const failed = logs.find(
+    (entry) => entry.event === 'tool.execution.failed' && entry.toolCallId === 'bad-call',
+  );
+  assert.ok(failed);
+  assert.equal(failed.toolName, 'strict_tool');
+  assert.equal(failed.failureStage, 'validation');
+  assert.equal(failed.code, 'INVALID_TOOL_INPUT');
+  assert.equal(failed.outcome, 'failure');
+  assert.equal(
+    logs.some(
+      (entry) => entry.event === 'tool.execution.started' && entry.toolCallId === 'bad-call',
+    ),
+    false,
+  );
 });
 
 test('terminates at the configured maximum turn count', async () => {

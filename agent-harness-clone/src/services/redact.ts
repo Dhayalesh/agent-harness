@@ -2,9 +2,9 @@
  * Removes credentials from anything on its way to a log.
  *
  * A payload carries the model credential, the MCP credentials, and arbitrary headers
- * (`src/headless/payload.ts`), and this harness logs payloads and tool arguments in
- * full. That combination puts a bearer token in CloudWatch unless something stands
- * between them, which is what this is.
+ * (`src/headless/payload.ts`), and DEBUG logs may include payloads and tool arguments.
+ * That combination puts a bearer token in CloudWatch unless something stands between
+ * them, which is what this is.
  *
  * Two passes, because neither alone is enough. `redact` walks structure and blanks
  * values under a key that names a secret — which catches `apiKey` whatever its shape.
@@ -29,7 +29,6 @@ const SECRET_KEYS = new Set([
   'authorization',
   'bearer',
   'client_secret',
-  'code',
   'cookie',
   'credential',
   'credentials',
@@ -144,7 +143,7 @@ export type RedactOptions = {
   /**
    * Longest string kept whole. Longer ones are cut with a marker naming the bytes
    * dropped, so a reader can tell truncation from a genuinely short value. Unset
-   * keeps everything, which is the default for payload and tool logging.
+   * keeps everything, which is used for redacted DEBUG payload and tool records.
    */
   maxStringLength?: number;
   /** Guards against a cyclic or pathologically deep object. */

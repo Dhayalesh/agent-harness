@@ -31,6 +31,10 @@ export type ModelRequest = {
   tools: readonly ToolDescriptor[];
   maxOutputTokens?: number;
   signal: AbortSignal;
+  /** Correlates provider retries with the turn-level model request that owns them. */
+  modelRequestId?: string;
+  sessionId?: string;
+  turnId?: string;
 };
 
 export type ModelStreamEvent =

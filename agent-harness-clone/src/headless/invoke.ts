@@ -194,6 +194,11 @@ export async function invokeHeadless(
   let context: LogContext = baseContext;
   log(options, baseContext, {
     event: 'invocation.started',
+    payloadSummary: summarizeInvocationPayload(payload),
+  });
+  log(options, baseContext, {
+    level: 'debug',
+    event: 'invocation.payload.received',
     payload,
   });
   try {
@@ -224,6 +229,11 @@ export async function invokeHeadless(
       ...totals.result(prepared, Date.now() - started),
       ...(parsed.includeEvents ? { events: collected } : {}),
     };
+    log(options, context, {
+      level: 'debug',
+      event: 'invocation.result.details',
+      result,
+    });
     phase = 'cleanup';
     const closing = prepared;
     prepared = undefined;
@@ -233,7 +243,7 @@ export async function invokeHeadless(
       event: 'invocation.completed',
       status: result.status,
       durationMs: Date.now() - started,
-      result: resultForLog(result),
+      ...resultForLog(result),
     });
     return result;
   } catch (error) {
@@ -295,8 +305,14 @@ export async function* streamHeadless(
   let failed = false;
   let runError = false;
   let terminalEvent: AgentEvent | undefined;
+  let streamSummary: Record<string, unknown> | undefined;
   log(options, baseContext, {
     event: 'invocation.started',
+    payloadSummary: summarizeInvocationPayload(payload),
+  });
+  log(options, baseContext, {
+    level: 'debug',
+    event: 'invocation.payload.received',
     payload,
   });
   try {
@@ -316,7 +332,7 @@ export async function* streamHeadless(
     // exists because the registry reports through a callback several frames below
     // this generator; see `AsyncEventQueue`.
     const queue = new AsyncEventQueue<AgentEvent>();
-    const channel = preparationChannel(sessionId, options, queue);
+    const channel = preparationChannel(sessionId, options, context, queue);
     yield channel.emit('workspace', 'Preparing the run workspace');
     yield channel.emit('agent', `Assembling agent ${parsed.agent.name}`, {
       modelProvider: parsed.modelProvider.name,
@@ -334,14 +350,17 @@ export async function* streamHeadless(
     if (!settled.ok) throw settled.error;
     prepared = settled.value;
     phase = 'execution';
+    const totals = new RunTotals();
     for await (const event of prepared.session.run({
       prompt: parsed.prompt,
       ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
     })) {
       terminalEvent = event;
       if (event.type === 'error') runError = true;
+      totals.observe(event);
       yield event;
     }
+    streamSummary = resultForLog(totals.result(prepared, Date.now() - started));
     completed = true;
   } catch (error) {
     failed = true;
@@ -384,6 +403,7 @@ export async function* streamHeadless(
         status: runError ? 'error' : 'success',
         terminalEvent,
         durationMs: Date.now() - started,
+        ...(streamSummary ?? {}),
       });
     } else if (!failed) {
       log(options, context, {
@@ -484,13 +504,27 @@ async function prepare(
     event: 'agent.resolution.started',
     sessionId,
     agentName: payload.agent.name,
+    modelProvider: payload.modelProvider.name,
+    provider: payload.modelProvider.provider,
+    model: payload.agent.model ?? payload.modelProvider.model,
+    localToolCount: localTools.length,
+    localTools: localTools.map((tool) => tool.name),
+    skillCount: payload.skills.length,
+    skills: payload.skills.map((skill) => skill.name),
+    mcpServerCount: payload.mcpServers.length,
+    mcpServers: payload.mcpServers.map((server) => server.name),
+  });
+  log(options, logContext, {
+    level: 'debug',
+    event: 'agent.resolution.details',
+    sessionId,
+    agentName: payload.agent.name,
     modelProvider: {
       name: payload.modelProvider.name,
       provider: payload.modelProvider.provider,
       model: payload.modelProvider.model,
       baseURL: payload.modelProvider.baseURL,
     },
-    localTools: localTools.map((tool) => tool.name),
     mcpServers: payload.mcpServers.map((server) => ({
       name: server.name,
       transport: server.transport,
@@ -559,6 +593,13 @@ async function prepare(
     // nothing here and starts clean.
     const stored = await options.sessionStore?.load(sessionId);
 
+    progress?.report('ready', `Agent ${agent.record.name} is ready`, {
+      tools: agent.tools.length,
+      skills: agent.skillRecords.length,
+      mcpServers: agent.mcpRecords.length,
+      resumed: stored !== undefined,
+    });
+
     const session = createAgentSession({
       sessionId,
       provider: agent.provider,
@@ -581,6 +622,17 @@ async function prepare(
       ...(progress === undefined ? {} : { initialSequence: progress.count() }),
     });
     options.onSession?.(session);
+    log(options, logContext, {
+      event: 'invocation.preparation.completed',
+      sessionId,
+      agentName: agent.record.name,
+      workingDirectory,
+      toolCount: agent.tools.length,
+      skillCount: agent.skillRecords.length,
+      mcpServerCount: agent.mcpRecords.length,
+      resumed: stored !== undefined,
+      durationMs: Date.now() - started,
+    });
 
     return {
       session,
@@ -622,6 +674,7 @@ type RunProgressChannel = {
 function preparationChannel(
   sessionId: string,
   options: HeadlessRunOptions,
+  logContext: LogContext,
   queue: AsyncEventQueue<AgentEvent>,
 ): RunProgressChannel {
   let sequence = 0;
@@ -645,6 +698,15 @@ function preparationChannel(
     } catch {
       // Observability is never an execution dependency.
     }
+    log(options, logContext, {
+      event: 'run.preparing',
+      timestamp: event.timestamp,
+      sessionId,
+      eventSequence: event.sequence,
+      stage,
+      message,
+      ...(data === undefined ? {} : { preparation: data }),
+    });
     return event;
   };
   return {
@@ -691,10 +753,50 @@ function log(
   emitLog(options.logSink, { ...context, ...entry });
 }
 
+function summarizeInvocationPayload(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { type: value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value };
+  }
+  try {
+    const payload = value as Record<string, unknown>;
+    const agent =
+      payload.agent !== null && typeof payload.agent === 'object' && !Array.isArray(payload.agent)
+        ? (payload.agent as Record<string, unknown>)
+        : undefined;
+    const modelProvider =
+      payload.modelProvider !== null &&
+      typeof payload.modelProvider === 'object' &&
+      !Array.isArray(payload.modelProvider)
+        ? (payload.modelProvider as Record<string, unknown>)
+        : undefined;
+    return {
+      type: 'object',
+      ...(typeof payload.prompt === 'string' ? { promptChars: payload.prompt.length } : {}),
+      ...(typeof agent?.name === 'string' ? { agentName: agent.name } : {}),
+      ...(typeof modelProvider?.name === 'string' ? { modelProvider: modelProvider.name } : {}),
+      ...(Array.isArray(payload.skills) ? { skillCount: payload.skills.length } : {}),
+      ...(Array.isArray(payload.mcpServers) ? { mcpServerCount: payload.mcpServers.length } : {}),
+      ...(typeof payload.sessionId === 'string' ? { hasExplicitSessionId: true } : {}),
+    };
+  } catch {
+    // Payload introspection is diagnostic only and must never change invocation behavior.
+    return { type: 'unreadable' };
+  }
+}
+
 function resultForLog(result: HeadlessResult): Record<string, unknown> {
-  const { messages, events, ...summary } = result;
+  const {
+    messages,
+    events,
+    output,
+    status: _status,
+    sessionId: _sessionId,
+    durationMs: _duration,
+    ...summary
+  } = result;
   return {
     ...summary,
+    outputChars: output.length,
     messageCount: messages.length,
     ...(events === undefined ? {} : { eventCount: events.length }),
   };

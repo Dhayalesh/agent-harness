@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { StructuredLogSink } from '../../src/services/observability.js';
+import { parseLogLevel, StructuredLogSink } from '../../src/services/observability.js';
 import { REDACTED } from '../../src/services/redact.js';
 
 type JsonRecord = Record<string, unknown>;
@@ -8,6 +8,139 @@ type JsonRecord = Record<string, unknown>;
 function json(line: string): JsonRecord {
   return JSON.parse(line) as JsonRecord;
 }
+
+test('parseLogLevel defaults empty input, normalizes valid input, and rejects typos', () => {
+  assert.equal(parseLogLevel(undefined), 'info');
+  assert.equal(parseLogLevel('   ', 'warn'), 'warn');
+  assert.equal(parseLogLevel(' DEBUG '), 'debug');
+  assert.throws(
+    () => parseLogLevel('verbose'),
+    /Invalid log level "verbose"; expected one of: debug, info, warn, error/,
+  );
+});
+
+test('StructuredLogSink filters records below its minimum level', () => {
+  const lines: string[] = [];
+  const sink = new StructuredLogSink((line) => lines.push(line), { minimumLevel: 'warn' });
+
+  sink.log({ level: 'debug', event: 'diagnostic.detail' });
+  sink.log({ event: 'invocation.started' });
+  sink.log({ level: 'warn', event: 'model.retry.scheduled' });
+  sink.log({ level: 'error', event: 'invocation.failed' });
+
+  assert.deepEqual(
+    lines.map((line) => json(line).level),
+    ['warn', 'error'],
+  );
+  assert.deepEqual(
+    lines.map((line) => json(line).logSequence),
+    [1, 2],
+  );
+});
+
+test('StructuredLogSink writes a readable ordered envelope and preserves status', () => {
+  const lines: string[] = [];
+  const sink = new StructuredLogSink((line) => lines.push(line), {
+    context: {
+      invocationId: 'invocation-readable',
+      modelRequestId: 'model-request-readable',
+      mcpRequestId: 'mcp-request-readable',
+    },
+    clock: () => new Date('2026-08-06T12:34:56.000Z'),
+  });
+
+  sink.log({ event: 'invocation.started' });
+  sink.log({
+    event: 'invocation.completed',
+    status: 'success',
+    durationMs: 42,
+  });
+
+  const started = json(lines[0] as string);
+  assert.deepEqual(Object.keys(started).slice(0, 9), [
+    'timestamp',
+    'level',
+    'category',
+    'event',
+    'message',
+    'outcome',
+    'component',
+    'schemaVersion',
+    'logSequence',
+  ]);
+  assert.equal(started.schemaVersion, 1);
+  assert.equal(started.category, 'invocation');
+  assert.equal(started.message, 'Invocation started');
+  assert.equal(started.outcome, 'started');
+  assert.equal(started.logSequence, 1);
+  assert.equal(started.modelRequestId, 'model-request-readable');
+  assert.equal(started.mcpRequestId, 'mcp-request-readable');
+
+  const completed = json(lines[1] as string);
+  assert.equal(completed.message, 'Invocation completed');
+  assert.equal(completed.outcome, 'success');
+  assert.equal(completed.status, 'success');
+  assert.equal(completed.logSequence, 2);
+});
+
+test('noisy AgentEvents require debug opt-in while failed tools remain errors', () => {
+  const base = {
+    protocolVersion: 1 as const,
+    timestamp: '2026-08-06T12:34:56.000Z',
+    sessionId: 'session-debug',
+  };
+  const delta = {
+    ...base,
+    sequence: 1,
+    type: 'assistant.text.delta' as const,
+    turnId: 'turn-debug',
+    delta: 'partial answer',
+  };
+  const successfulTool = {
+    ...base,
+    sequence: 2,
+    type: 'tool.completed' as const,
+    turnId: 'turn-debug',
+    result: {
+      type: 'tool_result' as const,
+      toolCallId: 'tool-success',
+      content: 'done',
+      isError: false,
+    },
+  };
+  const failedTool = {
+    ...base,
+    sequence: 3,
+    type: 'tool.completed' as const,
+    turnId: 'turn-debug',
+    result: {
+      type: 'tool_result' as const,
+      toolCallId: 'tool-failed',
+      content: 'failed',
+      isError: true,
+    },
+  };
+
+  const defaultLines: string[] = [];
+  const defaultSink = new StructuredLogSink((line) => defaultLines.push(line));
+  defaultSink.onEvent(delta);
+  defaultSink.onEvent(successfulTool);
+  defaultSink.onEvent(failedTool);
+  assert.equal(defaultLines.length, 1);
+  assert.equal(json(defaultLines[0] as string).level, 'error');
+
+  const debugLines: string[] = [];
+  const debugSink = new StructuredLogSink((line) => debugLines.push(line), {
+    minimumLevel: 'debug',
+  });
+  debugSink.onEvent(delta);
+  debugSink.onEvent(successfulTool);
+  assert.deepEqual(
+    debugLines.map((line) => json(line).level),
+    ['debug', 'debug'],
+  );
+  assert.ok(debugLines.map(json).every((record) => typeof record.message === 'string'));
+});
 
 test('StructuredLogSink writes contextual JSON and recursively redacts credentials', () => {
   const lines: string[] = [];
@@ -209,7 +342,11 @@ test('StructuredLogSink chunks oversized JSON into bounded reassemblable lines',
     {
       maxLineBytes: maximumBytes,
       clock: () => new Date('2026-08-06T12:34:56.000Z'),
-      context: { invocationId: 'invocation-large' },
+      context: {
+        invocationId: 'invocation-large',
+        modelRequestId: 'model-request-large',
+        mcpRequestId: 'mcp-request-large',
+      },
     },
   );
 
@@ -245,6 +382,11 @@ test('StructuredLogSink chunks oversized JSON into bounded reassemblable lines',
     assert.equal(chunk.chunkCount, chunks.length);
     assert.equal(chunk.invocationId, 'invocation-large');
     assert.equal(chunk.toolCallId, 'tool-call-large');
+    assert.equal(chunk.modelRequestId, 'model-request-large');
+    assert.equal(chunk.mcpRequestId, 'mcp-request-large');
+    assert.equal(chunk.schemaVersion, 1);
+    assert.equal(chunk.logSequence, 1);
+    assert.equal(typeof chunk.message, 'string');
   }
 
   const reconstructed = chunks.map((chunk) => String(chunk.content)).join('');
@@ -253,6 +395,7 @@ test('StructuredLogSink chunks oversized JSON into bounded reassemblable lines',
   assert.equal(original.event, 'tool.completed');
   assert.equal(original.invocationId, 'invocation-large');
   assert.equal(original.toolCallId, 'tool-call-large');
+  assert.equal(original.logSequence, 1);
   const data = original.data as JsonRecord;
   assert.equal(data.output, output);
   assert.equal(data.inputTokens, 44);

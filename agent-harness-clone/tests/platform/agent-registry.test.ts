@@ -17,6 +17,8 @@ import {
   type AgentLookup,
   type AgentRecord,
   type AgentStores,
+  type HarnessLogEntry,
+  type LogSink,
   type McpServerLookup,
   type McpServerRecord,
   type ModelProviderLookup,
@@ -24,6 +26,7 @@ import {
   type SkillLookup,
   type SkillRecord,
   type Tool,
+  type ToolExecutionContext,
 } from '../../src/index.js';
 
 const SYSTEM_PROMPT = 'You review code.';
@@ -284,6 +287,180 @@ test('a referenced skill is downloaded to a temp directory and removed on close'
   // The whole point of the temp directory: nothing survives the command.
   await resolved.close();
   assert.equal(existsSync(resolved.skillDirectory), false);
+});
+
+test('skill materialization logs safe metadata and sizes without the document body', async () => {
+  const entries: HarnessLogEntry[] = [];
+  const logSink: LogSink = {
+    log(entry) {
+      entries.push(structuredClone(entry));
+    },
+  };
+  const resolved = await new PlatformAgentRegistry(stores(withSkill()), {
+    localTools: LOCAL_TOOLS,
+    logger: () => {},
+    contentStore: contentStore(),
+    logSink,
+    logContext: { invocationId: 'invocation-skill-materialization' },
+  }).resolveById(RECORD_ID);
+
+  const lifecycle = entries.filter((entry) => entry.event.startsWith('skill.materialization.'));
+  assert.deepEqual(
+    lifecycle.map((entry) => entry.event),
+    ['skill.materialization.started', 'skill.materialization.completed'],
+  );
+  assert.ok(
+    lifecycle.every(
+      (entry) =>
+        entry.invocationId === 'invocation-skill-materialization' &&
+        entry.agentName === 'reviewer' &&
+        entry.skillName === 'abap-review' &&
+        entry.skillUri === SKILL_URI,
+    ),
+  );
+  const completed = lifecycle[1];
+  assert.equal(completed?.contentBytes, Buffer.byteLength(SKILL_DOCUMENT, 'utf8'));
+  assert.equal(completed?.instructionChars, SKILL_INSTRUCTIONS.length);
+  assert.equal(completed?.allowedToolCount, 1);
+  assert.equal(typeof completed?.durationMs, 'number');
+  assert.equal(JSON.stringify(lifecycle).includes(SKILL_INSTRUCTIONS), false);
+
+  await resolved.close();
+});
+
+test('skill activation logs success and failure with turn and tool-call correlation', async () => {
+  const entries: HarnessLogEntry[] = [];
+  const logSink: LogSink = {
+    log(entry) {
+      entries.push(structuredClone(entry));
+    },
+  };
+  const resolved = await new PlatformAgentRegistry(stores(withSkill()), {
+    localTools: LOCAL_TOOLS,
+    logger: () => {},
+    contentStore: contentStore(),
+    logSink,
+    logContext: { invocationId: 'invocation-skill-load' },
+  }).resolveById(RECORD_ID);
+  entries.length = 0;
+  const skillTool = resolved.tools.find((tool) => tool.name === 'skill');
+  assert.ok(skillTool);
+  const context: ToolExecutionContext = {
+    sessionId: 'session-skill-load',
+    turnId: 'turn-skill-load',
+    toolCallId: 'tool-call-skill-load',
+    workingDirectory: resolved.skillDirectory,
+    signal: new AbortController().signal,
+    messages: [],
+    reportProgress() {},
+  };
+
+  const result = await skillTool.execute({ name: 'abap-review' }, context);
+  assert.match(result.content, /hardcoded clients/);
+  const success = entries.filter(
+    (entry) => entry.event === 'skill.load.started' || entry.event === 'skill.load.completed',
+  );
+  assert.deepEqual(
+    success.map((entry) => entry.event),
+    ['skill.load.started', 'skill.load.completed'],
+  );
+  assert.ok(
+    success.every(
+      (entry) =>
+        entry.invocationId === 'invocation-skill-load' &&
+        entry.sessionId === context.sessionId &&
+        entry.turnId === context.turnId &&
+        entry.toolCallId === context.toolCallId &&
+        entry.skillName === 'abap-review',
+    ),
+  );
+  const completed = success[1];
+  assert.equal(completed?.instructionChars, SKILL_INSTRUCTIONS.length);
+  assert.equal(completed?.allowedToolCount, 1);
+  assert.equal(completed?.sourceKind, 'file');
+  assert.equal(JSON.stringify(success).includes(SKILL_INSTRUCTIONS), false);
+
+  const failedContext = { ...context, toolCallId: 'tool-call-skill-missing' };
+  await assert.rejects(skillTool.execute({ name: 'missing-skill' }, failedContext), {
+    message: 'Unknown skill: missing-skill',
+  });
+  const failure = entries.filter(
+    (entry) => entry.skillName === 'missing-skill' && entry.event.startsWith('skill.load.'),
+  );
+  assert.deepEqual(
+    failure.map((entry) => entry.event),
+    ['skill.load.started', 'skill.load.failed'],
+  );
+  assert.equal(failure[1]?.level, 'error');
+  assert.equal(failure[1]?.toolCallId, failedContext.toolCallId);
+  assert.deepEqual(failure[1]?.error, {
+    name: 'Error',
+    message: 'Unknown skill: missing-skill',
+  });
+
+  await resolved.close();
+});
+
+test('skill materialization failure emits one terminal error record', async () => {
+  const entries: HarnessLogEntry[] = [];
+  const logSink: LogSink = {
+    log(entry) {
+      entries.push(structuredClone(entry));
+    },
+  };
+  const failing = new PlatformAgentRegistry(stores(withSkill()), {
+    localTools: LOCAL_TOOLS,
+    logger: () => {},
+    contentStore: new InMemoryContentStore(),
+    logSink,
+    logContext: { invocationId: 'invocation-skill-failure' },
+  });
+
+  await assert.rejects(failing.resolveById(RECORD_ID), { code: 'CONTENT_NOT_FOUND' });
+  const lifecycle = entries.filter((entry) => entry.event.startsWith('skill.materialization.'));
+  assert.deepEqual(
+    lifecycle.map((entry) => entry.event),
+    ['skill.materialization.started', 'skill.materialization.failed'],
+  );
+  const failed = lifecycle[1];
+  assert.equal(failed?.level, 'error');
+  assert.equal(failed?.invocationId, 'invocation-skill-failure');
+  assert.equal(failed?.skillName, 'abap-review');
+  assert.equal(failed?.skillUri, SKILL_URI);
+  assert.equal(typeof failed?.durationMs, 'number');
+  assert.equal((failed?.error as { code?: string } | undefined)?.code, 'CONTENT_NOT_FOUND');
+});
+
+test('skill materialization logs strip credentials and query secrets from an invalid URI', async () => {
+  const unsafeUri =
+    'https://uri-user:uri-password@test-content.s3.amazonaws.com/skills/abap-review.md?token=uri-secret';
+  const entries: HarnessLogEntry[] = [];
+  const failing = new PlatformAgentRegistry(
+    stores(withSkill(), providerRecord(), undefined, skillRecord({ uri: unsafeUri })),
+    {
+      localTools: LOCAL_TOOLS,
+      logger: () => {},
+      contentStore: contentStore(),
+      logSink: {
+        log(entry) {
+          entries.push(structuredClone(entry));
+        },
+      },
+    },
+  );
+
+  await assert.rejects(failing.resolveById(RECORD_ID), { code: 'S3_URI_INVALID' });
+  const lifecycle = entries.filter((entry) => entry.event.startsWith('skill.materialization.'));
+  assert.deepEqual(
+    lifecycle.map((entry) => entry.event),
+    ['skill.materialization.started', 'skill.materialization.failed'],
+  );
+  assert.ok(
+    lifecycle.every(
+      (entry) => entry.skillUri === 'https://test-content.s3.amazonaws.com/skills/abap-review.md',
+    ),
+  );
+  assert.doesNotMatch(JSON.stringify(lifecycle), /uri-user|uri-password|uri-secret/);
 });
 
 test('the temp directory is removed even when resolution fails after writing it', async () => {

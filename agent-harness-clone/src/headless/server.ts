@@ -206,6 +206,8 @@ export async function startHeadlessServer(
     const url = new URL(request.url ?? '/', 'http://localhost');
     const requestStarted = Date.now();
     const requestId = randomUUID();
+    const requestLogLevel =
+      request.method === 'GET' && url.pathname === '/ping' ? ('debug' as const) : undefined;
     const runtimeSessionId = header(request, AGENTCORE_RUNTIME_SESSION_HEADER);
     const traceId = header(request, AWS_TRACE_HEADER);
     const context: LogContext = {
@@ -221,19 +223,28 @@ export async function startHeadlessServer(
     };
     emitLog(runOptions.logSink, {
       ...context,
+      ...(requestLogLevel === undefined ? {} : { level: requestLogLevel }),
       event: 'http.request.started',
+      method: request.method,
+      path: url.pathname,
+      activeRuns,
+    });
+    emitLog(runOptions.logSink, {
+      ...context,
+      level: 'debug',
+      event: 'http.request.details',
       method: request.method,
       path: url.pathname,
       query: safeSearchParameters(url),
       headers: safeRequestHeaders(request),
       remoteAddress: request.socket.remoteAddress,
-      activeRuns,
     });
     let responseFinished = false;
     response.once('finish', () => {
       responseFinished = true;
       emitLog(runOptions.logSink, {
         ...context,
+        ...(requestLogLevel === undefined ? {} : { level: requestLogLevel }),
         event: 'http.request.completed',
         method: request.method,
         path: url.pathname,

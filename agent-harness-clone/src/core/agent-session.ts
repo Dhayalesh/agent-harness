@@ -222,6 +222,7 @@ class AgentSessionImpl implements AgentSession {
         const toolCalls: ToolCallBlock[] = [];
         let stopReason: StopReason = 'end_turn';
         let modelStarted: number | undefined;
+        let modelRequestId: string | undefined;
 
         try {
           const prepared = await this.contextManager.prepare({
@@ -252,10 +253,14 @@ class AgentSessionImpl implements AgentSession {
           ]
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
+          modelRequestId = randomUUID();
           const modelRequest = {
             messages: prepared.messages,
             tools: this.registry.descriptors(),
             signal: this.activeController.signal,
+            modelRequestId,
+            sessionId: this.id,
+            turnId,
             ...(this.config.model === undefined ? {} : { model: this.config.model }),
             ...(systemPrompt === '' ? {} : { systemPrompt }),
             ...(this.limits.maxOutputTokens === undefined
@@ -270,6 +275,23 @@ class AgentSessionImpl implements AgentSession {
             event: 'model.request.started',
             sessionId: this.id,
             turnId,
+            modelRequestId,
+            turn,
+            provider: this.config.provider.name,
+            model: this.config.model,
+            messageCount: modelRequest.messages.length,
+            toolCount: modelRequest.tools.length,
+            toolNames: modelRequest.tools.map((tool) => tool.name),
+            estimatedInputTokens: prepared.estimatedTokens,
+            systemPromptChars: modelRequest.systemPrompt?.length ?? 0,
+            maxOutputTokens: modelRequest.maxOutputTokens,
+          });
+          this.log({
+            level: 'debug',
+            event: 'model.request.details',
+            sessionId: this.id,
+            turnId,
+            modelRequestId,
             turn,
             provider: this.config.provider.name,
             model: this.config.model,
@@ -353,6 +375,23 @@ class AgentSessionImpl implements AgentSession {
             event: 'model.request.completed',
             sessionId: this.id,
             turnId,
+            modelRequestId,
+            turn,
+            provider: this.config.provider.name,
+            model: this.config.model,
+            stopReason,
+            outputChars: textParts.join('').length,
+            reasoningChars: reasoningParts.join('').length,
+            toolCallCount: toolCalls.length,
+            toolNames: toolCalls.map((call) => call.name),
+            durationMs: Date.now() - modelStarted,
+          });
+          this.log({
+            level: 'debug',
+            event: 'model.response.details',
+            sessionId: this.id,
+            turnId,
+            modelRequestId,
             turn,
             provider: this.config.provider.name,
             model: this.config.model,
@@ -360,7 +399,6 @@ class AgentSessionImpl implements AgentSession {
             text: textParts.join(''),
             ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
             toolCalls,
-            durationMs: Date.now() - modelStarted,
           });
         } catch (error) {
           this.log({
@@ -373,6 +411,7 @@ class AgentSessionImpl implements AgentSession {
             event: 'model.request.failed',
             sessionId: this.id,
             turnId,
+            ...(modelRequestId === undefined ? {} : { modelRequestId }),
             turn,
             provider: this.config.provider.name,
             model: this.config.model,
@@ -459,6 +498,17 @@ class AgentSessionImpl implements AgentSession {
             });
             continue;
           }
+          this.log({
+            event: 'output.completed',
+            sessionId: this.id,
+            turnId,
+            turn,
+            messageId: assistantMessage.id,
+            stopReason,
+            outputChars: textParts.join('').length,
+            reasoningChars: reasoningParts.join('').length,
+            usage: this.budget.snapshot(),
+          });
           yield this.event({ type: 'turn.completed', turnId, turn, reason: stopReason });
           yield this.event({ type: 'session.completed', reason: stopReason });
           return;
@@ -549,9 +599,15 @@ class AgentSessionImpl implements AgentSession {
     call: ToolCallBlock,
     turnId: string,
   ): AsyncGenerator<AgentEvent, ToolResultBlock> {
+    const lifecycleStarted = Date.now();
     const tool = this.registry.get(call.name);
     if (!tool) {
       const result = this.toolError(call.id, `Unknown tool: ${call.name}`);
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.failed',
+        failureStage: 'resolution',
+        code: 'UNKNOWN_TOOL',
+      });
       yield this.event({ type: 'tool.completed', turnId, result });
       return result;
     }
@@ -564,6 +620,13 @@ class AgentSessionImpl implements AgentSession {
           .map((issue) => `${issue.path.join('.') || 'input'}: ${issue.message}`)
           .join('; ')}`,
       );
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.failed',
+        failureStage: 'validation',
+        code: 'INVALID_TOOL_INPUT',
+        tool,
+        issueCount: parsed.error.issues.length,
+      });
       yield this.event({ type: 'tool.completed', turnId, result });
       return result;
     }
@@ -575,6 +638,13 @@ class AgentSessionImpl implements AgentSession {
           call.id,
           hookResult.message ?? `Blocked by hook ${hook.name}`,
         );
+        this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+          event: 'tool.execution.denied',
+          failureStage: 'hook',
+          code: 'TOOL_BLOCKED_BY_HOOK',
+          tool,
+          deniedBy: hook.name,
+        });
         yield this.event({ type: 'tool.completed', turnId, result });
         return result;
       }
@@ -595,6 +665,13 @@ class AgentSessionImpl implements AgentSession {
           call.id,
           `Permission check failed for ${tool.name}: ${errorMessage(error)}`,
         );
+        this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+          event: 'tool.execution.failed',
+          failureStage: 'permission_check',
+          code: 'TOOL_PERMISSION_CHECK_FAILED',
+          tool,
+          error,
+        });
         yield this.event({ type: 'tool.completed', turnId, result });
         return result;
       }
@@ -603,6 +680,12 @@ class AgentSessionImpl implements AgentSession {
           call.id,
           toolCheck.reason ?? `Permission denied for ${tool.name}`,
         );
+        this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+          event: 'tool.execution.denied',
+          failureStage: 'tool_permission',
+          code: 'TOOL_PERMISSION_DENIED',
+          tool,
+        });
         yield this.event({ type: 'tool.completed', turnId, result });
         for (const hook of this.hooks.list()) {
           await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
@@ -651,6 +734,12 @@ class AgentSessionImpl implements AgentSession {
           ? `Permission denied for ${tool.name}`
           : `Permission denied for ${tool.name}: ${toolCheck.reason}`,
       );
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.denied',
+        failureStage: 'permission_policy',
+        code: 'TOOL_PERMISSION_DENIED',
+        tool,
+      });
       yield this.event({ type: 'tool.completed', turnId, result });
       for (const hook of this.hooks.list()) {
         await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
@@ -661,6 +750,16 @@ class AgentSessionImpl implements AgentSession {
     const toolStarted = Date.now();
     this.log({
       event: 'tool.execution.started',
+      sessionId: this.id,
+      turnId,
+      toolCallId: call.id,
+      toolName: tool.name,
+      toolKind: tool.kind,
+      inputSummary: summarizeValue(parsed.data),
+    });
+    this.log({
+      level: 'debug',
+      event: 'tool.execution.input',
       sessionId: this.id,
       turnId,
       toolCallId: call.id,
@@ -737,6 +836,21 @@ class AgentSessionImpl implements AgentSession {
         toolCallId: call.id,
         toolName: tool.name,
         toolKind: tool.kind,
+        outcome: result.isError ? 'failure' : 'success',
+        isError: result.isError,
+        resultChars: result.content.length,
+        metadataKeys: safeObjectKeys(result.metadata ?? {}),
+        ...(result.isError ? { errorMessage: truncateLogText(result.content) } : {}),
+        durationMs: Date.now() - toolStarted,
+      });
+      this.log({
+        level: 'debug',
+        event: 'tool.execution.output',
+        sessionId: this.id,
+        turnId,
+        toolCallId: call.id,
+        toolName: tool.name,
+        toolKind: tool.kind,
         input: parsed.data,
         result,
         durationMs: Date.now() - toolStarted,
@@ -754,9 +868,23 @@ class AgentSessionImpl implements AgentSession {
         toolCallId: call.id,
         toolName: tool.name,
         toolKind: tool.kind,
+        failureStage: 'execution',
+        code: 'TOOL_EXECUTION_FAILED',
+        outcome: 'failure',
+        resultChars: result.content.length,
+        durationMs: Date.now() - toolStarted,
+        error: describeError(error),
+      });
+      this.log({
+        level: 'debug',
+        event: 'tool.execution.failure_details',
+        sessionId: this.id,
+        turnId,
+        toolCallId: call.id,
+        toolName: tool.name,
+        toolKind: tool.kind,
         input: parsed.data,
         result,
-        durationMs: Date.now() - toolStarted,
         error: describeError(error),
       });
       yield this.event({ type: 'tool.completed', turnId, result });
@@ -801,6 +929,50 @@ class AgentSessionImpl implements AgentSession {
     return { type: 'tool_result', toolCallId, content, isError: true };
   }
 
+  private logToolTerminal(
+    call: ToolCallBlock,
+    turnId: string,
+    result: ToolResultBlock,
+    started: number,
+    details: {
+      event: 'tool.execution.failed' | 'tool.execution.denied';
+      failureStage: string;
+      code: string;
+      tool?: Tool;
+      error?: unknown;
+      [key: string]: unknown;
+    },
+  ): void {
+    const { event, tool, error, ...fields } = details;
+    this.log({
+      level: event === 'tool.execution.denied' ? 'warn' : 'error',
+      event,
+      sessionId: this.id,
+      turnId,
+      toolCallId: call.id,
+      toolName: call.name,
+      ...(tool === undefined ? {} : { toolKind: tool.kind }),
+      outcome: event === 'tool.execution.denied' ? 'denied' : 'failure',
+      resultChars: result.content.length,
+      errorMessage: truncateLogText(result.content),
+      durationMs: Date.now() - started,
+      ...fields,
+      ...(error === undefined ? {} : { error: describeError(error) }),
+    });
+    this.log({
+      level: 'debug',
+      event: 'tool.execution.rejection_details',
+      sessionId: this.id,
+      turnId,
+      toolCallId: call.id,
+      toolName: call.name,
+      call,
+      result,
+      ...fields,
+      ...(error === undefined ? {} : { error: describeError(error) }),
+    });
+  }
+
   private event(payload: EventPayload): AgentEvent {
     const event = {
       ...payload,
@@ -815,13 +987,13 @@ class AgentSessionImpl implements AgentSession {
       // Observability is never an execution dependency.
     }
     this.log({
-      level: event.type === 'error' ? 'error' : event.type === 'warning' ? 'warn' : 'info',
+      level: agentEventLogLevel(event),
       event: event.type,
       timestamp: event.timestamp,
       sessionId: event.sessionId,
-      sequence: event.sequence,
+      eventSequence: event.sequence,
       ...eventCorrelation(event),
-      data: event,
+      ...agentEventLogFields(event),
     });
     return event;
   }
@@ -850,6 +1022,110 @@ class AgentSessionImpl implements AgentSession {
     };
     await this.sessionStore.save(stored);
   }
+}
+
+function agentEventLogLevel(event: AgentEvent): 'debug' | 'info' | 'warn' | 'error' {
+  if (event.type === 'error') return 'error';
+  if (event.type === 'warning') return 'warn';
+  if (
+    event.type === 'assistant.text.delta' ||
+    event.type === 'assistant.reasoning.delta' ||
+    event.type === 'assistant.message.completed' ||
+    event.type === 'tool.input.delta' ||
+    event.type === 'tool.started' ||
+    event.type === 'tool.completed' ||
+    event.type === 'tool.progress' ||
+    event.type === 'usage.updated'
+  ) {
+    return 'debug';
+  }
+  return 'info';
+}
+
+function agentEventLogFields(event: AgentEvent): Record<string, unknown> {
+  switch (event.type) {
+    case 'session.started':
+      return {};
+    case 'session.completed':
+      return { reason: event.reason };
+    case 'turn.started':
+      return { turn: event.turn };
+    case 'turn.completed':
+      return { turn: event.turn, reason: event.reason };
+    case 'tool.requested':
+      return {
+        toolName: event.call.name,
+        inputSummary: summarizeValue(event.call.input),
+      };
+    case 'tool.started':
+      return {
+        toolName: event.call.name,
+        inputSummary: summarizeValue(event.call.input),
+      };
+    case 'tool.completed':
+      return {
+        isError: event.result.isError,
+        resultChars: event.result.content.length,
+      };
+    case 'permission.requested':
+      return {
+        requestId: event.requestId,
+        toolName: event.toolName,
+        description: event.description,
+        inputSummary: summarizeValue(event.input),
+      };
+    case 'permission.resolved':
+      return { requestId: event.requestId, decision: event.decision };
+    case 'context.compaction.started':
+      return { estimatedTokens: event.estimatedTokens };
+    case 'context.compaction.completed':
+      return { tokensBefore: event.tokensBefore, tokensAfter: event.tokensAfter };
+    case 'run.preparing':
+      return {
+        stage: event.stage,
+        message: event.message,
+        ...(event.data === undefined ? {} : { preparation: event.data }),
+      };
+    case 'warning':
+      return { code: event.code, message: event.message };
+    case 'error':
+      return { code: event.code, message: event.message, recoverable: event.recoverable };
+    default:
+      // Raw protocol content is useful when reproducing a run but too noisy for the
+      // default INFO stream. These event types are classified as DEBUG above.
+      return { data: event };
+  }
+}
+
+function summarizeValue(value: unknown): Record<string, unknown> {
+  const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  let bytes: number | undefined;
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized !== undefined) bytes = Buffer.byteLength(serialized, 'utf8');
+  } catch {
+    // A summary must never make an otherwise executable tool input fail.
+  }
+  return {
+    type,
+    ...(bytes === undefined ? {} : { bytes }),
+    ...(Array.isArray(value) ? { items: value.length } : {}),
+    ...(value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? { keys: safeObjectKeys(value) }
+      : {}),
+  };
+}
+
+function safeObjectKeys(value: object): string[] {
+  try {
+    return Object.keys(value).sort();
+  } catch {
+    return [];
+  }
+}
+
+function truncateLogText(value: string, maximum = 1_000): string {
+  return value.length <= maximum ? value : `${value.slice(0, maximum)}…[truncated]`;
 }
 
 /**

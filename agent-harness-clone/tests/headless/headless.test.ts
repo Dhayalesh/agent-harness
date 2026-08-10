@@ -289,32 +289,138 @@ test('structured logs cover the full invocation, model, and tool lifecycle', asy
 
   assert.equal(result.sessionId, 'invocation-logged');
   assert.equal(events[0], 'invocation.started');
-  assert.ok(events.includes('invocation.payload.validated'));
-  assert.ok(events.includes('agent.resolution.started'));
-  assert.ok(events.includes('model.request.started'));
+  const expectedOrder = [
+    'invocation.started',
+    'invocation.payload.validated',
+    'invocation.preparation.started',
+    'agent.resolution.started',
+    'agent.resolution.completed',
+    'invocation.preparation.completed',
+    'session.started',
+    'model.request.started',
+    'tool.requested',
+    'tool.execution.started',
+    'tool.execution.completed',
+    'output.completed',
+    'invocation.cleanup.completed',
+    'invocation.completed',
+  ];
+  let previous = -1;
+  for (const event of expectedOrder) {
+    const index = events.indexOf(event, previous + 1);
+    assert.ok(index > previous, `${event} is missing or out of order`);
+    previous = index;
+  }
   assert.ok(events.includes('model.attempt.started'));
-  assert.ok(events.includes('tool.requested'));
-  assert.ok(events.includes('tool.execution.started'));
-  assert.ok(events.includes('tool.execution.completed'));
-  assert.ok(events.includes('invocation.cleanup.completed'));
   assert.equal(events.at(-1), 'invocation.completed');
   assert.ok(
     events.indexOf('invocation.cleanup.completed') < events.indexOf('invocation.completed'),
   );
   assert.ok(records.every((record) => record.invocationId === 'invocation-logged'));
+  assert.ok(records.every((record) => typeof record.message === 'string'));
+  assert.ok(records.every((record) => record.schemaVersion === 1));
+  assert.deepEqual(
+    records.map((record) => record.logSequence),
+    records.map((_, index) => index + 1),
+  );
 
   const start = records[0] as {
-    payload: { modelProvider: { apiKey: string }; prompt: string };
+    payloadSummary: { agentName: string; modelProvider: string; promptChars: number };
   };
-  assert.match(start.payload.prompt, /^Write hello\.txt with the text/);
-  assert.equal(start.payload.modelProvider.apiKey, '[redacted]');
+  assert.equal(start.payloadSummary.agentName, 'payload-demo');
+  assert.equal(start.payloadSummary.modelProvider, 'local-fake');
+  assert.ok(start.payloadSummary.promptChars > 0);
+  assert.equal('payload' in start, false);
+  assert.equal(events.includes('invocation.payload.received'), false);
+  assert.equal(events.includes('assistant.text.delta'), false);
+  assert.equal(events.includes('tool.input.delta'), false);
+  assert.doesNotMatch(lines.join('\n'), /Write hello\.txt with the text/);
   assert.doesNotMatch(lines.join('\n'), /test-key/);
 
   const completed = records.at(-1) as {
-    result: { usage: { inputTokens: number; outputTokens: number } };
+    outputChars: number;
+    usage: { inputTokens: number; outputTokens: number };
   };
-  assert.equal(completed.result.usage.inputTokens, 120);
-  assert.equal(completed.result.usage.outputTokens, 30);
+  assert.equal(completed.outputChars, result.output.length);
+  assert.equal(completed.usage.inputTokens, 120);
+  assert.equal(completed.usage.outputTokens, 30);
+});
+
+test('skill loading is a correlated milestone in the end-to-end tool lifecycle', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-skill', 'skill', { name: 'logging-guide' }),
+    toolCallChunk('call-write', 'write_file', { path: 'guided.txt', content: 'guided' }),
+    textChunk('Loaded the guide and wrote guided.txt.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-skill-logged-'));
+  const lines: string[] = [];
+  const instructions = 'Use write_file to create the requested file.';
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const result = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      prompt: 'Load the logging guide and create guided.txt.',
+      agent: {
+        name: 'skill-log-demo',
+        systemPrompt: 'Load the named skill before writing.',
+        tools: ['write_file'],
+        limits: { maxTurns: 5 },
+      },
+      skills: [{ name: 'logging-guide', uri: 's3://agent-skills/logging/SKILL.md' }],
+      permissionRules: [
+        { tool: 'skill', decision: 'allow' },
+        { tool: 'write_file', decision: 'allow' },
+      ],
+    }),
+    {
+      invocationId: 'invocation-skill-logged',
+      workspaceRoot,
+      builtinToolOptions: { powershell: false },
+      skillContentStore: new InMemoryContentStore({
+        'logging/SKILL.md': [
+          '---',
+          'description: Logging workflow',
+          'allowedTools: write_file',
+          '---',
+          instructions,
+        ].join('\n'),
+      }),
+      logSink: new StructuredLogSink((line) => lines.push(line)),
+    },
+  );
+
+  assert.equal(result.status, 'success');
+  assert.equal(await readFile(path.join(result.workingDirectory, 'guided.txt'), 'utf8'), 'guided');
+  const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+  const indexOf = (
+    event: string,
+    predicate: (record: Record<string, unknown>) => boolean = () => true,
+  ) => records.findIndex((record) => record.event === event && predicate(record));
+  const materialized = indexOf('skill.materialization.completed');
+  const skillToolStarted = indexOf(
+    'tool.execution.started',
+    (record) => record.toolName === 'skill',
+  );
+  const skillLoaded = indexOf('skill.load.completed');
+  const writeStarted = indexOf(
+    'tool.execution.started',
+    (record) => record.toolName === 'write_file',
+  );
+  const outputCompleted = indexOf('output.completed');
+  assert.ok(materialized >= 0);
+  assert.ok(materialized < skillToolStarted);
+  assert.ok(skillToolStarted < skillLoaded);
+  assert.ok(skillLoaded < writeStarted);
+  assert.ok(writeStarted < outputCompleted);
+
+  const loaded = records[skillLoaded];
+  assert.equal(loaded?.skillName, 'logging-guide');
+  assert.equal(loaded?.toolCallId, 'call-skill');
+  assert.equal(loaded?.invocationId, 'invocation-skill-logged');
+  assert.equal(JSON.stringify(records).includes(instructions), false);
 });
 
 test('the event stream is the same protocol the other transports emit', async (t) => {
@@ -891,7 +997,7 @@ test('preparation is reported before the session starts', async (t) => {
   const stages = events
     .filter((event) => event.type === 'run.preparing')
     .map((event) => event.stage);
-  assert.deepEqual(stages, ['workspace', 'agent']);
+  assert.deepEqual(stages, ['workspace', 'agent', 'ready']);
   const firstPreparing = events.findIndex((event) => event.type === 'run.preparing');
   const sessionStarted = events.findIndex((event) => event.type === 'session.started');
   assert.equal(firstPreparing, 0);
