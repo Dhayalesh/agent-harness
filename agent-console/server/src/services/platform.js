@@ -12,7 +12,7 @@ import { Agent } from "../models/agent.js";
 import { McpServer } from "../models/mcp-server.js";
 import { ModelProvider } from "../models/model-provider.js";
 import { Skill } from "../models/skill.js";
-import { loadSkillDocument } from "./skill-content.js";
+import { parseS3Uri } from "./skill-content.js";
 
 export const nowIso = () => new Date().toISOString();
 
@@ -162,11 +162,11 @@ export async function resolveAgentForInvocation(id) {
     const skill = await loadSkill(entry.skillId);
     if (!skill.enabled) throw badRequest("Skill " + skill.name + " is disabled.");
     const value = validateDocument(skillRecordSchema, skill, "Skill");
+    parseS3Uri(value.uri, "skill " + value.name);
     skills.push({
       document: skill,
       value,
       allowedTools: entry.allowedTools,
-      documentBody: await loadSkillDocument(value),
     });
   }
 

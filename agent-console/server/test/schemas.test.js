@@ -174,6 +174,31 @@ test("accepts historical model provider records and supported secret patches", (
     }).success,
     true,
   );
+  const displayNamedProvider = {
+    ...openAiCompatibleProvider,
+    name: "NVIDIA Model",
+  };
+  assert.equal(
+    modelProviderCreateSchema.safeParse(displayNamedProvider).success,
+    true,
+  );
+  assert.equal(
+    modelProviderRecordSchema.safeParse({
+      ...displayNamedProvider,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: "agent-console",
+    }).success,
+    true,
+  );
+  assert.equal(
+    modelProviderUpdateSchema.safeParse({ name: "NVIDIA Model" }).success,
+    true,
+  );
+  assert.equal(
+    modelProviderUpdateSchema.safeParse({ name: "unsafe\nname" }).success,
+    false,
+  );
   for (const patch of [
     { apiKey: "" },
     { apiKey: null },

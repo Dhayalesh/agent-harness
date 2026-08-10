@@ -75,10 +75,6 @@ export const config = {
     timeoutMs: integer("AGENTCORE_TIMEOUT_MS", 900_000),
   },
   createdBy: trimmed("PLATFORM_CREATED_BY", "agent-console"),
-  content: {
-    s3Region: trimmed("PLATFORM_CONTENT_S3_REGION"),
-    maxSkillBytes: 2_000_000,
-  },
 };
 
 /** Providers with an adapter in the currently deployed harness. */

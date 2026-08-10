@@ -28,10 +28,6 @@ healthRouter.get(
         uri: redactUri(config.mongoUri),
       },
       agentcore,
-      skillContent: {
-        regionConfigured: Boolean(config.content.s3Region),
-        requiredOnlyForReferencedSkills: true,
-      },
     });
   }),
 );

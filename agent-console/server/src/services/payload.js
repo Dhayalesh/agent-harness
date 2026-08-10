@@ -61,7 +61,7 @@ export async function buildPayload({
     skills: resolved.skills.map((skill) =>
       compact({
         name: skill.value.name,
-        document: skill.documentBody,
+        uri: skill.value.uri,
         allowedTools: skill.allowedTools,
       }),
     ),

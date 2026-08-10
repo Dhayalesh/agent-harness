@@ -1,6 +1,119 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { redactPayload } from "../src/services/payload.js";
+import { Agent } from "../src/models/agent.js";
+import { ModelProvider } from "../src/models/model-provider.js";
+import { Skill } from "../src/models/skill.js";
+import { buildPayload, redactPayload } from "../src/services/payload.js";
+
+const timestamp = "2026-08-10T09:30:00.000Z";
+
+test("builds URI-only skill descriptors without loading S3 content", async (context) => {
+  const agentId = "507f1f77bcf86cd799439011";
+  const providerId = "507f1f77bcf86cd799439012";
+  const reviewSkillId = "507f1f77bcf86cd799439013";
+  const codingSkillId = "507f1f77bcf86cd799439014";
+  const agent = new Agent({
+    _id: agentId,
+    name: "reviewer",
+    systemPrompt: "Review the requested change.",
+    modelProviderId: providerId,
+    tools: ["read_file", "edit_file"],
+    skills: [
+      { skillId: reviewSkillId, allowedTools: ["read_file"] },
+      { skillId: codingSkillId },
+    ],
+    mcpServerIds: [],
+    limits: { maxTurns: 12, maxOutputTokens: 2_000 },
+    enabled: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    createdBy: "agent-console",
+  });
+  const provider = new ModelProvider({
+    _id: providerId,
+    name: "Test Provider",
+    provider: "openai-compatible",
+    model: "test-model",
+    baseURL: "https://models.example.test/v1",
+    apiKey: "provider-secret",
+    auth: { kind: "bearer" },
+    capabilities: {
+      contextWindow: 32_000,
+      maxOutputTokens: 4_000,
+      supportsTools: true,
+      supportsStreaming: true,
+      supportsReasoning: false,
+      reportsCost: false,
+    },
+    enabled: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    createdBy: "agent-console",
+  });
+  const skills = new Map([
+    [
+      reviewSkillId,
+      new Skill({
+        _id: reviewSkillId,
+        name: "review_rules",
+        uri: "s3://agent-skills/review/SKILL.md",
+        enabled: true,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy: "agent-console",
+      }),
+    ],
+    [
+      codingSkillId,
+      new Skill({
+        _id: codingSkillId,
+        name: "coding_rules",
+        uri: "s3://agent-skills/coding/SKILL.md",
+        enabled: true,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        createdBy: "agent-console",
+      }),
+    ],
+  ]);
+
+  context.mock.method(Agent, "findById", async (id) => {
+    assert.equal(id, agentId);
+    return agent;
+  });
+  context.mock.method(ModelProvider, "findById", (id) => {
+    assert.equal(id, providerId);
+    return selectableQuery(provider);
+  });
+  context.mock.method(Skill, "findById", async (id) => skills.get(id));
+
+  const { payload, resolved } = await buildPayload({
+    agentId,
+    prompt: "Review this patch.",
+    sessionId: "a".repeat(36),
+  });
+
+  assert.deepEqual(payload.skills, [
+    {
+      name: "review_rules",
+      uri: "s3://agent-skills/review/SKILL.md",
+      allowedTools: ["read_file"],
+    },
+    {
+      name: "coding_rules",
+      uri: "s3://agent-skills/coding/SKILL.md",
+    },
+  ]);
+  assert.equal(payload.skills.some((skill) => "document" in skill), false);
+  assert.equal(
+    resolved.skills.some((skill) => "documentBody" in skill),
+    false,
+  );
+  assert.deepEqual(
+    payload.permissionRules.find((rule) => rule.tool === "skill"),
+    { tool: "skill", decision: "allow" },
+  );
+});
 
 test("recursively redacts credentials, headers, and environment values", () => {
   const payload = {
@@ -70,3 +183,14 @@ test("preserves absent credentials while redacting populated values in arrays", 
     ],
   );
 });
+
+function selectableQuery(value) {
+  return {
+    select() {
+      return this;
+    },
+    then(resolve, reject) {
+      return Promise.resolve(value).then(resolve, reject);
+    },
+  };
+}

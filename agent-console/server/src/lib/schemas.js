@@ -16,6 +16,16 @@ const identifier = z
     "Use letters, digits, dot, dash or underscore",
   );
 
+// A provider's stored name is a display label and references use its ObjectId.
+// The runtime payload still needs an identifier, so resolveAgentForInvocation
+// normalizes this label immediately before applying the strict record schema.
+const resourceDisplayName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .regex(/^[^\u0000-\u001f\u007f]+$/, "Control characters are not allowed");
+
 const skillName = z
   .string()
   .trim()
@@ -151,7 +161,7 @@ const modelWireSchema = z
   .strict();
 
 const modelProviderShape = {
-  name: identifier,
+  name: resourceDisplayName,
   provider: z.enum(SUPPORTED_MODEL_PROVIDERS),
   model: z.string().trim().min(1).max(300),
   baseURL: z.string().trim().url().optional(),
