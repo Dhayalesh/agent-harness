@@ -412,21 +412,22 @@ test('the https forms the console shows address the same object as s3://', () =>
   );
   // A query or a fragment would not be part of an object's address.
   assert.throws(() => parseS3Uri(`${SKILL_URI}?versionId=1`, 'test'), { code: 'S3_URI_INVALID' });
+  assert.throws(() => parseS3Uri('https://test-content.s3.amazonaws.com/%ZZ', 'test'), {
+    code: 'S3_URI_INVALID',
+  });
 });
 
-test('a skill cannot be read when no content store was supplied', async () => {
-  // Skill bodies travel on the invocation payload and are served from memory, so the
-  // reader is always injected. There is no bucket to fall back to, and a record that
-  // references a skill without one fails at resolution naming the agent and the skill.
-  const bare = new PlatformAgentRegistry(stores(withSkill()), {
+test('an agent with no skills needs no S3 configuration', async () => {
+  // S3 clients and credentials are resolved lazily. A skill-free agent must remain a
+  // normal local run even when the host has no AWS environment at all.
+  const bare = new PlatformAgentRegistry(stores(agentRecord()), {
     localTools: LOCAL_TOOLS,
     logger: () => {},
+    environment: {},
   });
-  await assert.rejects(bare.resolveById(RECORD_ID), (error: unknown) => {
-    assert.equal((error as { code?: string }).code, 'SKILL_CONTENT_NOT_CONFIGURED');
-    assert.match((error as Error).message, /Agent 'reviewer' skill 'abap-review'/);
-    return true;
-  });
+  const resolved = await bare.resolveById(RECORD_ID);
+  assert.deepEqual(resolved.skillRecords, []);
+  await resolved.close();
 });
 
 test('a dangling or disabled skill reference is reported', async () => {

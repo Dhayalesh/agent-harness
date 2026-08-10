@@ -103,9 +103,10 @@ export function DashboardPage() {
         description="Configure the pieces once, compose them into an agent, then test the result in chat."
         actions={
           <Button
+            as={Link}
+            to="/agents/new"
             color="primary"
             radius="md"
-            href="/agents/new"
             startContent={<Icon name="plus" className="h-4 w-4" />}
           >
             New agent

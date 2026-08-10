@@ -341,6 +341,8 @@ export type {
 } from './platform/agent-definitions.js';
 export { assertMatches, InMemoryContentStore, locate, sha256Hex } from './content/content-store.js';
 export type { ContentLocation, ContentStore, LoadedContent } from './content/content-store.js';
+export { S3ContentStore } from './content/s3-content-store.js';
+export type { S3ContentStoreOptions } from './content/s3-content-store.js';
 export { parseS3Uri, S3_URI_PATTERN } from './content/s3-uri.js';
 export type { S3Location } from './content/s3-uri.js';
 export {
@@ -353,7 +355,11 @@ export {
 } from './platform/skill-definitions.js';
 export type { SkillRecord, SkillRecordInput, SkillUpdate } from './platform/skill-definitions.js';
 export { TempSkillDirectory } from './skills/temp-skill-directory.js';
-export { SKILL_MAX_OBJECT_BYTES, SkillContentStores } from './platform/skill-content.js';
+export {
+  SKILL_MAX_OBJECT_BYTES,
+  SKILL_REQUEST_TIMEOUT_MS,
+  SkillContentStores,
+} from './platform/skill-content.js';
 export type { SkillContentOptions } from './platform/skill-content.js';
 export { PlatformAgentRegistry } from './platform/agent-registry.js';
 export type {

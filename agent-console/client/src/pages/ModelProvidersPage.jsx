@@ -1,5 +1,6 @@
 import { Button, Chip, Code } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import {
   EmptyState,
@@ -79,9 +80,10 @@ export function ModelProvidersPage() {
               placeholder="Search providers"
             />
             <Button
+              as={Link}
+              to="/model-providers/new"
               color="primary"
               radius="md"
-              href="/model-providers/new"
               startContent={<Icon name="plus" className="h-4 w-4" />}
             >
               New provider
@@ -109,7 +111,12 @@ export function ModelProvidersPage() {
           }
           action={
             !query && (
-              <Button color="primary" radius="md" href="/model-providers/new">
+              <Button
+                as={Link}
+                to="/model-providers/new"
+                color="primary"
+                radius="md"
+              >
                 Create one
               </Button>
             )

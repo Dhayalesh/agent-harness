@@ -3,10 +3,11 @@
 A headless TypeScript agent runtime for Node.js. One mode, one contract: post a
 payload, get a run.
 
-Everything a run needs travels on the request — the system prompt, the model and its
-credential, the tools, the MCP servers, and the skills. The process opens no database,
-reads no bucket, and holds no stored configuration, so any instance can serve any
-request and a replica can be added or removed without draining.
+Everything a run needs is named on the request — the system prompt, the model and its
+credential, the tools, the MCP servers, and an S3 URI for each skill. The process opens
+no database and holds no stored agent configuration. When a payload references skills,
+the runtime reads those objects during preparation, so any replica serving the request
+needs the same IAM access to them.
 
 ```
 POST /invocations               payload in, result or SSE event stream out
@@ -22,8 +23,12 @@ of them, and they are gone rather than deprecated.
 
 - Node.js 22 or newer
 - npm
+- AWS SDK credentials only when using S3-backed skills or direct CloudWatch delivery
 
-No MongoDB. No AWS credentials. Nothing to seed before the first run.
+No MongoDB and nothing to seed before the first run. AWS credentials are ambient, not
+part of the payload: AgentCore should use its execution role, while local runs can use
+the SDK's normal environment, shared config, or profile providers. A run with no skills
+does not read S3.
 
 ## Install and verify
 
@@ -54,15 +59,28 @@ executing tools and writing files — with nothing external.
     "model": "anthropic/claude-sonnet-4.6",
     "apiKey": "sk-or-..."
   },
-  "permissionRules": [{ "tool": "read_file", "decision": "allow" }],
+  "skills": [
+    {
+      "name": "repository-review",
+      "uri": "s3://company-agent-skills/repository-review/v1/SKILL.md",
+      "allowedTools": ["read_file", "glob", "grep"]
+    }
+  ],
+  "permissionRules": [
+    { "tool": "read_file", "decision": "allow" },
+    { "tool": "skill", "decision": "allow" }
+  ],
   "permissionFallback": "deny"
 }
 ```
 
 `agent`, `modelProvider`, and `prompt` are required; everything else has a default.
-`mcpServers` and `skills` are inlined the same way — a stdio or HTTP server with its
-credential, and a skill's whole `SKILL.md` including front matter. Omitting
-`agent.tools` offers every tool the host built.
+`mcpServers` are inlined with their connection details and credentials. A skill is a
+small reference shaped as `{ "name": "...", "uri": "s3://bucket/key",
+"allowedTools": ["..."] }`; `allowedTools` is optional and, when present, must be a
+subset of `agent.tools` and overrides the list in that skill's front matter. The
+payload never carries the `SKILL.md` body or an AWS credential. Omitting `agent.tools`
+offers every tool the host built.
 
 Every object is strict: an unrecognised key is a rejected payload, not a silently
 ignored one, because a misspelled `systemPrompt` that runs anyway is worse than one
@@ -125,6 +143,8 @@ where the process listens and what it will allow a payload to do:
 | `AGENT_PERMISSION_CEILING`                  | `plan`, `deny`, or `none`. Caps what any payload may ask for. |
 | `AGENT_SHELL_ENV_ALLOWLIST`                 | Extra variables spawned commands may see.                     |
 | `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.          |
+| `AGENT_LOG_GROUP`                           | Direct CloudWatch group. Set `-` for stdout only.             |
+| `AWS_REGION`                                | SDK region for CloudWatch and S3 skill reads.                 |
 
 Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns
 on stderr at startup when it is, and that is appropriate only behind a front door that
@@ -144,15 +164,35 @@ start.
 docker buildx build --platform linux/arm64 -t agent-harness:latest .
 ```
 
-The container needs no environment beyond what it ships with. Set
-`AGENT_PERMISSION_CEILING` and `AGENT_SERVICE_KEY` for a deployment more than one
-caller reaches.
+Set `AGENT_PERMISSION_CEILING` and `AGENT_SERVICE_KEY` for a deployment more than one
+caller reaches. If payloads reference skills, attach an execution role that can read
+only the approved skill prefix. The runtime uses `GetObject`; it does not need S3 write
+access for this flow:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadAgentSkills",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::company-agent-skills/approved/*"
+    }
+  ]
+}
+```
+
+The AWS SDK resolves credentials from the AgentCore execution role and resolves the
+region normally. Set `AWS_REGION` when it cannot infer the intended region; the legacy
+`PLATFORM_CONTENT_S3_REGION` value is accepted as a fallback.
 
 ### CloudWatch and end-to-end logs
 
-The server writes structured JSON lines to stdout. AgentCore collects that container
-stream, so the same records appear in the runtime's CloudWatch log stream without an
-AWS SDK logger or CloudWatch credentials in this application.
+The server writes structured JSON lines to stdout, which AgentCore collects into its
+runtime log stream. Unless `AGENT_LOG_GROUP=-`, it also uses the AWS SDK to deliver the
+same records to the configured group. That writer and S3 skill loading both use the
+host's ambient credentials rather than credentials from an invocation.
 
 Logging is enabled by default and covers the full path: server startup and shutdown,
 HTTP request acceptance or rejection, the invocation payload, validation, workspace
@@ -188,8 +228,8 @@ collect them. Sweep `AGENT_WORKSPACE`, or mount it on a volume with its own life
 
 If you have agents in a MongoDB `agents` collection from a previous version,
 `scripts/headless/exportPayload.ts` converts one into a payload file. It reads the four
-old collections, downloads the skill documents its skills reference, and writes the lot
-out self-contained:
+old collections and copies each skill's `name`, `uri`, and optional per-agent
+`allowedTools` override. It does not contact S3 or download the skill documents:
 
 ```bash
 npm run export-payload -- --agent sap-documentation-agent --out payload.json
@@ -198,8 +238,9 @@ npm run payload -- payload.json
 
 It is the only thing left in the repository that opens a database, and it is
 deliberately standalone so deleting it removes the last MongoDB dependency in one step.
-The AWS variables are needed for the export and never again — the exported payload
-carries the documents.
+Only `PLATFORM_MONGODB_URI` is needed by the exporter. Its output is intentionally not
+self-contained: a run of the exported payload reads the current object at each URI and
+therefore needs the same S3 access as any other skill-bearing invocation.
 
 The output holds the model credential and every MCP credential in cleartext, because
 that is what a payload is. `payload.json` and `payload.*.json` are gitignored; treat one
@@ -219,6 +260,28 @@ for await (const event of streamHeadless(payload)) {
   console.log(event.type, event);
 }
 ```
+
+`S3ContentStore` is the exported read/write adapter for operator-side content flows or
+an embedding host. It uses the same ambient SDK identity and enforces the configured
+timeout and byte ceiling:
+
+```ts
+import { S3ContentStore } from '@trueai/agent-harness';
+
+const skills = new S3ContentStore({
+  bucket: 'company-agent-skills',
+  region: 'us-east-1',
+  requestTimeoutMs: 15_000,
+  maxObjectBytes: 2_000_000,
+});
+
+await skills.write('repository-review/v2/SKILL.md', markdown);
+const loaded = await skills.load('repository-review/v2/SKILL.md');
+skills.destroy();
+```
+
+That adapter is a host API, not a model-callable tool. The runtime's execution role
+should normally remain read-only; use a separate operator identity for uploads.
 
 `invokeHeadless` returns the answer with what it cost: the concatenated assistant text,
 the messages, per-tool call and error counts, the stop reason, token usage, and the
@@ -319,10 +382,19 @@ would produce a run that stalls or that silently picks an option on the caller's
 is real: a stream to show the question and a registry to route the answer back. Without
 both it is refused rather than downgraded — see [Resuming, and answering](#resuming-and-answering).
 
-Skills arrive on the payload as documents and are written to a temporary directory in
-the layout a local skill directory uses, so a payload skill is an ordinary skill file
-rather than a special case. The directory is removed when the run ends, on the failure
-path as much as the success one.
+Skills arrive as `{ name, uri, allowedTools? }` references. During preparation the
+runtime issues `GetObject`, writes each complete `SKILL.md` into a private per-run
+temporary directory in the layout a local skill directory uses, and parses it through
+the normal skill loader. That directory is removed when the run ends, on the handled
+failure path as much as the success one; skill bodies are not retained in the payload
+or the run workspace.
+
+An S3 URI names a mutable object, not immutable content. The runtime reads it fresh on
+every run, so overwriting that key changes the instructions without changing the
+payload. Prefer versioned, write-once keys such as `skills/reviewer/v3/SKILL.md`, and
+treat permission to write those objects as permission to change agent behavior. Because
+a caller chooses the bucket and key, scope the execution role's `s3:GetObject` resource
+to approved buckets and prefixes; the IAM policy is the boundary, not the URI schema.
 
 ## Architecture
 

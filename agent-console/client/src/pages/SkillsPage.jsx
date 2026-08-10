@@ -1,5 +1,6 @@
 import { Button, Chip, Code } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import {
   EmptyState,
@@ -77,9 +78,10 @@ export function SkillsPage() {
               placeholder="Search skills"
             />
             <Button
+              as={Link}
+              to="/skills/new"
               color="primary"
               radius="md"
-              href="/skills/new"
               startContent={<Icon name="plus" className="h-4 w-4" />}
             >
               New skill
@@ -103,7 +105,7 @@ export function SkillsPage() {
           }
           action={
             !query && (
-              <Button color="primary" radius="md" href="/skills/new">
+              <Button as={Link} to="/skills/new" color="primary" radius="md">
                 Create one
               </Button>
             )

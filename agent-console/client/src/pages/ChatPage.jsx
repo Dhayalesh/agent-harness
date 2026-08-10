@@ -15,7 +15,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { api } from "../api.js";
 import {
   AgentAvatar,
@@ -422,10 +427,11 @@ export function ChatPage() {
                   </Chip>
                   <Tooltip content="Agent configuration" size="sm">
                     <Button
+                      as={Link}
+                      to={`/agents/${selectedAgent.id}`}
                       isIconOnly
                       size="sm"
                       variant="light"
-                      href={`/agents/${selectedAgent.id}`}
                       aria-label="Open agent configuration"
                     >
                       <Icon name="settings" className="h-4 w-4" />
@@ -678,7 +684,7 @@ function AgentPicker({ agents, onSelect }) {
         </div>
       )}
       {agents.length === 0 && (
-        <Button color="primary" radius="md" href="/agents/new">
+        <Button as={Link} to="/agents/new" color="primary" radius="md">
           Create your first agent
         </Button>
       )}

@@ -1,5 +1,6 @@
 import { Button, Chip, Code } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import {
   EmptyState,
@@ -82,9 +83,10 @@ export function McpServersPage() {
               placeholder="Search MCP servers"
             />
             <Button
+              as={Link}
+              to="/mcp-servers/new"
               color="primary"
               radius="md"
-              href="/mcp-servers/new"
               startContent={<Icon name="plus" className="h-4 w-4" />}
             >
               New MCP server
@@ -110,7 +112,12 @@ export function McpServersPage() {
           }
           action={
             !query && (
-              <Button color="primary" radius="md" href="/mcp-servers/new">
+              <Button
+                as={Link}
+                to="/mcp-servers/new"
+                color="primary"
+                radius="md"
+              >
                 Create one
               </Button>
             )

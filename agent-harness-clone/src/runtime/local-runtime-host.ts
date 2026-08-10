@@ -19,10 +19,9 @@ export type LocalRuntimeHostOptions = {
    * by hand would see.
    *
    * A hosted deployment is the opposite case, and should pass a narrowed copy.
-   * The process environment there holds `PLATFORM_MONGODB_URI` and the
-   * credentials that read skill buckets, and a shell tool is reachable by any
-   * agent record naming it, so `env` in one command would put all of it in the
-   * transcript. `scrubbedEnvironment` builds that copy.
+   * The process environment there may hold model, MCP, and AWS configuration, and a
+   * shell tool is reachable by any agent record naming it, so `env` in one command
+   * could put all of it in the transcript. `scrubbedEnvironment` builds that copy.
    */
   env?: NodeJS.ProcessEnv;
 };

@@ -17,6 +17,7 @@ import {
   Switch,
 } from "@heroui/react";
 import { useCallback, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { Icon } from "./Icon.jsx";
 
 /**
@@ -280,7 +281,7 @@ export function FormActions({ cancelHref, saving, isDisabled, label }) {
       >
         {saving ? "Saving…" : label}
       </Button>
-      <Button variant="light" radius="md" href={cancelHref}>
+      <Button as={Link} to={cancelHref} variant="light" radius="md">
         Cancel
       </Button>
     </div>

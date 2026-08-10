@@ -92,7 +92,12 @@ function fromHttps(uri: string): S3Location | undefined {
     return undefined;
   }
   if (url.username || url.password || url.search || url.hash) return undefined;
-  const key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  let key: string;
+  try {
+    key = decodeURIComponent(url.pathname.replace(/^\//, ''));
+  } catch {
+    return undefined;
+  }
 
   // `<bucket>.s3.<region>.amazonaws.com` or `<bucket>.s3.amazonaws.com`.
   const hosted = url.hostname.match(/^(.+)\.s3[.-][^.]*\.?amazonaws\.com$/);

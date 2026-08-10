@@ -9,6 +9,7 @@ import {
   Link as HeroLink,
 } from "@heroui/react";
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import {
   AgentAvatar,
@@ -75,9 +76,10 @@ export function AgentsPage() {
               placeholder="Search agents"
             />
             <Button
+              as={Link}
               color="primary"
               radius="md"
-              href="/agents/new"
+              to="/agents/new"
               startContent={<Icon name="plus" className="h-4 w-4" />}
             >
               New agent
@@ -101,7 +103,7 @@ export function AgentsPage() {
           }
           action={
             !query && (
-              <Button color="primary" radius="md" href="/agents/new">
+              <Button as={Link} color="primary" radius="md" to="/agents/new">
                 Create agent
               </Button>
             )
@@ -182,20 +184,27 @@ export function AgentsPage() {
                   <Divider />
                   <CardFooter className="gap-1 px-3 py-2">
                     <Button
+                      as={Link}
                       size="sm"
                       variant="light"
-                      href={`/chat/${agent.id}`}
+                      to={`/chat/${agent.id}`}
                       startContent={<Icon name="chat" className="h-4 w-4" />}
                     >
                       Chat
                     </Button>
-                    <Button size="sm" variant="light" href={`/agents/${agent.id}`}>
+                    <Button
+                      as={Link}
+                      size="sm"
+                      variant="light"
+                      to={`/agents/${agent.id}`}
+                    >
                       Open
                     </Button>
                     <Button
+                      as={Link}
                       size="sm"
                       variant="light"
-                      href={`/agents/${agent.id}/edit`}
+                      to={`/agents/${agent.id}/edit`}
                     >
                       Edit
                     </Button>

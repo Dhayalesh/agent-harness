@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
 import type { ArtifactStore } from '../artifacts/artifact-store.js';
+import type { ContentStore } from '../content/content-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
 import { createAgentSession, type AgentSession } from '../core/agent-session.js';
 import { AgentHarnessError } from '../core/errors.js';
@@ -31,10 +32,10 @@ import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
 /**
  * Runs one payload to completion, or streams the events of one payload.
  *
- * Nothing here reads MongoDB, S3, or a required environment variable. The payload is
- * the whole configuration, so a process built on this can be handed a JSON object and
- * produce an answer — which is what makes it deployable as a stateless function,
- * behind a queue, or as a container that scales to zero without a database beside it.
+ * Nothing here reads MongoDB. The payload is the whole agent configuration; skill
+ * entries carry S3 addresses whose documents are fetched during preparation with the
+ * host's AWS identity. A process built on this can still scale without a database or
+ * per-agent state beside it.
  *
  * The tradeoffs that come with that, stated once:
  *
@@ -80,6 +81,8 @@ export type HeadlessRunOptions = {
    */
   sessionStore?: SessionStore;
   artifactStore?: ArtifactStore;
+  /** Replaces the SDK-backed S3 reader for skill documents. */
+  skillContentStore?: ContentStore;
   eventSink?: EventSink;
   /**
    * Structured JSON-ready lifecycle records. The process entrypoint wires this to
@@ -286,6 +289,8 @@ export async function* streamHeadless(
   let context = baseContext;
   let phase = 'validation';
   let prepared: PreparedRun | undefined;
+  let preparing:
+    Promise<{ ok: true; value: PreparedRun } | { ok: false; error: unknown }> | undefined;
   let completed = false;
   let failed = false;
   let runError = false;
@@ -319,7 +324,7 @@ export async function* streamHeadless(
       mcpServers: parsed.mcpServers.length,
       skills: parsed.skills.length,
     });
-    const preparing = prepare(parsed, options, sessionId, context, channel).then(
+    preparing = prepare(parsed, options, sessionId, context, channel).then(
       (value) => ({ ok: true as const, value }),
       (error: unknown) => ({ ok: false as const, error }),
     );
@@ -350,6 +355,13 @@ export async function* streamHeadless(
     throw error;
   } finally {
     const terminalPhase = phase;
+    // A consumer can leave while preparation is still producing progress events. In
+    // that case the promise may finish after control enters `finally`; claim its
+    // result here so the just-created skill directory and MCP connections are closed.
+    if (!prepared && preparing) {
+      const settled = await preparing;
+      if (settled.ok) prepared = settled.value;
+    }
     if (prepared) {
       phase = 'cleanup';
       try {
@@ -505,6 +517,9 @@ async function prepare(
         : { elicitationHandler: options.elicitationHandler }),
       ...(registryLogger === undefined ? {} : { logger: registryLogger }),
       ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+      ...(options.skillContentStore === undefined
+        ? {}
+        : { skillContentStore: options.skillContentStore }),
       logContext,
     });
   } catch (error) {

@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@heroui/react";
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   AgentAvatar,
@@ -78,17 +78,19 @@ export function AgentDetailPage() {
         actions={
           <>
             <Button
+              as={Link}
               color="primary"
               radius="md"
-              href={`/chat/${agent.id}`}
+              to={`/chat/${agent.id}`}
               startContent={<Icon name="chat" className="h-4 w-4" />}
             >
               Open chat
             </Button>
             <Button
+              as={Link}
               variant="bordered"
               radius="md"
-              href={`/agents/${id}/edit`}
+              to={`/agents/${id}/edit`}
               startContent={<Icon name="edit" className="h-4 w-4" />}
             >
               Edit

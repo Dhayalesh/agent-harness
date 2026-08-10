@@ -7,8 +7,7 @@ runtime, and renders saved chats and runs in the browser.
 
 ```text
 browser -> Express API -> MongoDB
-                       -> S3 (referenced skill documents)
-                       -> bedrock-agentcore:InvokeAgentRuntime
+                       -> bedrock-agentcore:InvokeAgentRuntime -> S3 (referenced skills)
 ```
 
 There is no local invocation transport. Every run uses the global
@@ -46,15 +45,14 @@ For each invocation the API:
 1. Loads the enabled agent and dereferences its model provider, MCP servers, and skills.
 2. Validates that referenced resources are present, enabled, and compatible with the
    deployed harness.
-3. Downloads every referenced skill document from S3, preserving stored skill and MCP
-   order, and inlines the documents in the harness payload.
+3. Preserves stored skill and MCP order and sends each skill as
+   `{ name, uri, allowedTools? }` without downloading or inlining its document.
 4. Creates a `running` run row and makes one `InvokeAgentRuntime` call.
 5. Saves the returned result or the translated invocation error.
 
-Skill URIs may use `s3://...` or an uncredentialed AWS S3 HTTPS object URL. Set
-`PLATFORM_CONTENT_S3_REGION` when an invoked agent references a skill. S3 uses the
-standard AWS credential chain and each document is limited to 2,000,000 bytes and
-characters.
+Skill URIs may use `s3://...` or an uncredentialed AWS S3 HTTPS object URL. The runtime
+downloads referenced documents into execution-scoped temporary storage and removes
+them after execution, so S3 access belongs to the runtime role rather than the console.
 
 Model credentials come only from the referenced `model_providers` record. Agents do not
 carry inline API keys and there is no environment-key fallback. The deployed harness
@@ -69,7 +67,8 @@ Requirements:
 - Access to the `trueai_agent_platform` MongoDB database.
 - A deployed AgentCore runtime and AWS credentials allowed to call
   `bedrock-agentcore:InvokeAgentRuntime` on it.
-- `s3:GetObject` access to referenced skill objects when skills are used.
+- `s3:GetObject` access from the runtime role to referenced skill objects when skills
+  are used.
 
 Copy `server/.env.example` to `server/.env`, then run:
 
@@ -139,7 +138,6 @@ components lose their styling, that glob is the thing to check.
 | `MONGODB_URI` | MongoDB or Atlas connection URI. Prefer an explicit `trueai_agent_platform` path. |
 | `MONGODB_DB_NAME` | Optional database override; a pathless URI otherwise uses `trueai_agent_platform`. |
 | `PLATFORM_CREATED_BY` | Provenance stamped on records created by this console. |
-| `PLATFORM_CONTENT_S3_REGION` | Region used to fetch referenced skill documents; needed only for agents with skills. |
 | `AGENTCORE_RUNTIME_ARN` | Required global AgentCore runtime ARN used for every invocation. |
 | `AGENTCORE_QUALIFIER` | Optional runtime endpoint qualifier; unset uses `DEFAULT`. |
 | `AWS_REGION` | Deliberate region override; otherwise the runtime ARN supplies its region. |
@@ -151,8 +149,8 @@ An ambient environment variable wins over the value in `server/.env` because Nod
 `--env-file-if-exists` does not replace an existing value. Startup prints the resolved,
 redacted MongoDB target and database so this is visible before any write.
 
-`/api/health` reports the MongoDB connection, resolved database, AgentCore configuration
-and AWS credential readiness, and whether the optional skill-content region is set.
+`/api/health` reports the MongoDB connection, resolved database, AgentCore configuration,
+and AWS credential readiness.
 
 ## API
 
@@ -163,7 +161,7 @@ referenced resource that cannot be deleted returns `409`.
 
 | Method | Path | Response |
 | --- | --- | --- |
-| `GET` | `/api/health` | Database, AgentCore, credential, and skill-content readiness. |
+| `GET` | `/api/health` | Database, AgentCore, and credential readiness. |
 | `GET` | `/api/catalogue` | `{ tools, modelProviders, mcpServers, skills }`; resources are enabled and secrets are safe. |
 | `GET` | `/api/dashboard` | `{ dashboard: { counts, recentRuns, recentChats } }`; large run output and chat messages are omitted. |
 | `GET` | `/api/agents/meta/tools` | Runtime tool catalogue and supported model provider names. |
@@ -299,8 +297,8 @@ features this console does not use yet; both need it to hold a run id across req
   `MONGODB_URI`/`MONGODB_DB_NAME`; shell variables override `server/.env`.
 - **Runtime not found:** confirm the ARN and qualifier, then check that the SDK region is
   the ARN's region. A deliberate `AWS_REGION` override can point at the wrong region.
-- **Skill cannot load:** set `PLATFORM_CONTENT_S3_REGION`, verify the URI names an AWS S3
-  object, and grant the console's AWS identity `s3:GetObject`.
+- **Skill cannot load:** verify the URI names an AWS S3 object and grant the AgentCore
+  runtime role `s3:GetObject` for it.
 - **A Node launcher receives an HTTP URL as its entry/package:** this occurs when a
   stdio MCP record puts an endpoint URL where `node` expects a local module or where
   `npx`, `npm`, `yarn`, or `pnpm` expects a package/command. Configure an endpoint as
@@ -320,6 +318,6 @@ they are stored in plaintext in MongoDB and are loaded into invocation payloads.
 encryption at rest or a secrets manager before storing production credentials. Prompts,
 outputs, and chat messages are also persisted and may contain sensitive data.
 
-Grant the console only the MongoDB, `bedrock-agentcore:InvokeAgentRuntime`, and optional
-S3 permissions it needs. Restrict the runtime role separately according to the enabled
-tools and MCP integrations.
+Grant the console only the MongoDB and `bedrock-agentcore:InvokeAgentRuntime` permissions
+it needs. Restrict the runtime role separately according to the referenced S3 skills,
+enabled tools, and MCP integrations.

@@ -82,9 +82,8 @@ export const agentLimitsSchema = z
  *
  * This record holds no credential of its own. The key for the model lives on the
  * `model_providers` record, the keys for MCP on the `mcp_servers` records, and the
- * keys for MCP on the `mcp_servers` records, and the credential that reads skill
- * documents in the environment, so an agent can be read and listed without exposing a
- * secret.
+ * credential that reads skill documents belongs to the host's AWS identity, so an
+ * agent can be read and listed without exposing another secret.
  */
 const agentShape = {
   name: identifier,

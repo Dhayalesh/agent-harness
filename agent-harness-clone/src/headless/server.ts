@@ -48,7 +48,7 @@ export type HeadlessServerOptions = HeadlessRunOptions & {
   serviceKey?: string;
   /**
    * Defaults to 8 MB, wider than the gateway server's 1 MB: a payload carries the
-   * system prompt and every skill document, not just a prompt.
+   * system prompt, model and MCP configuration, and skill references.
    */
   maxBodyBytes?: number;
   /** Concurrent runs allowed. Further requests get 429. Defaults to 8. */
@@ -516,21 +516,30 @@ async function writeEventStream(
   // between. Without it a turn that spends four minutes in one tool looks to an
   // idle-timeout proxy exactly like a dead connection.
   const keepAlive = setInterval(() => {
-    if (!response.writableEnded) response.write(': keep-alive\n\n');
+    if (responseIsClosed(response)) return;
+    try {
+      response.write(': keep-alive\n\n');
+    } catch {
+      // A disconnect can race the check above. The request loop observes the
+      // closed response and reaches its cleanup path on its next turn.
+    }
   }, options.keepAliveMs);
   keepAlive.unref?.();
 
   try {
     for (let next = first; next.done !== true; next = await iterator.next()) {
-      if (response.writableEnded) break;
+      if (responseIsClosed(response)) break;
       await writeFrame(
         response,
         `id: ${next.value.sequence}\nevent: ${next.value.type}\ndata: ${JSON.stringify(next.value)}\n\n`,
       );
     }
   } catch (error) {
-    if (!response.writableEnded) {
-      response.write(`event: error\ndata: ${JSON.stringify({ error: describe(error) })}\n\n`);
+    if (!responseIsClosed(response)) {
+      await writeFrame(
+        response,
+        `event: error\ndata: ${JSON.stringify({ error: describe(error) })}\n\n`,
+      ).catch(() => undefined);
     }
   } finally {
     clearInterval(keepAlive);
@@ -543,7 +552,7 @@ async function writeEventStream(
       await iterator.return(undefined as never).catch(() => undefined);
     }
   }
-  response.end();
+  if (!responseIsClosed(response)) response.end();
 }
 
 /**
@@ -554,16 +563,37 @@ async function writeEventStream(
  * one of them.
  */
 async function writeFrame(response: ServerResponse, frame: string): Promise<void> {
-  if (response.write(frame)) return;
+  if (responseIsClosed(response)) return;
+
+  let accepted: boolean;
+  try {
+    accepted = response.write(frame);
+  } catch (error) {
+    if (responseIsClosed(response)) return;
+    throw error;
+  }
+  if (accepted || responseIsClosed(response)) return;
+
   await new Promise<void>((resolve) => {
     const done = (): void => {
       response.off('drain', done);
       response.off('close', done);
+      response.off('error', done);
       resolve();
     };
     response.once('drain', done);
     response.once('close', done);
+    response.once('error', done);
+
+    // `close` may have fired after write() returned false but before the
+    // listeners above were attached. Rechecking avoids waiting for an event
+    // that has already happened and guarantees the generator's cleanup runs.
+    if (responseIsClosed(response)) done();
   });
+}
+
+function responseIsClosed(response: ServerResponse): boolean {
+  return response.writableEnded || response.destroyed || response.closed;
 }
 
 /**

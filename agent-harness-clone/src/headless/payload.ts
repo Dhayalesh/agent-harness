@@ -9,11 +9,12 @@ import {
   modelProviderCapabilitiesSchema,
   modelProviderWireSchema,
 } from '../platform/model-provider-definitions.js';
-import { SKILL_MAX_OBJECT_BYTES } from '../platform/skill-content.js';
+import { S3_URI_PATTERN } from '../content/s3-uri.js';
 
 /**
  * The headless invocation contract: one JSON object that carries everything a run
- * needs, so nothing is read from MongoDB, S3, or the environment.
+ * needs. Agent configuration is not read from MongoDB or the environment; skill
+ * bodies are addressed by URI and fetched from S3 during preparation.
  *
  * This is the same information the platform collections hold, moved onto the
  * request. `resolveAgentFromDatabase` reads an `agents` record whose
@@ -25,10 +26,10 @@ import { SKILL_MAX_OBJECT_BYTES } from '../platform/skill-content.js';
  * rather than a second implementation that drifts from the stored one.
  *
  * What moves onto the request also moves the trust boundary onto it: the payload
- * carries the model credential, the MCP credentials, and the skill instructions, so
- * whoever can post a payload chooses where those keys are sent and what the agent is
- * told to do. Stored records at least have an operator script and an audit trail in
- * front of them. Put authentication in front of any transport that accepts these.
+ * carries the model credential, the MCP credentials, and the skill addresses, so
+ * whoever can post a payload chooses where those keys are sent and which objects the
+ * runtime role reads. Put authentication in front of any transport that accepts these,
+ * and scope the runtime's S3 policy to skill prefixes only.
  *
  * Fields are camelCase and every object is `.strict()`, matching the rest of the
  * codebase: an unrecognised key is a rejected payload rather than a silently ignored
@@ -100,19 +101,21 @@ export const headlessMcpServerSchema = z
   .strict();
 
 /**
- * One skill, body and all.
+ * One skill reference.
  *
- * A stored skill is a pointer to a `SKILL.md` in S3; here the document itself is on
- * the request, so no bucket is read and no AWS credential is needed. `document` is
- * the whole file including front matter, because that is what `parseSkill` reads and
- * what gets written to disk for the `skill` tool — the payload is not a different
- * format from the stored one, it is the same file carried a different way.
+ * The request carries the address rather than the `SKILL.md` bytes. During agent
+ * preparation the runtime downloads that object, writes it into the run's private
+ * temporary skill directory, and parses it through the existing skill path. The AWS
+ * credential belongs to the host and never travels on this payload.
+ *
+ * `name` remains beside the URI because it is the stable handle the model passes to
+ * the `skill` tool and the safe directory name used on disk. It is not document body.
  */
 export const headlessSkillSchema = z
   .object({
     name: skillName,
-    /** Full `SKILL.md`, front matter included. */
-    document: z.string().min(1).max(SKILL_MAX_OBJECT_BYTES),
+    /** Full address of the `SKILL.md`, normally `s3://bucket/key`. */
+    uri: z.string().min(1).max(2_048).regex(S3_URI_PATTERN),
     /**
      * Overrides the `allowed-tools` in the document's front matter for this run.
      * Must be a subset of the agent's `tools`.

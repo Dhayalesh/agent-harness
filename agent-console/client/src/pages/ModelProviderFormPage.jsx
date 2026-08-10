@@ -1,6 +1,6 @@
 import { Button, Input, Select, SelectItem } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   ErrorNote,
@@ -151,7 +151,7 @@ export function ModelProviderFormPage({ mode }) {
         title={editing ? `Edit ${form.name}` : "New model provider"}
         description="Configure the endpoint, credential, and limits the hosted runtime uses for model calls."
         actions={
-          <Button variant="light" radius="md" href="/model-providers">
+          <Button as={Link} to="/model-providers" variant="light" radius="md">
             Cancel
           </Button>
         }
@@ -174,7 +174,7 @@ export function ModelProviderFormPage({ mode }) {
             maxLength={100}
             value={form.name}
             onValueChange={set("name")}
-            description="Letters, digits, dot, dash, or underscore. Unique."
+            description="Human-readable provider name. Unique."
             isInvalid={Boolean(fieldErrors.name)}
             errorMessage={fieldErrors.name}
           />

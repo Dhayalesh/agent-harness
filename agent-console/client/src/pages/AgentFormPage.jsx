@@ -14,7 +14,7 @@ import {
   Textarea,
 } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   ErrorNote,
@@ -233,7 +233,7 @@ export function AgentFormPage({ mode }) {
         title={editing ? `Edit ${form.name}` : "New agent"}
         description="Compose a model, local tools, MCP servers, and skills into one runnable agent."
         actions={
-          <Button variant="light" radius="md" href={cancelHref}>
+          <Button as={Link} variant="light" radius="md" to={cancelHref}>
             Cancel
           </Button>
         }

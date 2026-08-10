@@ -1,4 +1,5 @@
 import { Button, Card, CardBody, Divider } from "@heroui/react";
+import { Link } from "react-router-dom";
 import { MetaGrid } from "./Bits.jsx";
 import { Icon } from "./Icon.jsx";
 
@@ -44,9 +45,10 @@ export function ResourceRow({
 
         <div className="flex shrink-0 flex-row items-center justify-start gap-1 p-3 sm:w-[128px] sm:flex-col sm:justify-center">
           <Button
+            as={Link}
+            to={editHref}
             size="sm"
             variant="light"
-            href={editHref}
             className="sm:w-full"
             startContent={<Icon name="edit" className="h-4 w-4" />}
           >

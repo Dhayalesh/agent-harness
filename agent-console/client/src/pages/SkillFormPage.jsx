@@ -1,6 +1,6 @@
 import { Button, Input } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   ErrorNote,
@@ -75,7 +75,7 @@ export function SkillFormPage({ mode }) {
         title={editing ? `Edit ${form.name}` : "New skill"}
         description="Point to a SKILL.md document the console can load into an AgentCore invocation."
         actions={
-          <Button variant="light" radius="md" href="/skills">
+          <Button as={Link} to="/skills" variant="light" radius="md">
             Cancel
           </Button>
         }

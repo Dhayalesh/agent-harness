@@ -1,6 +1,6 @@
 import { Button, Input, Select, SelectItem } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   ErrorNote,
@@ -201,7 +201,7 @@ export function McpServerFormPage({ mode }) {
         title={editing ? `Edit ${form.name}` : "New MCP server"}
         description="Configure a stdio process or HTTP endpoint the hosted runtime can connect to."
         actions={
-          <Button variant="light" radius="md" href="/mcp-servers">
+          <Button as={Link} to="/mcp-servers" variant="light" radius="md">
             Cancel
           </Button>
         }

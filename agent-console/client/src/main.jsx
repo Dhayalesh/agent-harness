@@ -1,5 +1,4 @@
 import { HeroUIProvider } from "@heroui/react";
-import React from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, useHref, useNavigate } from "react-router-dom";
 import { App } from "./App.jsx";
@@ -19,12 +18,12 @@ function Providers({ children }) {
   );
 }
 
+// Mount once in development as well as production. StrictMode's development-only
+// remount replays every page's loading effect and sends duplicate API reads.
 createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <Providers>
-        <App />
-      </Providers>
-    </BrowserRouter>
-  </React.StrictMode>,
+  <BrowserRouter>
+    <Providers>
+      <App />
+    </Providers>
+  </BrowserRouter>,
 );

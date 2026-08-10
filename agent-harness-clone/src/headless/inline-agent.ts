@@ -1,4 +1,4 @@
-import { InMemoryContentStore } from '../content/content-store.js';
+import type { ContentStore } from '../content/content-store.js';
 import type { RunProgressReporter } from '../core/events.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
 import { nowIso, parseAgentRecord, type AgentRecord } from '../platform/agent-definitions.js';
@@ -60,14 +60,6 @@ function syntheticId(index: number): string {
 const PAYLOAD_ORIGIN = 'headless-payload';
 
 /**
- * The bucket a payload skill's synthetic address names. Nothing is read from it: the
- * document is served out of an `InMemoryContentStore` keyed by the same address, so
- * the URI exists only because `skills.uri` is the field the registry locates a skill
- * through. It is not a real bucket and no request is signed for it.
- */
-const PAYLOAD_SKILL_BUCKET = 'payload-skills';
-
-/**
  * What a provider record claims when the payload does not say.
  *
  * These bound the run: `maxInputTokens` is derived as `contextWindow -
@@ -113,6 +105,8 @@ export type InlineAgentOptions = {
   logger?: (message: string) => void;
   logSink?: LogSink;
   logContext?: LogContext;
+  /** Replaces the SDK-backed S3 reader. Used by tests and embedding hosts. */
+  skillContentStore?: ContentStore;
   /** Reports skill downloads and MCP connections while assembly is happening. */
   onProgress?: RunProgressReporter;
 };
@@ -146,13 +140,6 @@ export async function resolveInlineAgent(
     timestamp,
   });
 
-  // Keyed by the synthetic address rather than by name: this is the key
-  // `SkillContentStores.locate` derives from `skills.uri`, so the registry finds the
-  // document through exactly the path it uses for a real bucket.
-  const documents = Object.fromEntries(
-    payload.skills.map((spec) => [skillObjectKey(spec.name), spec.document]),
-  );
-
   const stores: AgentStores = {
     agents: singleAgentLookup(record),
     modelProviders: singleRecordLookup(modelProviderId, modelProvider),
@@ -162,7 +149,7 @@ export async function resolveInlineAgent(
 
   const registry = new PlatformAgentRegistry(stores, {
     localTools: options.localTools,
-    contentStore: new InMemoryContentStore(documents),
+    ...(options.skillContentStore === undefined ? {} : { contentStore: options.skillContentStore }),
     ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
     ...(options.logContext === undefined ? {} : { logContext: options.logContext }),
     ...(options.elicitationHandler === undefined
@@ -217,16 +204,12 @@ function completeMcpServer(spec: HeadlessMcpServerSpec, timestamp: string): McpS
 function completeSkill(spec: HeadlessSkillSpec, timestamp: string): SkillRecord {
   return parseSkillRecord({
     name: spec.name,
-    uri: `s3://${PAYLOAD_SKILL_BUCKET}/${skillObjectKey(spec.name)}`,
+    uri: spec.uri,
     enabled: true,
     createdAt: timestamp,
     updatedAt: timestamp,
     createdBy: PAYLOAD_ORIGIN,
   });
-}
-
-function skillObjectKey(name: string): string {
-  return `${name}/SKILL.md`;
 }
 
 /**

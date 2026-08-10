@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@heroui/react";
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
   ErrorNote,
@@ -74,9 +74,10 @@ export function RunDetailPage() {
         actions={
           <>
             <Button
+              as={Link}
+              to={`/agents/${run.agentId}`}
               variant="bordered"
               radius="md"
-              href={`/agents/${run.agentId}`}
               startContent={<Icon name="agents" className="h-4 w-4" />}
             >
               Open agent

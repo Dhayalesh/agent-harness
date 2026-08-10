@@ -10,7 +10,7 @@ import { invokeHeadless, streamHeadless } from './invoke.js';
  * The point of this entrypoint is that the file is the whole configuration: the same
  * JSON a caller would POST runs here unchanged, so a payload can be developed and
  * debugged locally and then sent to a deployment without translation. No database
- * connection is opened and no AWS variable is read.
+ * connection is opened; AWS configuration is consulted only when a skill URI is read.
  *
  * `--stream` prints events as JSON lines as they happen, which is what to use for a
  * long run. Without it the result is printed once, as a single object.

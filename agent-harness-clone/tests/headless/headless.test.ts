@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { existsSync, readdirSync } from 'node:fs';
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import type { AgentEvent } from '../../src/index.js';
 import {
   AgentHarnessError,
   createBuiltinTools,
+  InMemoryContentStore,
   invokeHeadless,
   LocalRuntimeHost,
   parseInvocationPayload,
@@ -340,7 +342,7 @@ test('the event stream is the same protocol the other transports emit', async (t
   assert.equal(types.at(-1), 'session.completed');
 });
 
-test('an inlined skill is materialized from the payload instead of a bucket', async (t) => {
+test('an S3-referenced skill is downloaded, materialized, and deleted on close', async (t) => {
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-skill-'));
   const runtime = new LocalRuntimeHost(workspaceRoot);
   t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
@@ -362,21 +364,25 @@ test('an inlined skill is materialized from the payload instead of a bucket', as
     skills: [
       {
         name: 'abap-review',
-        document: [
-          '---',
-          'description: Checklist for reviewing an ABAP change',
-          'allowedTools: read_file',
-          '---',
-          'Read the object, then check for hardcoded clients.',
-        ].join('\n'),
+        uri: 's3://agent-skills/review/abap/SKILL.md',
       },
     ],
   });
 
+  const document = [
+    '---',
+    'description: Checklist for reviewing an ABAP change',
+    'allowedTools: read_file',
+    '---',
+    'Read the object, then check for hardcoded clients.',
+  ].join('\n');
+
   const agent = await resolveInlineAgent(parsed, {
     localTools: createBuiltinTools(runtime, { powershell: false }),
+    skillContentStore: new InMemoryContentStore({
+      'review/abap/SKILL.md': document,
+    }),
   });
-  t.after(() => agent.close());
 
   assert.deepEqual(
     agent.tools.map((tool) => tool.name),
@@ -390,9 +396,107 @@ test('an inlined skill is materialized from the payload instead of a bucket', as
   // so a payload skill is an ordinary skill file rather than a special case.
   const onDisk = await readFile(path.join(agent.skillDirectory, 'abap-review', 'SKILL.md'), 'utf8');
   assert.match(onDisk, /hardcoded clients/);
+  assert.equal(onDisk, document);
   // Limits derived from the provider's defaults: the window less the reply.
   assert.equal(agent.limits.maxOutputTokens, 8_192);
   assert.equal(agent.limits.maxInputTokens, 200_000 - 8_192);
+
+  const skillDirectory = agent.skillDirectory;
+  await agent.close();
+  assert.equal(existsSync(skillDirectory), false);
+});
+
+test('the strict skill payload accepts a URI and rejects an inlined document', () => {
+  const base = {
+    prompt: 'Review it.',
+    agent: { name: 'reviewer', systemPrompt: 'You review code.', tools: ['read_file'] },
+    modelProvider: {
+      name: 'local-fake',
+      provider: 'openai-compatible' as const,
+      model: 'fake-model',
+      baseURL: 'http://127.0.0.1:1/v1',
+      apiKey: 'test-key',
+    },
+  };
+
+  assert.equal(
+    parseInvocationPayload({
+      ...base,
+      skills: [{ name: 'abap-review', uri: 's3://agent-skills/review/SKILL.md' }],
+    }).skills[0]?.uri,
+    's3://agent-skills/review/SKILL.md',
+  );
+  assert.throws(() =>
+    parseInvocationPayload({
+      ...base,
+      skills: [{ name: 'abap-review', document: '# Legacy inline body' }],
+    }),
+  );
+  assert.throws(() =>
+    parseInvocationPayload({
+      ...base,
+      skills: [{ name: 'abap-review', uri: 'file:///tmp/SKILL.md' }],
+    }),
+  );
+});
+
+test('abandoning a stream during a skill download still removes its temp directory', async (t) => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-skill-cancel-'));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+
+  let markStarted: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  let releaseDownload: (() => void) | undefined;
+  const released = new Promise<void>((resolve) => {
+    releaseDownload = resolve;
+  });
+  class DelayedContentStore extends InMemoryContentStore {
+    override async load(key: string) {
+      markStarted?.();
+      await released;
+      return super.load(key);
+    }
+  }
+
+  const before = new Set(
+    readdirSync(tmpdir()).filter((entry) => entry.startsWith('agent-harness-skills-')),
+  );
+  const stream = streamHeadless(
+    payload('http://127.0.0.1:1/v1', {
+      prompt: 'Review it.',
+      agent: {
+        name: 'cancelled-reviewer',
+        systemPrompt: 'You review code.',
+        tools: ['read_file'],
+      },
+      skills: [{ name: 'review', uri: 's3://agent-skills/review/SKILL.md' }],
+    }),
+    {
+      workspaceRoot,
+      builtinToolOptions: { powershell: false },
+      skillContentStore: new DelayedContentStore({
+        'review/SKILL.md': 'Review the code carefully.',
+      }),
+    },
+  );
+
+  await stream.next();
+  await stream.next();
+  await stream.next();
+  await started;
+
+  // `return` enters the generator's finally while preparation is still blocked.
+  // Releasing it afterwards reproduces the race that used to orphan the directory.
+  const closing = stream.return(undefined);
+  releaseDownload?.();
+  await closing;
+
+  const added = readdirSync(tmpdir()).filter(
+    (entry) => entry.startsWith('agent-harness-skills-') && !before.has(entry),
+  );
+  assert.deepEqual(added, []);
 });
 
 test('a payload naming a tool that does not exist is refused, not ignored', async () => {
@@ -572,6 +676,109 @@ test('the server accepts a payload on POST /invocations and enforces its key', a
     ),
   );
   assert.doesNotMatch(logLines.join('\n'), /x-agent-service-key:secret/);
+});
+
+test('an abrupt SSE disconnect removes the materialized skill directory', async (t) => {
+  const modelServer = createServer((request, response) => {
+    void (async () => {
+      for await (const _chunk of request) {
+        // Drain the model request before starting its response.
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      setTimeout(() => {
+        if (!response.destroyed) response.end(`${textChunk('Late answer.')}data: [DONE]\n\n`);
+      }, 200).unref?.();
+    })();
+  });
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const modelPort = (modelServer.address() as AddressInfo).port;
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-disconnect-'));
+  const skillName = `disconnect_cleanup_${process.pid}`;
+  const skillKey = 'disconnect/SKILL.md';
+  const logLines: string[] = [];
+  const running = await startHeadlessServer({
+    host: '127.0.0.1',
+    port: 0,
+    workspaceRoot,
+    builtinToolOptions: { powershell: false },
+    skillContentStore: new InMemoryContentStore({
+      [skillKey]: 'Review the request before continuing.',
+    }),
+    logSink: new StructuredLogSink((line) => logLines.push(line)),
+  });
+  t.after(async () => {
+    await running.close();
+    await new Promise<void>((resolve, reject) =>
+      modelServer.close((error) => (error ? reject(error) : resolve())),
+    );
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  let skillDirectory: string | undefined;
+  await new Promise<void>((resolve, reject) => {
+    let received = '';
+    let disconnected = false;
+    const deadline = setTimeout(
+      () => reject(new Error('The streamed run never reached session.started')),
+      3_000,
+    );
+    deadline.unref?.();
+    const request = httpRequest(
+      `${running.url}/invocations`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+      },
+      (response) => {
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          received += chunk;
+          if (disconnected || !received.includes('event: session.started')) return;
+
+          skillDirectory = readdirSync(tmpdir())
+            .filter((entry) => entry.startsWith('agent-harness-skills-'))
+            .map((entry) => path.join(tmpdir(), entry))
+            .find((directory) => existsSync(path.join(directory, skillName, 'SKILL.md')));
+          if (!skillDirectory) {
+            clearTimeout(deadline);
+            reject(new Error('The skill was not materialized before the session started'));
+            return;
+          }
+
+          disconnected = true;
+          clearTimeout(deadline);
+          response.destroy();
+          resolve();
+        });
+        response.on('error', (error) => {
+          if (!disconnected) reject(error);
+        });
+      },
+    );
+    request.on('error', (error) => {
+      if (!disconnected) reject(error);
+    });
+    request.end(
+      JSON.stringify(
+        payload(`http://127.0.0.1:${modelPort}/v1`, {
+          prompt: 'Use the review skill.',
+          skills: [{ name: skillName, uri: `s3://agent-skills/${skillKey}` }],
+          permissionRules: [{ tool: 'skill', decision: 'allow' }],
+        }),
+      ),
+    );
+  });
+
+  assert.ok(skillDirectory);
+  const cleanupDeadline = Date.now() + 3_000;
+  while (existsSync(skillDirectory) && Date.now() < cleanupDeadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(existsSync(skillDirectory), false, 'the disconnected stream leaked its skill files');
+  assert.ok(
+    logLines.some((line) => JSON.parse(line).event === 'http.request.disconnected'),
+    'the server did not observe the abrupt disconnect',
+  );
 });
 
 test('payload.stream picks the encoding only when the transport did not', async (t) => {

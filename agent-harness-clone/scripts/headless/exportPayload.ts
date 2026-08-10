@@ -3,8 +3,6 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { MongoClient, ObjectId, type Document } from 'mongodb';
 import { parseS3Uri } from '../../src/content/s3-uri.js';
-import { SKILL_MAX_OBJECT_BYTES } from '../../src/platform/skill-content.js';
-import { S3ContentStore } from './s3-content-store.js';
 import type { InvocationPayloadInput } from '../../src/headless/payload.js';
 
 /**
@@ -75,20 +73,17 @@ try {
     mcpServers.push(await byId(db, 'mcp_servers', id));
   }
 
-  // Downloaded so the payload is self-contained. This is the one step that needs the
-  // AWS variables; after it, running the payload needs none of them. The reader is
-  // cached per bucket, since each skill record carries its own address.
-  const readers = new Map<string, S3ContentStore>();
+  // The payload carries only each skill's address. The runtime reads the object with
+  // its own AWS role and materializes it only for the duration of the run.
   const skills = [];
   for (const entry of agent.skills ?? []) {
     const record = await byId(db, 'skills', entry.skillId);
     const skillName = String(record.name);
-    const { bucket, key } = parseS3Uri(String(record.uri), `skill '${skillName}'`);
-    const reader = readers.get(bucket) ?? skillReader(bucket);
-    readers.set(bucket, reader);
+    const skillUri = String(record.uri);
+    parseS3Uri(skillUri, `skill '${skillName}'`);
     skills.push({
       name: skillName,
-      document: (await reader.load(key)).text,
+      uri: skillUri,
       ...(entry.allowedTools === undefined ? {} : { allowedTools: [...entry.allowedTools] }),
     });
   }
@@ -133,7 +128,11 @@ try {
     skills,
     // Every tool the record names, allowed. The stored agent already ran with these, so
     // a payload that denied them would not be the same agent.
-    permissionRules: (agent.tools ?? []).map((tool) => ({ tool, decision: 'allow' as const })),
+    permissionRules: [
+      ...(agent.tools ?? []).map((tool) => ({ tool, decision: 'allow' as const })),
+      ...(skills.length === 0 ? [] : [{ tool: 'skill', decision: 'allow' as const }]),
+      ...(mcpServers.length === 0 ? [] : [{ tool: 'mcp__*', decision: 'allow' as const }]),
+    ],
     permissionFallback: 'deny',
   };
 
@@ -155,34 +154,6 @@ try {
   );
 } finally {
   await client.close();
-}
-
-/**
- * A reader for one bucket, signed with the credential the old runtime used for skills.
- * Only this script needs it, which is why the signing code lives beside it rather than
- * in `src/`: nothing on a run path reads S3 any more.
- */
-function skillReader(bucket: string): S3ContentStore {
-  return new S3ContentStore({
-    bucket,
-    region: required('PLATFORM_CONTENT_S3_REGION'),
-    credentials: {
-      accessKeyId: required('AWS_ACCESS_KEY_ID'),
-      secretAccessKey: required('AWS_SECRET_ACCESS_KEY'),
-    },
-    requestTimeoutMs: 15_000,
-    maxObjectBytes: SKILL_MAX_OBJECT_BYTES,
-  });
-}
-
-function required(name: string): string {
-  const value = process.env[name]?.trim();
-  if (value) return value;
-  throw new Error(
-    `${name} is required to download the skill documents this agent references. Set ` +
-      'PLATFORM_CONTENT_S3_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY in .env. ' +
-      'They are needed only for this export; the exported payload carries the documents.',
-  );
 }
 
 /** Reads one referenced record, failing with the collection and the id that was missing. */

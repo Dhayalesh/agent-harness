@@ -78,12 +78,14 @@ export type PlatformAgentRegistryOptions = {
   /**
    * Where the skill documents this agent references are read from.
    *
-   * Supplied by the caller rather than built here, because a skill body arrives on
-   * the invocation payload and is served from an `InMemoryContentStore` keyed by the
-   * address each synthesized record carries (`src/headless/inline-agent.ts`). Needed
-   * only when the record references a skill; a record with none resolves without it.
+   * When absent, each `s3://` URI is read through an SDK-backed store using the
+   * host's AWS credential chain. Tests and embedding hosts can replace that reader.
+   * Needed only when the record references a skill; a record with none performs no
+   * S3 setup or credential lookup.
    */
   contentStore?: ContentStore;
+  /** Injected in tests. Defaults to `process.env`. */
+  environment?: NodeJS.ProcessEnv;
   /**
    * Reports the long parts of assembly — downloading skill documents, connecting
    * MCP servers — while they happen. Optional: a caller that is not watching a
@@ -121,7 +123,7 @@ export type ResolvedAgent = {
   /** Present only when the record overrides the provider record's model. */
   model?: string;
   tools: readonly Tool[];
-  /** Holds the record's inline skills, backing the `skill` tool. */
+  /** Holds the materialized skills, backing the `skill` tool. */
   skills: SkillRegistry;
   mcpConnections: readonly McpConnection[];
   mcpRecords: readonly McpServerRecord[];
@@ -158,6 +160,7 @@ export class PlatformAgentRegistry {
     });
     this.skillContent = new SkillContentStores({
       ...(options.contentStore === undefined ? {} : { contentStore: options.contentStore }),
+      ...(options.environment === undefined ? {} : { environment: options.environment }),
     });
     this.mcpServers = new PlatformMcpServerRegistry(stores.mcpServers, {
       logger: this.logger,

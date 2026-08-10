@@ -34,8 +34,8 @@ const skillName = z
  * authored once, as a file in S3, and MongoDB cannot hold a stale copy of what it says.
  *
  * `uri` is the whole address, `s3://bucket/key`. There is no bucket collection to join
- * against and no credential stored anywhere near it: the region and key pair come from
- * the environment (`skill-content.ts`), and are the same for every skill.
+ * against and no credential stored anywhere near it: the host supplies the region and
+ * AWS SDK credential chain (`skill-content.ts`), typically through its execution role.
  *
  * `name` is here rather than in the front matter because it is not a description of the
  * skill, it is the handle the platform files it under: the unique key an operator names

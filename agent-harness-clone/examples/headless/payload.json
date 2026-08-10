@@ -21,12 +21,19 @@
     }
   },
   "mcpServers": [],
-  "skills": [],
+  "skills": [
+    {
+      "name": "repository-review",
+      "uri": "s3://replace-me/skills/repository-review/v1/SKILL.md",
+      "allowedTools": ["read_file", "glob", "grep"]
+    }
+  ],
   "permissionMode": "default",
   "permissionRules": [
     { "tool": "read_file", "decision": "allow" },
     { "tool": "glob", "decision": "allow" },
     { "tool": "grep", "decision": "allow" },
+    { "tool": "skill", "decision": "allow" },
     { "tool": "bash", "decision": "allow", "inputPattern": "ls*" }
   ],
   "permissionFallback": "deny"
