@@ -168,6 +168,30 @@ export const headlessPermissionRuleSchema = z
   .strict();
 
 /**
+ * A bounded, text-only transcript supplied by a trusted client when a durable
+ * runtime session cannot be found (for example after an AgentCore cold start).
+ * Tool calls and reasoning are intentionally excluded from this recovery path.
+ */
+export const headlessSessionSchema = z
+  .object({
+    mode: z.enum(['persistent', 'stateless']).default('persistent'),
+    history: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(200),
+            role: z.enum(['user', 'assistant']),
+            content: z.string().max(2_000_000),
+            createdAt: z.iso.datetime().optional(),
+          })
+          .strict(),
+      )
+      .max(500)
+      .default([]),
+  })
+  .strict();
+
+/**
  * One request. `prompt` and the three definition blocks are the whole of it; the
  * rest are run options with defaults.
  */
@@ -182,7 +206,18 @@ export const invocationPayloadSchema = z
      * Reuses an id in the session store, so a second payload continues the first
      * conversation. Absent starts a new one.
      */
-    sessionId: z.string().min(1).max(200).optional(),
+    sessionId: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/)
+      .optional(),
+    /**
+     * Persistent mode resumes the server-side transcript. `history` is used only
+     * when that transcript is missing, making it a cold-start recovery mechanism
+     * rather than a second copy appended on every turn.
+     */
+    session: headlessSessionSchema.optional(),
     /**
      * Where the file and shell tools are rooted. Absent uses a fresh directory per
      * run, which is what makes concurrent payloads safe to serve from one process.
@@ -237,6 +272,7 @@ export type HeadlessModelProviderSpec = z.output<typeof headlessModelProviderSch
 export type HeadlessMcpServerSpec = z.output<typeof headlessMcpServerSchema>;
 export type HeadlessSkillSpec = z.output<typeof headlessSkillSchema>;
 export type HeadlessPermissionRule = z.output<typeof headlessPermissionRuleSchema>;
+export type HeadlessSessionSpec = z.output<typeof headlessSessionSchema>;
 
 export function parseInvocationPayload(value: unknown): InvocationPayload {
   return invocationPayloadSchema.parse(value);

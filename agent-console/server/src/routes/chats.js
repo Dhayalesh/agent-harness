@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
-import { asyncHandler, notFound } from "../lib/http-error.js";
+import { asyncHandler, conflict, notFound } from "../lib/http-error.js";
+import { config } from "../config.js";
 import {
   chatCreateSchema,
   chatMessageSchema,
@@ -9,144 +10,255 @@ import {
 } from "../lib/schemas.js";
 import { Chat, chatSummaries } from "../models/chat.js";
 import { Run } from "../models/run.js";
-import { invokeStoredAgent, streamStoredAgent } from "../services/invocation.js";
 import {
-  loadAgent,
-  nowIso,
-  requireObjectId,
-} from "../services/platform.js";
+  invokeStoredAgent,
+  streamStoredAgent,
+} from "../services/invocation.js";
+import { loadAgent, nowIso, requireObjectId } from "../services/platform.js";
 
 export const chatsRouter = express.Router();
 
-chatsRouter.get("/", asyncHandler(async (request, response) => {
-  const filter = {};
-  if (request.query.agentId) filter.agentId = String(request.query.agentId);
-  const limit = Math.min(
-    Math.max(Number.parseInt(request.query.limit ?? "50", 10) || 50, 1),
-    200,
-  );
-  const chats = await chatSummaries(filter, limit);
-  response.json({
-    chats,
-    total: await Chat.countDocuments(filter),
-  });
-}));
+chatsRouter.get(
+  "/",
+  asyncHandler(async (request, response) => {
+    const filter = {};
+    if (request.query.agentId) filter.agentId = String(request.query.agentId);
+    const limit = Math.min(
+      Math.max(Number.parseInt(request.query.limit ?? "50", 10) || 50, 1),
+      200,
+    );
+    const chats = await chatSummaries(filter, limit);
+    response.json({
+      chats,
+      total: await Chat.countDocuments(filter),
+    });
+  }),
+);
 
-chatsRouter.post("/", asyncHandler(async (request, response) => {
-  const input = parseOrThrow(chatCreateSchema, request.body);
-  const agent = await loadAgent(input.agentId, { requireEnabled: true });
-  const timestamp = nowIso();
-  const chat = await Chat.create({
-    title: input.title ?? agent.name + " chat",
-    agentId: agent._id.toString(),
-    agentName: agent.name,
-    runtimeSessionId: randomUUID(),
-    messages: [],
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  });
-  response.status(201).json({ chat: chatDetail(chat) });
-}));
+chatsRouter.post(
+  "/",
+  asyncHandler(async (request, response) => {
+    const input = parseOrThrow(chatCreateSchema, request.body);
+    const agent = await loadAgent(input.agentId, { requireEnabled: true });
+    const timestamp = nowIso();
+    const chat = await Chat.create({
+      title: input.title ?? agent.name + " chat",
+      agentId: agent._id.toString(),
+      agentName: agent.name,
+      runtimeSessionId: randomUUID(),
+      session: {
+        status: "new",
+        generation: 1,
+        historyStartIndex: 0,
+        origin: "new",
+        resumed: false,
+        historyMessageCount: 0,
+      },
+      messages: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+    response.status(201).json({ chat: chatDetail(chat) });
+  }),
+);
 
-chatsRouter.get("/:id", asyncHandler(async (request, response) => {
-  response.json({ chat: chatDetail(await loadChat(request.params.id)) });
-}));
+chatsRouter.get(
+  "/:id",
+  asyncHandler(async (request, response) => {
+    response.json({ chat: chatDetail(await loadChat(request.params.id)) });
+  }),
+);
 
-chatsRouter.patch("/:id", asyncHandler(async (request, response) => {
-  const input = parseOrThrow(chatUpdateSchema, request.body);
-  const chat = await loadChat(request.params.id);
-  chat.title = input.title;
-  chat.updatedAt = nowIso();
-  await chat.save();
-  response.json({ chat: chatDetail(chat) });
-}));
+chatsRouter.patch(
+  "/:id",
+  asyncHandler(async (request, response) => {
+    const input = parseOrThrow(chatUpdateSchema, request.body);
+    const chat = await loadChat(request.params.id);
+    chat.title = input.title;
+    chat.updatedAt = nowIso();
+    await chat.save();
+    response.json({ chat: chatDetail(chat) });
+  }),
+);
 
-chatsRouter.delete("/:id", asyncHandler(async (request, response) => {
-  const chat = await loadChat(request.params.id);
-  let deletedRuns = 0;
-  if (request.query.withRuns === "true") {
-    deletedRuns = (await Run.deleteMany({ chatId: chat._id.toString() })).deletedCount ?? 0;
-  }
-  await chat.deleteOne();
-  response.json({ deleted: true, id: request.params.id, deletedRuns });
-}));
-
-chatsRouter.post("/:id/messages", asyncHandler(async (request, response) => {
-  const input = parseOrThrow(chatMessageSchema, request.body);
-  const chat = await loadChat(request.params.id);
-  const agent = await loadAgent(chat.agentId, { requireEnabled: true });
-  const replayPrompt = buildReplayPrompt(chat.messages, input.content);
-  const userTimestamp = nowIso();
-  chat.agentName = agent.name;
-  chat.messages.push({
-    id: randomUUID(),
-    role: "user",
-    content: input.content,
-    createdAt: userTimestamp,
-  });
-  chat.lastMessageAt = userTimestamp;
-  chat.updatedAt = userTimestamp;
-  await chat.save();
-
-  const invocationInput = {
-    agentId: chat.agentId,
-    prompt: replayPrompt,
-    runtimeSessionId: chat.runtimeSessionId,
-    permissionMode: input.permissionMode,
-    includeEvents: input.includeEvents,
-    chatId: chat._id.toString(),
-  };
-
-  // Same rule the runtime applies one hop further on: the caller's Accept decides,
-  // and the stored preference only answers for a caller that stated nothing. A
-  // client that cannot read frames must never be sent them.
-  if (!wantsEventStream(request, agent)) {
-    let invocation;
-    try {
-      invocation = await invokeStoredAgent(invocationInput);
-    } catch (error) {
-      await appendFailure(chat, error);
-      throw error;
+chatsRouter.delete(
+  "/:id",
+  asyncHandler(async (request, response) => {
+    const chat = await loadChat(request.params.id);
+    let deletedRuns = 0;
+    if (request.query.withRuns === "true") {
+      deletedRuns =
+        (await Run.deleteMany({ chatId: chat._id.toString() })).deletedCount ??
+        0;
     }
-    await appendResult(chat, invocation);
-    response.status(201).json({
-      chat: chatDetail(chat),
-      run: invocation.run,
-      events: invocation.events,
-    });
-    return;
-  }
+    await chat.deleteOne();
+    response.json({ deleted: true, id: request.params.id, deletedRuns });
+  }),
+);
 
-  // Past this point the status line is already sent, so a failure travels as a
-  // frame rather than as an HTTP error.
-  openEventStream(response);
-  const abort = new AbortController();
-  response.once("close", () => {
-    if (!response.writableEnded) abort.abort();
-  });
+chatsRouter.post(
+  "/:id/session/reset",
+  asyncHandler(async (request, response) => {
+    const id = requireObjectId(request.params.id, "chat");
+    await loadChat(request.params.id);
+    const timestamp = nowIso();
+    const chat = await Chat.findOneAndUpdate(
+      {
+        _id: id,
+        $or: [
+          { "session.activeRequestId": { $exists: false } },
+          { "session.activeRequestId": null },
+          { "session.activeExpiresAt": { $lte: timestamp } },
+        ],
+      },
+      [
+        {
+          $set: {
+            runtimeSessionId: randomUUID(),
+            session: {
+              $mergeObjects: [
+                "$session",
+                {
+                  status: "new",
+                  generation: {
+                    $add: [{ $ifNull: ["$session.generation", 0] }, 1],
+                  },
+                  historyStartIndex: {
+                    $size: { $ifNull: ["$messages", []] },
+                  },
+                  origin: "new",
+                  resumed: false,
+                  historyMessageCount: 0,
+                  lastActiveAt: timestamp,
+                  activeRequestId: null,
+                  activeExpiresAt: null,
+                },
+              ],
+            },
+            updatedAt: timestamp,
+          },
+        },
+      ],
+      { new: true },
+    );
+    if (!chat)
+      throw conflict(
+        "This session is currently running. Wait for it to finish before resetting.",
+      );
+    response.json({ chat: chatDetail(chat) });
+  }),
+);
 
-  try {
-    const invocation = await streamStoredAgent({
-      ...invocationInput,
-      signal: abort.signal,
-      onEvent: (event) => writeEvent(response, event.type, event),
+chatsRouter.post(
+  "/:id/messages",
+  asyncHandler(async (request, response) => {
+    const input = parseOrThrow(chatMessageSchema, request.body);
+    const existing = await loadChat(request.params.id);
+    const agent = await loadAgent(existing.agentId, { requireEnabled: true });
+    const userTimestamp = nowIso();
+    const requestId = randomUUID();
+    const userMessage = {
+      id: randomUUID(),
+      role: "user",
+      content: input.content,
+      createdAt: userTimestamp,
+    };
+    const chat = await Chat.findOneAndUpdate(
+      {
+        _id: existing._id,
+        $or: [
+          { "session.activeRequestId": { $exists: false } },
+          { "session.activeRequestId": null },
+          { "session.activeExpiresAt": { $lte: userTimestamp } },
+        ],
+      },
+      {
+        $set: {
+          agentName: agent.name,
+          lastMessageAt: userTimestamp,
+          updatedAt: userTimestamp,
+          "session.status": "running",
+          "session.activeRequestId": requestId,
+          "session.activeExpiresAt": new Date(
+            Date.now() + config.agentcore.timeoutMs + 60_000,
+          ).toISOString(),
+        },
+        $push: { messages: userMessage },
+      },
+      { new: true },
+    );
+    if (!chat) {
+      throw conflict(
+        "This chat already has a message in progress. Wait for it to finish and retry.",
+      );
+    }
+    const previousMessages = chat.messages.slice(0, -1);
+    const sessionHistory = buildSessionHistory(
+      previousMessages,
+      chat.session?.historyStartIndex ?? 0,
+    );
+
+    const invocationInput = {
+      agentId: chat.agentId,
+      prompt: input.content,
+      runtimeSessionId: chat.runtimeSessionId,
+      permissionMode: input.permissionMode,
+      includeEvents: input.includeEvents,
+      chatId: chat._id.toString(),
+      sessionHistory,
+    };
+
+    // Same rule the runtime applies one hop further on: the caller's Accept decides,
+    // and the stored preference only answers for a caller that stated nothing. A
+    // client that cannot read frames must never be sent them.
+    if (!wantsEventStream(request, agent)) {
+      let invocation;
+      try {
+        invocation = await invokeStoredAgent(invocationInput);
+      } catch (error) {
+        await appendFailure(chat, error, requestId);
+        throw error;
+      }
+      const completedChat = await appendResult(chat, invocation, requestId);
+      response.status(201).json({
+        chat: chatDetail(completedChat),
+        run: invocation.run,
+        events: invocation.events,
+      });
+      return;
+    }
+
+    // Past this point the status line is already sent, so a failure travels as a
+    // frame rather than as an HTTP error.
+    openEventStream(response);
+    const abort = new AbortController();
+    response.once("close", () => {
+      if (!response.writableEnded) abort.abort();
     });
-    await appendResult(chat, invocation);
-    await writeEvent(response, CONSOLE_COMPLETED, {
-      type: CONSOLE_COMPLETED,
-      chat: chatDetail(chat),
-      run: invocation.run,
-    });
-  } catch (error) {
-    await appendFailure(chat, error);
-    await writeEvent(response, CONSOLE_FAILED, {
-      type: CONSOLE_FAILED,
-      chat: chatDetail(chat),
-      error: error.message,
-    });
-  }
-  response.end();
-}));
+
+    try {
+      const invocation = await streamStoredAgent({
+        ...invocationInput,
+        signal: abort.signal,
+        onEvent: (event) => writeEvent(response, event.type, event),
+      });
+      const completedChat = await appendResult(chat, invocation, requestId);
+      await writeEvent(response, CONSOLE_COMPLETED, {
+        type: CONSOLE_COMPLETED,
+        chat: chatDetail(completedChat),
+        run: invocation.run,
+      });
+    } catch (error) {
+      const failedChat = await appendFailure(chat, error, requestId);
+      await writeEvent(response, CONSOLE_FAILED, {
+        type: CONSOLE_FAILED,
+        chat: chatDetail(failedChat),
+        error: error.message,
+      });
+    }
+    response.end();
+  }),
+);
 
 /**
  * The two events the console adds to the harness protocol.
@@ -195,9 +307,9 @@ function writeEvent(response, name, data) {
   });
 }
 
-async function appendResult(chat, invocation) {
+async function appendResult(chat, invocation, requestId) {
   const timestamp = nowIso();
-  chat.messages.push({
+  const message = {
     id: randomUUID(),
     role: invocation.result.status === "success" ? "assistant" : "error",
     content:
@@ -207,15 +319,39 @@ async function appendResult(chat, invocation) {
     runId: invocation.run._id.toString(),
     createdAt: timestamp,
     ...(invocation.result.error ? { error: invocation.result.error } : {}),
-  });
-  chat.lastMessageAt = timestamp;
-  chat.updatedAt = timestamp;
-  await chat.save();
+  };
+  const session = invocation.result.session;
+  const updated = await Chat.findOneAndUpdate(
+    { _id: chat._id, "session.activeRequestId": requestId },
+    {
+      $push: { messages: message },
+      $set: {
+        lastMessageAt: timestamp,
+        updatedAt: timestamp,
+        "session.status":
+          invocation.result.status === "success" ? "active" : "error",
+        "session.origin": session?.origin ?? "new",
+        "session.storage": session?.storage ?? "custom",
+        "session.resumed": session?.resumed === true,
+        "session.historyMessageCount":
+          session?.historyMessageCount ?? chat.messages.length + 1,
+        "session.lastActiveAt": timestamp,
+        "session.activeRequestId": null,
+        "session.activeExpiresAt": null,
+      },
+    },
+    { new: true },
+  );
+  if (!updated)
+    throw conflict(
+      "The chat session lease expired before the result was saved.",
+    );
+  return updated;
 }
 
-async function appendFailure(chat, error) {
+async function appendFailure(chat, error, requestId) {
   const timestamp = nowIso();
-  chat.messages.push({
+  const message = {
     id: randomUUID(),
     role: "error",
     content: error.message,
@@ -225,10 +361,27 @@ async function appendFailure(chat, error) {
       message: error.message,
       recoverable: error.status === 409 || error.status === 429,
     },
-  });
-  chat.lastMessageAt = timestamp;
-  chat.updatedAt = timestamp;
-  await chat.save();
+  };
+  const updated = await Chat.findOneAndUpdate(
+    { _id: chat._id, "session.activeRequestId": requestId },
+    {
+      $push: { messages: message },
+      $set: {
+        lastMessageAt: timestamp,
+        updatedAt: timestamp,
+        "session.status": "error",
+        "session.lastActiveAt": timestamp,
+        "session.activeRequestId": null,
+        "session.activeExpiresAt": null,
+      },
+    },
+    { new: true },
+  );
+  if (!updated)
+    throw conflict(
+      "The chat session lease expired before the failure was saved.",
+    );
+  return updated;
 }
 
 async function loadChat(id) {
@@ -241,32 +394,30 @@ function chatDetail(chat) {
   return chat.toJSON();
 }
 
-export function buildReplayPrompt(messages, latest, maximum = 2_000_000) {
-  const previous = messages.filter(
-    (message) => message.role === "user" || message.role === "assistant",
-  );
-  if (!previous.length) return latest;
-
-  const header =
-    "Continue the conversation below. Preserve its context and answer the final user message.\n\n";
-  const finalBlock = "User:\n" + latest;
-  if (header.length + finalBlock.length >= maximum) {
-    return latest.slice(0, maximum);
+export function buildSessionHistory(
+  messages,
+  startIndex = 0,
+  maximum = 1_500_000,
+  maximumMessages = 200,
+) {
+  const previous = messages
+    .slice(startIndex)
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    );
+  const selected = [];
+  let size = 0;
+  for (let index = previous.length - 1; index >= 0; index -= 1) {
+    const message = previous[index];
+    if (selected.length >= maximumMessages) break;
+    if (size + message.content.length > maximum) break;
+    selected.unshift({
+      id: message.id,
+      role: message.role,
+      content: message.content,
+      ...(message.createdAt ? { createdAt: message.createdAt } : {}),
+    });
+    size += message.content.length;
   }
-  const blocks = previous.map(
-    (message) =>
-      (message.role === "user" ? "User:\n" : "Assistant:\n") +
-      message.content,
-  );
-  let selected = [];
-  let size = header.length + finalBlock.length;
-  for (let index = blocks.length - 1; index >= 0; index -= 1) {
-    const block = blocks[index];
-    const addition = block.length + 2;
-    if (size + addition > maximum) break;
-    selected.unshift(block);
-    size += addition;
-  }
-  if (!selected.length) return latest.slice(0, maximum);
-  return header + selected.join("\n\n") + "\n\n" + finalBlock;
+  return selected;
 }

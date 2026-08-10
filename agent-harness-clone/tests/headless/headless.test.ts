@@ -10,6 +10,7 @@ import type { AgentEvent } from '../../src/index.js';
 import {
   AgentHarnessError,
   createBuiltinTools,
+  InMemorySessionStore,
   InMemoryContentStore,
   invokeHeadless,
   LocalRuntimeHost,
@@ -224,6 +225,58 @@ test('an explicit payload sessionId outranks the transport session', async (t) =
     .map((line) => JSON.parse(line) as Record<string, unknown>)
     .find((record) => record.event === 'invocation.payload.validated');
   assert.equal(validated?.sessionId, 'from-payload');
+});
+
+test('client history recovers a missing session once and never duplicates a stored session', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    textChunk('First answer.'),
+    textChunk('Second answer.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-session-recovery-'));
+  const sessionStore = new InMemorySessionStore();
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const options = {
+    workspaceRoot,
+    sessionStore,
+    builtinToolOptions: { powershell: false },
+  } as const;
+  const recovered = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      sessionId: 'recoverable-session',
+      session: {
+        mode: 'persistent',
+        history: [
+          { id: 'old-user', role: 'user', content: 'Earlier question.' },
+          { id: 'old-assistant', role: 'assistant', content: 'Earlier answer.' },
+        ],
+      },
+      prompt: 'Continue once.',
+    }),
+    options,
+  );
+  assert.equal(recovered.session.origin, 'client_history');
+  assert.equal(recovered.session.resumed, true);
+  assert.match(JSON.stringify(endpoint.requests[0]), /Earlier question/);
+
+  const resumed = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      sessionId: 'recoverable-session',
+      session: {
+        mode: 'persistent',
+        history: [{ id: 'ignored', role: 'user', content: 'MUST NOT BE APPENDED' }],
+      },
+      prompt: 'Continue twice.',
+    }),
+    options,
+  );
+  assert.equal(resumed.session.origin, 'store');
+  assert.equal(resumed.session.resumed, true);
+  assert.equal(JSON.stringify(endpoint.requests[1]).includes('MUST NOT BE APPENDED'), false);
+  assert.match(JSON.stringify(endpoint.requests[1]), /First answer/);
 });
 
 test('a payload runs a full turn with no database, no S3, and no env vars', async (t) => {

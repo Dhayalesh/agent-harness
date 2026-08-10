@@ -20,12 +20,40 @@ const chatMessageSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const sessionSchema = new mongoose.Schema(
+  {
+    status: {
+      type: String,
+      enum: ["new", "running", "active", "restored", "error"],
+      default: "new",
+    },
+    storage: {
+      type: String,
+      enum: ["none", "memory", "file", "s3", "custom"],
+    },
+    generation: { type: Number, default: 1 },
+    historyStartIndex: { type: Number, default: 0 },
+    origin: {
+      type: String,
+      enum: ["new", "store", "client_history", "stateless"],
+      default: "new",
+    },
+    resumed: { type: Boolean, default: false },
+    historyMessageCount: { type: Number, default: 0 },
+    lastActiveAt: String,
+    activeRequestId: String,
+    activeExpiresAt: String,
+  },
+  { _id: false },
+);
+
 const chatSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
     agentId: { type: String, required: true, index: true },
     agentName: { type: String, required: true },
     runtimeSessionId: { type: String, required: true },
+    session: { type: sessionSchema, default: () => ({}) },
     messages: { type: [chatMessageSchema], default: [] },
     lastMessageAt: String,
     createdAt: { type: String, required: true },
@@ -68,6 +96,7 @@ export function chatSummaries(filter = {}, limit = 50) {
         agentId: 1,
         agentName: 1,
         runtimeSessionId: 1,
+        session: 1,
         lastMessageAt: 1,
         createdAt: 1,
         updatedAt: 1,

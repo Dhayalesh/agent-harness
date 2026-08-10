@@ -145,7 +145,14 @@ where the process listens and what it will allow a payload to do:
 | `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.          |
 | `AGENT_LOG_GROUP`                           | Direct CloudWatch group. Set `-` for stdout only.             |
 | `AGENT_LOG_LEVEL`                           | `debug`, `info`, `warn`, or `error`. Defaults to `info`.      |
-| `AWS_REGION`                                | SDK region for CloudWatch and S3 skill reads.                 |
+| `AWS_REGION`                                | SDK region for CloudWatch, skills, and session S3 access.     |
+| `AGENT_SESSION_STORE`                       | `file` (default), `s3`, `memory`, or `none`.                  |
+| `AGENT_SESSION_DIR`                         | Directory for atomic session files. Defaults under OS temp.   |
+| `AGENT_SESSION_TTL_SECONDS`                 | Inactive transcript lifetime. Defaults to 24 hours.           |
+| `AGENT_SESSION_MAX_BYTES`                   | Per-session size limit. Defaults to 10 MiB.                   |
+| `AGENT_SESSION_S3_BUCKET`                   | Durable bucket; required when the store is `s3`.              |
+| `AGENT_SESSION_S3_PREFIX`                   | Object prefix. Defaults to `sessions`.                        |
+| `AGENT_SESSION_S3_REQUEST_TIMEOUT_MS`       | S3 operation timeout. Defaults to 10 seconds.                 |
 
 Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns
 on stderr at startup when it is, and that is appropriate only behind a front door that
@@ -187,6 +194,37 @@ access for this flow:
 The AWS SDK resolves credentials from the AgentCore execution role and resolves the
 region normally. Set `AWS_REGION` when it cannot infer the intended region; the legacy
 `PLATFORM_CONTENT_S3_REGION` value is accepted as a fallback.
+
+When S3 session persistence is enabled, grant a separate bucket/prefix rather than
+adding write access to the skill bucket. For example:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListSessionPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::company-agent-sessions",
+      "Condition": {
+        "StringLike": { "s3:prefix": ["production/sessions/*"] }
+      }
+    },
+    {
+      "Sid": "ManageSessionObjects",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::company-agent-sessions/production/sessions/*"
+    }
+  ]
+}
+```
+
+Block public access, enable bucket versioning if rollback is required, expire noncurrent
+versions, and configure a lifecycle expiration for the approved retention period. Raw
+SAP exports should remain artifacts; store only bounded tool results and summaries in
+the conversation session.
 
 ### CloudWatch and end-to-end logs
 
@@ -356,6 +394,33 @@ the model as if it were the answer.
 **Tool progress is live.** `bash` and `powershell` forward every output chunk as it
 arrives, and MCP tools forward their progress notifications, so a command that runs for
 five minutes reports for five minutes instead of printing its transcript at the end.
+
+## Conversation sessions
+
+Conversation context is persisted separately from stream reconnection. The production
+entrypoint enables an atomic file-backed session store by default. Set
+`AGENT_SESSION_STORE=s3` to make S3 authoritative and retain the same files as a warm
+local cache. A cold AgentCore container loads `<prefix>/<sessionId>.json` from S3; a
+warm one reads `AGENT_SESSION_DIR`. Durable writes complete before the cache is updated.
+
+S3 writes carry `If-None-Match` for a new session and the last observed ETag in
+`If-Match` for an update. A competing writer therefore receives retryable
+`SESSION_CONFLICT` instead of silently overwriting a newer transcript. Objects are
+explicitly encrypted with S3-managed server-side encryption (SSE-S3). Credentials
+always come from the standard AWS SDK chain, normally the AgentCore execution role.
+Session S3 access uses the same `AWS_REGION` as the other AWS clients.
+
+Reusing `sessionId` (or the AgentCore runtime session header) resumes the transcript;
+concurrent turns for the same ID receive HTTP 409. `AGENT_SESSION_TTL_SECONDS` applies
+only to local files in S3 mode. Evicting that cache never deletes the durable object;
+configure S3 Lifecycle and your chat-deletion workflow according to the SAP data
+retention policy. The serialized object remains bounded by `AGENT_SESSION_MAX_BYTES`.
+
+A payload may include `session: { mode: "persistent", history: [...] }`. This bounded,
+typed text history is used only when no stored transcript exists, so a trusted console
+can recover after a cold runtime without appending duplicate turns. Set `mode:
+"stateless"` for an intentionally fresh invocation. The `session.started` event and
+buffered result report `mode`, `resumed`, `origin`, and `historyMessageCount`.
 
 ## Resuming, and answering
 

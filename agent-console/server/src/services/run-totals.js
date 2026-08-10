@@ -17,6 +17,7 @@ export class RunTotals {
   #stopReason;
   #failure;
   #sessionId;
+  #session;
 
   observe(event) {
     if (typeof event?.type !== "string") return;
@@ -25,6 +26,15 @@ export class RunTotals {
     switch (event.type) {
       case "assistant.text.delta":
         this.#text.push(event.delta ?? "");
+        break;
+      case "session.started":
+        this.#session = {
+          mode: event.mode ?? "persistent",
+          storage: event.storage ?? "custom",
+          resumed: event.resumed === true,
+          origin: event.origin ?? "new",
+          historyMessageCount: event.historyMessageCount ?? 0,
+        };
         break;
       case "assistant.reasoning.delta":
         this.#reasoning.push(event.delta ?? "");
@@ -35,6 +45,9 @@ export class RunTotals {
         break;
       case "session.completed":
         this.#stopReason = event.reason;
+        if (this.#session && typeof event.historyMessageCount === "number") {
+          this.#session.historyMessageCount = event.historyMessageCount;
+        }
         break;
       // Counted on `requested` rather than `started`, because a call the
       // permission handler denied never starts but does produce a result.
@@ -121,11 +134,20 @@ export class RunTotals {
       status: failure ? "error" : "success",
       sessionId: this.#sessionId ?? runtimeSessionId,
       agentName,
+      session: this.#session ?? {
+        mode: "persistent",
+        storage: "custom",
+        resumed: false,
+        origin: "new",
+        historyMessageCount: 0,
+      },
       output: this.output,
       ...(this.reasoning ? { reasoning: this.reasoning } : {}),
       messages: [],
       workingDirectory: "",
-      ...(this.#stopReason === undefined ? {} : { stopReason: this.#stopReason }),
+      ...(this.#stopReason === undefined
+        ? {}
+        : { stopReason: this.#stopReason }),
       turns: this.#turns,
       usage: this.#usage,
       tools: [...this.#tools.values()],

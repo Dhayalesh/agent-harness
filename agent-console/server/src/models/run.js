@@ -39,6 +39,7 @@ const runSchema = new mongoose.Schema(
     runtimeSessionId: String,
     traceId: String,
     harnessSessionId: String,
+    session: { type: mongoose.Schema.Types.Mixed },
     workingDirectory: String,
     durationMs: Number,
     error: {
@@ -92,6 +93,7 @@ export function runSummaries(filter = {}, limit = 50, sortDirection = -1) {
         runtimeSessionId: 1,
         traceId: 1,
         harnessSessionId: 1,
+        session: 1,
         workingDirectory: 1,
         durationMs: 1,
         error: 1,

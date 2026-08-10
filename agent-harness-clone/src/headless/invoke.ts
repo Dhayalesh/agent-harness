@@ -10,7 +10,7 @@ import { createAgentSession, type AgentSession } from '../core/agent-session.js'
 import { AgentHarnessError } from '../core/errors.js';
 import { AsyncEventQueue } from '../core/event-queue.js';
 import type { AgentEvent, RunPreparationStage, RunProgressReporter } from '../core/events.js';
-import type { AgentMessage } from '../core/messages.js';
+import { textMessage, type AgentMessage } from '../core/messages.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
@@ -150,6 +150,7 @@ export type HeadlessResult = {
   status: 'success' | 'error';
   sessionId: string;
   agentName: string;
+  session: HeadlessSessionInfo;
   /** Every assistant text delta, concatenated. The answer, for most callers. */
   output: string;
   messages: readonly AgentMessage[];
@@ -163,6 +164,14 @@ export type HeadlessResult = {
   events?: readonly AgentEvent[];
   durationMs: number;
   error?: { code: string; message: string; recoverable: boolean };
+};
+
+export type HeadlessSessionInfo = {
+  mode: 'persistent' | 'stateless';
+  storage: 'none' | 'memory' | 'file' | 's3' | 'custom';
+  resumed: boolean;
+  origin: 'new' | 'store' | 'client_history' | 'stateless';
+  historyMessageCount: number;
 };
 
 /**
@@ -466,6 +475,7 @@ type PreparedRun = {
   session: AgentSession;
   agent: ResolvedAgent;
   sessionId: string;
+  sessionInfo: Omit<HeadlessSessionInfo, 'historyMessageCount'>;
   workingDirectory: string;
   close(): Promise<void>;
 };
@@ -600,13 +610,47 @@ async function prepare(
     //
     // `invocationId` is a fresh uuid, so a genuinely stateless run still finds
     // nothing here and starts clean.
-    const stored = await options.sessionStore?.load(sessionId);
+    const mode = payload.session?.mode ?? (options.sessionStore ? 'persistent' : 'stateless');
+    if (mode === 'persistent' && options.sessionStore === undefined) {
+      throw new AgentHarnessError(
+        'Persistent session mode requires a configured session store',
+        'SESSION_STORE_REQUIRED',
+      );
+    }
+    const stored = mode === 'persistent' ? await options.sessionStore?.load(sessionId) : undefined;
+    const bootstrapMessages =
+      stored === undefined && mode === 'persistent'
+        ? (payload.session?.history.map((message) =>
+            textMessage(
+              message.id,
+              message.role,
+              message.content,
+              message.createdAt ?? new Date().toISOString(),
+            ),
+          ) ?? [])
+        : [];
+    const initialMessages = stored?.messages ?? bootstrapMessages;
+    const sessionInfo: Omit<HeadlessSessionInfo, 'historyMessageCount'> = {
+      mode,
+      storage: mode === 'stateless' ? 'none' : (options.sessionStore?.kind ?? 'custom'),
+      resumed: stored !== undefined || bootstrapMessages.length > 0,
+      origin:
+        mode === 'stateless'
+          ? 'stateless'
+          : stored !== undefined
+            ? 'store'
+            : bootstrapMessages.length > 0
+              ? 'client_history'
+              : 'new',
+    };
 
     progress?.report('ready', `Agent ${agent.record.name} is ready`, {
       tools: agent.tools.length,
       skills: agent.skillRecords.length,
       mcpServers: agent.mcpRecords.length,
-      resumed: stored !== undefined,
+      resumed: sessionInfo.resumed,
+      sessionOrigin: sessionInfo.origin,
+      historyMessageCount: initialMessages.length,
     });
 
     const session = createAgentSession({
@@ -619,7 +663,9 @@ async function prepare(
       limits: agent.limits,
       permissionHandler: permissionHandler(payload, options),
       ...(options.sessionStore === undefined ? {} : { sessionStore: options.sessionStore }),
-      ...(stored === undefined ? {} : { initialMessages: stored.messages }),
+      ...(initialMessages.length === 0 ? {} : { initialMessages }),
+      ...(stored === undefined ? {} : { sessionCreatedAt: stored.createdAt }),
+      sessionState: sessionInfo,
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
       ...(options.eventSink === undefined ? {} : { eventSink: options.eventSink }),
       ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
@@ -639,7 +685,10 @@ async function prepare(
       toolCount: agent.tools.length,
       skillCount: agent.skillRecords.length,
       mcpServerCount: agent.mcpRecords.length,
-      resumed: stored !== undefined,
+      resumed: sessionInfo.resumed,
+      sessionMode: sessionInfo.mode,
+      sessionOrigin: sessionInfo.origin,
+      historyMessageCount: initialMessages.length,
       durationMs: Date.now() - started,
     });
 
@@ -647,6 +696,7 @@ async function prepare(
       session,
       agent,
       sessionId,
+      sessionInfo,
       workingDirectory,
       close: async () => {
         await session.close();
@@ -972,6 +1022,10 @@ class RunTotals {
       status: this.failure ? 'error' : 'success',
       sessionId: prepared.sessionId,
       agentName: prepared.agent.record.name,
+      session: {
+        ...prepared.sessionInfo,
+        historyMessageCount: prepared.session.messages.length,
+      },
       output: this.text.join(''),
       messages: prepared.session.messages,
       workingDirectory: prepared.workingDirectory,

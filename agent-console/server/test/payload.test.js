@@ -91,6 +91,26 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
     agentId,
     prompt: "Review this patch.",
     sessionId: "a".repeat(36),
+    sessionHistory: [
+      {
+        id: "message-1",
+        role: "user",
+        content: "Earlier question",
+        createdAt: timestamp,
+      },
+    ],
+  });
+
+  assert.deepEqual(payload.session, {
+    mode: "persistent",
+    history: [
+      {
+        id: "message-1",
+        role: "user",
+        content: "Earlier question",
+        createdAt: timestamp,
+      },
+    ],
   });
 
   assert.deepEqual(payload.skills, [
@@ -104,7 +124,10 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
       uri: "s3://agent-skills/coding/SKILL.md",
     },
   ]);
-  assert.equal(payload.skills.some((skill) => "document" in skill), false);
+  assert.equal(
+    payload.skills.some((skill) => "document" in skill),
+    false,
+  );
   assert.equal(
     resolved.skills.some((skill) => "documentBody" in skill),
     false,

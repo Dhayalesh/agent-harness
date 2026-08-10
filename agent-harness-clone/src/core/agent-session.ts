@@ -53,6 +53,13 @@ export type AgentSessionConfig = {
   sessionStore?: SessionStore;
   sessionId?: string;
   initialMessages?: readonly AgentMessage[];
+  sessionCreatedAt?: string;
+  sessionState?: {
+    mode: 'persistent' | 'stateless';
+    storage?: 'none' | 'memory' | 'file' | 's3' | 'custom';
+    resumed: boolean;
+    origin: 'new' | 'store' | 'client_history' | 'stateless';
+  };
   metadata?: Record<string, unknown>;
   commands?: CommandRegistry;
   artifactStore?: ArtifactStore;
@@ -112,6 +119,8 @@ export async function resumeAgentSession(
     ...config,
     sessionId: stored.id,
     initialMessages: stored.messages,
+    sessionCreatedAt: stored.createdAt,
+    sessionState: { mode: 'persistent', resumed: true, origin: 'store' },
     metadata: stored.metadata,
   });
 }
@@ -159,7 +168,7 @@ class AgentSessionImpl implements AgentSession {
     this.hooks = config.hooks ?? new HookRegistry();
     this.sessionStore = config.sessionStore;
     this.metadata = structuredClone(config.metadata ?? {});
-    this.createdAt = this.now();
+    this.createdAt = config.sessionCreatedAt ?? this.now();
     this.commands = config.commands;
     this.artifactStore = config.artifactStore;
     this.maxInlineToolResultChars = config.maxInlineToolResultChars ?? 100_000;
@@ -197,7 +206,16 @@ class AgentSessionImpl implements AgentSession {
     try {
       if (!this.started) {
         this.started = true;
-        yield this.event({ type: 'session.started' });
+        yield this.event({
+          type: 'session.started',
+          ...(this.config.sessionState ?? {
+            mode: this.sessionStore ? ('persistent' as const) : ('stateless' as const),
+            storage: this.sessionStore?.kind ?? 'none',
+            resumed: false,
+            origin: this.sessionStore ? ('new' as const) : ('stateless' as const),
+          }),
+          historyMessageCount: this.history.length,
+        });
       }
 
       const resolvedInput = await this.commands?.resolve(input.prompt);
@@ -424,7 +442,11 @@ class AgentSessionImpl implements AgentSession {
               turn,
               reason: 'cancelled',
             });
-            yield this.event({ type: 'session.completed', reason: 'cancelled' });
+            yield this.event({
+              type: 'session.completed',
+              reason: 'cancelled',
+              historyMessageCount: this.history.length,
+            });
             return;
           }
           if (isPromptTooLong(error) && reactiveCompactionAttempts < 1) {
@@ -453,6 +475,7 @@ class AgentSessionImpl implements AgentSession {
               error instanceof AgentHarnessError && error.code === 'BUDGET_EXCEEDED'
                 ? 'budget_exceeded'
                 : 'model_error',
+            historyMessageCount: this.history.length,
           });
           return;
         }
@@ -509,7 +532,11 @@ class AgentSessionImpl implements AgentSession {
             usage: this.budget.snapshot(),
           });
           yield this.event({ type: 'turn.completed', turnId, turn, reason: stopReason });
-          yield this.event({ type: 'session.completed', reason: stopReason });
+          yield this.event({
+            type: 'session.completed',
+            reason: stopReason,
+            historyMessageCount: this.history.length,
+          });
           return;
         }
 
@@ -568,7 +595,11 @@ class AgentSessionImpl implements AgentSession {
         code: 'MAX_TURNS_REACHED',
         message: `Maximum turn count (${this.limits.maxTurns}) reached`,
       });
-      yield this.event({ type: 'session.completed', reason: 'max_turns' });
+      yield this.event({
+        type: 'session.completed',
+        reason: 'max_turns',
+        historyMessageCount: this.history.length,
+      });
     } finally {
       this.running = false;
       this.activeController = undefined;
@@ -1011,6 +1042,7 @@ class AgentSessionImpl implements AgentSession {
 
   private async persist(): Promise<void> {
     if (!this.sessionStore) return;
+    const started = Date.now();
     const stored: StoredSession = {
       version: 1,
       id: this.id,
@@ -1019,7 +1051,28 @@ class AgentSessionImpl implements AgentSession {
       messages: structuredClone(this.history),
       metadata: structuredClone(this.metadata),
     };
-    await this.sessionStore.save(stored);
+    try {
+      await this.sessionStore.save(stored);
+      this.log({
+        level: 'debug',
+        event: 'session.persistence.completed',
+        sessionId: this.id,
+        storage: this.sessionStore.kind ?? 'custom',
+        messageCount: stored.messages.length,
+        durationMs: Date.now() - started,
+      });
+    } catch (error) {
+      this.log({
+        level: 'error',
+        event: 'session.persistence.failed',
+        sessionId: this.id,
+        storage: this.sessionStore.kind ?? 'custom',
+        messageCount: stored.messages.length,
+        durationMs: Date.now() - started,
+        error: describeError(error),
+      });
+      throw error;
+    }
   }
 }
 
@@ -1045,9 +1098,15 @@ function agentEventLogLevel(event: AgentEvent): 'debug' | 'info' | 'warn' | 'err
 function agentEventLogFields(event: AgentEvent): Record<string, unknown> {
   switch (event.type) {
     case 'session.started':
-      return {};
+      return {
+        mode: event.mode,
+        storage: event.storage,
+        resumed: event.resumed,
+        origin: event.origin,
+        historyMessageCount: event.historyMessageCount,
+      };
     case 'session.completed':
-      return { reason: event.reason };
+      return { reason: event.reason, historyMessageCount: event.historyMessageCount };
     case 'turn.started':
       return { turn: event.turn };
     case 'turn.completed':

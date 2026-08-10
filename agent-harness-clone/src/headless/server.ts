@@ -101,6 +101,10 @@ export async function startHeadlessServer(
     ...runOptions
   } = options;
   let activeRuns = 0;
+  // A transcript is a serializable resource: two turns must never read the same
+  // history and race to overwrite it. This process-level guard covers the normal
+  // AgentCore case; callers also receive a clear retryable 409 instead of corruption.
+  const activeSessions = new Set<string>();
   // Tracked so `/ping` can report a status change without restating it on every probe.
   // See `writePing` for why that distinction is load-bearing.
   let busy = false;
@@ -362,6 +366,23 @@ export async function startHeadlessServer(
           ? false
           : payloadPrefersStream(payload);
 
+    const invocationSessionId = payloadSessionId(payload) ?? runtimeSessionId;
+    if (invocationSessionId && activeSessions.has(invocationSessionId)) {
+      rejected(
+        runOptions.logSink,
+        { ...context, sessionId: invocationSessionId },
+        409,
+        'Session busy',
+      );
+      sendJson(response, 409, {
+        error: `Session ${invocationSessionId} already has an invocation in flight`,
+        code: 'SESSION_BUSY',
+        recoverable: true,
+      });
+      return;
+    }
+    if (invocationSessionId) activeSessions.add(invocationSessionId);
+
     activeRuns += 1;
     setBusy(true);
     const invocationOptions: HeadlessRunOptions = {
@@ -415,6 +436,7 @@ export async function startHeadlessServer(
       }
       response.end();
     } finally {
+      if (invocationSessionId) activeSessions.delete(invocationSessionId);
       activeRuns -= 1;
       setBusy(activeRuns > 0);
     }
@@ -488,6 +510,12 @@ function payloadPrefersStream(payload: unknown): boolean {
     payload !== null &&
     (payload as { stream?: unknown }).stream === true
   );
+}
+
+function payloadSessionId(payload: unknown): string | undefined {
+  if (typeof payload !== 'object' || payload === null) return undefined;
+  const value = (payload as { sessionId?: unknown }).sessionId;
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(value) ? value : undefined;
 }
 
 /**
@@ -628,7 +656,12 @@ function statusForError(error: unknown): number {
     'UNSUPPORTED_PROVIDER',
     'UNSUPPORTED_AUTH_KIND',
     'UNSUPPORTED_MCP_TRANSPORT',
+    'SESSION_STORE_REQUIRED',
+    'INVALID_SESSION_ID',
   ]);
+  if (error.code === 'SESSION_BUSY') return 409;
+  if (error.code === 'SESSION_CONFLICT') return 409;
+  if (error.code === 'SESSION_TOO_LARGE') return 413;
   return clientErrors.has(error.code) ? 400 : 502;
 }
 

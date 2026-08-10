@@ -55,7 +55,10 @@ async function request(path, { method = "GET", body, signal } = {}) {
 async function streamRequest(path, { body, onEvent, signal } = {}) {
   const response = await fetch(`/api${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    headers: {
+      "content-type": "application/json",
+      accept: "text/event-stream",
+    },
     body: JSON.stringify(body),
     signal,
   });
@@ -95,7 +98,9 @@ async function streamRequest(path, { body, onEvent, signal } = {}) {
     if (chunk.done) break;
     // A frame is delimited by a blank line, not by a chunk: a long tool result
     // routinely arrives split across several reads.
-    buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+    buffer += decoder
+      .decode(chunk.value, { stream: true })
+      .replace(/\r\n/g, "\n");
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const event = parseFrame(buffer.slice(0, boundary));
@@ -164,12 +169,10 @@ export const api = {
   listMcpServers: ({ q = "" } = {}) =>
     request(`/mcp-servers${q ? `?q=${encodeURIComponent(q)}` : ""}`),
   getMcpServer: (id) => request(`/mcp-servers/${id}`),
-  createMcpServer: (body) =>
-    request("/mcp-servers", { method: "POST", body }),
+  createMcpServer: (body) => request("/mcp-servers", { method: "POST", body }),
   updateMcpServer: (id, body) =>
     request(`/mcp-servers/${id}`, { method: "PATCH", body }),
-  deleteMcpServer: (id) =>
-    request(`/mcp-servers/${id}`, { method: "DELETE" }),
+  deleteMcpServer: (id) => request(`/mcp-servers/${id}`, { method: "DELETE" }),
 
   listSkills: ({ q = "" } = {}) =>
     request(`/skills${q ? `?q=${encodeURIComponent(q)}` : ""}`),
@@ -216,6 +219,8 @@ export const api = {
   createChat: (body) => request("/chats", { method: "POST", body }),
   getChat: (id) => request(`/chats/${id}`),
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
+  resetChatSession: (id) =>
+    request(`/chats/${id}/session/reset`, { method: "POST" }),
   sendChatMessage: (id, content) =>
     request(`/chats/${id}/messages`, {
       method: "POST",

@@ -198,8 +198,11 @@ export type { SystemPromptSection } from './context/system-prompt.js';
 export { HookRegistry } from './hooks/hooks.js';
 export type { AgentHook, BeforeToolResult, HookContext, StopHookResult } from './hooks/hooks.js';
 export { FileSessionStore } from './sessions/file-session-store.js';
+export { S3SessionStore } from './sessions/s3-session-store.js';
+export type { S3SessionStoreOptions } from './sessions/s3-session-store.js';
+export { TieredSessionStore } from './sessions/tiered-session-store.js';
 export { InMemorySessionStore } from './sessions/session-store.js';
-export type { SessionStore, StoredSession } from './sessions/session-store.js';
+export type { SessionStore, SessionStoreOptions, StoredSession } from './sessions/session-store.js';
 export { CommandRegistry } from './commands/commands.js';
 export type {
   AgentCommand,
@@ -408,7 +411,12 @@ export {
   parsePayload,
   streamHeadless,
 } from './headless/invoke.js';
-export type { HeadlessResult, HeadlessRunOptions, HeadlessToolSummary } from './headless/invoke.js';
+export type {
+  HeadlessResult,
+  HeadlessRunOptions,
+  HeadlessSessionInfo,
+  HeadlessToolSummary,
+} from './headless/invoke.js';
 export {
   AGENTCORE_RUNTIME_SESSION_HEADER,
   AWS_TRACE_HEADER,

@@ -16,6 +16,7 @@ export async function invokeStoredAgent({
   permissionMode,
   includeEvents = false,
   chatId,
+  sessionHistory = [],
 }) {
   const { payload, resolved } = await buildPayload({
     agentId,
@@ -23,9 +24,16 @@ export async function invokeStoredAgent({
     sessionId: runtimeSessionId,
     permissionMode,
     includeEvents,
+    sessionHistory,
   });
   const runtime = resolveRuntime(resolved.agent.value);
-  const run = await startRun({ resolved, runtime, runtimeSessionId, prompt, chatId });
+  const run = await startRun({
+    resolved,
+    runtime,
+    runtimeSessionId,
+    prompt,
+    chatId,
+  });
 
   let invocation;
   try {
@@ -73,6 +81,7 @@ export async function streamStoredAgent({
   chatId,
   onEvent,
   signal,
+  sessionHistory = [],
 }) {
   const { payload, resolved } = await buildPayload({
     agentId,
@@ -80,9 +89,16 @@ export async function streamStoredAgent({
     sessionId: runtimeSessionId,
     permissionMode,
     includeEvents,
+    sessionHistory,
   });
   const runtime = resolveRuntime(resolved.agent.value);
-  const run = await startRun({ resolved, runtime, runtimeSessionId, prompt, chatId });
+  const run = await startRun({
+    resolved,
+    runtime,
+    runtimeSessionId,
+    prompt,
+    chatId,
+  });
   const started = Date.now();
 
   let stream;
@@ -186,6 +202,7 @@ function applyRuntimeResult(run, result, invocation) {
   };
   run.tools = result.tools ?? [];
   run.harnessSessionId = result.sessionId;
+  run.session = result.session;
   run.workingDirectory = result.workingDirectory;
   run.durationMs = result.durationMs;
   run.runtimeSessionId = invocation.runtimeSessionId;

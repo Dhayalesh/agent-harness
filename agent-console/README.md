@@ -130,20 +130,20 @@ components lose their styling, that glob is the thing to check.
 
 ## Configuration
 
-| Variable | Purpose |
-| --- | --- |
-| `HOST` | API bind address; defaults to `127.0.0.1`. |
-| `PORT` | Express port; defaults to `4000`. |
-| `CORS_ORIGIN` | Comma-separated browser origins; defaults to the Vite origin. |
-| `MONGODB_URI` | MongoDB or Atlas connection URI. Prefer an explicit `trueai_agent_platform` path. |
-| `MONGODB_DB_NAME` | Optional database override; a pathless URI otherwise uses `trueai_agent_platform`. |
-| `PLATFORM_CREATED_BY` | Provenance stamped on records created by this console. |
-| `AGENTCORE_RUNTIME_ARN` | Required global AgentCore runtime ARN used for every invocation. |
-| `AGENTCORE_QUALIFIER` | Optional runtime endpoint qualifier; unset uses `DEFAULT`. |
-| `AWS_REGION` | Deliberate region override; otherwise the runtime ARN supplies its region. |
-| `AWS_PROFILE` | Optional shared-configuration profile for the standard AWS credential chain. |
-| `AGENTCORE_TIMEOUT_MS` | SDK request timeout; defaults to 900,000 ms. |
-| `AGENT_RUNTIME_TOOLS` | Comma-separated tool catalogue actually deployed in the runtime image. |
+| Variable                | Purpose                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| `HOST`                  | API bind address; defaults to `127.0.0.1`.                                         |
+| `PORT`                  | Express port; defaults to `4000`.                                                  |
+| `CORS_ORIGIN`           | Comma-separated browser origins; defaults to the Vite origin.                      |
+| `MONGODB_URI`           | MongoDB or Atlas connection URI. Prefer an explicit `trueai_agent_platform` path.  |
+| `MONGODB_DB_NAME`       | Optional database override; a pathless URI otherwise uses `trueai_agent_platform`. |
+| `PLATFORM_CREATED_BY`   | Provenance stamped on records created by this console.                             |
+| `AGENTCORE_RUNTIME_ARN` | Required global AgentCore runtime ARN used for every invocation.                   |
+| `AGENTCORE_QUALIFIER`   | Optional runtime endpoint qualifier; unset uses `DEFAULT`.                         |
+| `AWS_REGION`            | Deliberate region override; otherwise the runtime ARN supplies its region.         |
+| `AWS_PROFILE`           | Optional shared-configuration profile for the standard AWS credential chain.       |
+| `AGENTCORE_TIMEOUT_MS`  | SDK request timeout; defaults to 900,000 ms.                                       |
+| `AGENT_RUNTIME_TOOLS`   | Comma-separated tool catalogue actually deployed in the runtime image.             |
 
 An ambient environment variable wins over the value in `server/.env` because Node's
 `--env-file-if-exists` does not replace an existing value. Startup prints the resolved,
@@ -159,25 +159,25 @@ referenced resource that cannot be deleted returns `409`.
 
 ### Discovery and dashboard
 
-| Method | Path | Response |
-| --- | --- | --- |
-| `GET` | `/api/health` | Database, AgentCore, and credential readiness. |
-| `GET` | `/api/catalogue` | `{ tools, modelProviders, mcpServers, skills }`; resources are enabled and secrets are safe. |
-| `GET` | `/api/dashboard` | `{ dashboard: { counts, recentRuns, recentChats } }`; large run output and chat messages are omitted. |
-| `GET` | `/api/agents/meta/tools` | Runtime tool catalogue and supported model provider names. |
+| Method | Path                     | Response                                                                                              |
+| ------ | ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/health`            | Database, AgentCore, and credential readiness.                                                        |
+| `GET`  | `/api/catalogue`         | `{ tools, modelProviders, mcpServers, skills }`; resources are enabled and secrets are safe.          |
+| `GET`  | `/api/dashboard`         | `{ dashboard: { counts, recentRuns, recentChats } }`; large run output and chat messages are omitted. |
+| `GET`  | `/api/agents/meta/tools` | Runtime tool catalogue and supported model provider names.                                            |
 
 Dashboard counts include `agents`, `modelProviders`, `mcpServers`, `skills`, and `chats`.
 
 ### Agents and runs
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET`, `POST` | `/api/agents` | List or create agents. List supports `q` and `enabled`. |
-| `GET`, `PATCH`, `DELETE` | `/api/agents/:id` | Read, update, or delete an agent. Detail includes resolved references plus run/chat counts. |
-| `POST` | `/api/agents/:id/preview` | Build the target and recursively redacted payload without invoking. |
-| `POST` | `/api/agents/:id/invoke` | Invoke and return `{ run, events }`. |
-| `GET` | `/api/runs` | List runs; supports `agentId`, `chatId`, `status`, `runtimeSessionId`, `limit`, and `sort=oldest`. List omits output and truncates prompt previews to 240 characters. |
-| `GET`, `DELETE` | `/api/runs/:id` | Read a full run or delete its history row. |
+| Method                   | Path                      | Purpose                                                                                                                                                               |
+| ------------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`, `POST`            | `/api/agents`             | List or create agents. List supports `q` and `enabled`.                                                                                                               |
+| `GET`, `PATCH`, `DELETE` | `/api/agents/:id`         | Read, update, or delete an agent. Detail includes resolved references plus run/chat counts.                                                                           |
+| `POST`                   | `/api/agents/:id/preview` | Build the target and recursively redacted payload without invoking.                                                                                                   |
+| `POST`                   | `/api/agents/:id/invoke`  | Invoke and return `{ run, events }`.                                                                                                                                  |
+| `GET`                    | `/api/runs`               | List runs; supports `agentId`, `chatId`, `status`, `runtimeSessionId`, `limit`, and `sort=oldest`. List omits output and truncates prompt previews to 240 characters. |
+| `GET`, `DELETE`          | `/api/runs/:id`           | Read a full run or delete its history row.                                                                                                                            |
 
 Preview and invoke accept `{ prompt, runtimeSessionId?, permissionMode?, includeEvents? }`.
 Agent deletion preserves existing chats and runs by default, matching their role as
@@ -189,11 +189,11 @@ both chats and runs before deleting the agent.
 Each resource exposes list/create at its collection route and read/update/delete at
 `/:id`:
 
-| Resource | Collection route | List response | Detail response |
-| --- | --- | --- | --- |
+| Resource        | Collection route       | List response               | Detail response                        |
+| --------------- | ---------------------- | --------------------------- | -------------------------------------- |
 | Model providers | `/api/model-providers` | `{ modelProviders, total }` | `{ modelProvider, referencedByCount }` |
-| MCP servers | `/api/mcp-servers` | `{ mcpServers, total }` | `{ mcpServer, referencedByCount }` |
-| Skills | `/api/skills` | `{ skills, total }` | `{ skill, referencedByCount }` |
+| MCP servers     | `/api/mcp-servers`     | `{ mcpServers, total }`     | `{ mcpServer, referencedByCount }`     |
+| Skills          | `/api/skills`          | `{ skills, total }`         | `{ skill, referencedByCount }`         |
 
 Lists accept `q` and `enabled`. A model provider, MCP server, or skill cannot be deleted
 while an agent references it.
@@ -226,18 +226,24 @@ PATCH requests deliberately distinguish "unchanged" from "clear":
 
 ### Chats
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET`, `POST` | `/api/chats` | List chats or create one with `{ agentId, title? }`. List supports `agentId` and `limit`. |
-| `GET`, `PATCH`, `DELETE` | `/api/chats/:id` | Read messages, rename with `{ title }`, or delete. `withRuns=true` also deletes linked runs. |
-| `POST` | `/api/chats/:id/messages` | Send `{ content, permissionMode?, includeEvents? }`; returns `{ chat, run, events }`, or an SSE event stream — see [Streaming](#streaming). |
+| Method                   | Path                           | Purpose                                                                                                                                     |
+| ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`, `POST`            | `/api/chats`                   | List chats or create one with `{ agentId, title? }`. List supports `agentId` and `limit`.                                                   |
+| `GET`, `PATCH`, `DELETE` | `/api/chats/:id`               | Read messages, rename with `{ title }`, or delete. `withRuns=true` also deletes linked runs.                                                |
+| `POST`                   | `/api/chats/:id/messages`      | Send `{ content, permissionMode?, includeEvents? }`; returns `{ chat, run, events }`, or an SSE event stream — see [Streaming](#streaming). |
+| `POST`                   | `/api/chats/:id/session/reset` | Start fresh runtime context while retaining visible messages.                                                                               |
 
-AgentCore affinity is not treated as transcript storage. Each chat keeps one runtime
-session ID, but every message also sends a bounded replay prompt assembled from persisted
-user and assistant messages. The first turn is sent unchanged. Later turns include the
-most recent complete prior messages that fit within 2,000,000 characters, exclude error
-messages, and finish with the new user message. This preserves useful conversation
-context even when the runtime starts with no transcript.
+Each chat keeps one runtime session ID. The harness persists the canonical model
+transcript and the console sends the latest user prompt unchanged. The console also sends
+a typed, bounded recovery history from MongoDB. With the harness S3 store enabled, a
+cold runtime restores the complete model/tool transcript from S3; MongoDB history is the
+final fallback only when no durable S3 session exists. Context recovers without
+duplicating turns. Error messages and pre-reset messages are excluded. An atomic chat
+lease refuses overlapping turns with HTTP 409 instead of racing transcript writes.
+
+The chat header exposes the runtime state and storage backend, including an
+`S3 session active` indicator, and provides a context reset. Reset retains the visible transcript
+for auditability while starting a new context generation.
 
 ## AgentCore behavior
 
@@ -268,10 +274,10 @@ reported as a `MODEL_PROVIDER_NO_STREAMING` readiness issue.
 Which encoding a request actually uses is decided the same way at every hop — the caller
 states it, and the stored preference only answers for a caller that stated nothing:
 
-| Hop | Streams when |
-| --- | --- |
-| Browser to `POST /api/chats/:id/messages` | `Accept: text/event-stream` or `?stream=true`; otherwise the agent's `stream` flag |
-| Console to `InvokeAgentRuntime` | The console asked for a stream; `accept: text/event-stream` then outranks `payload.stream` at the runtime |
+| Hop                                       | Streams when                                                                                              |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Browser to `POST /api/chats/:id/messages` | `Accept: text/event-stream` or `?stream=true`; otherwise the agent's `stream` flag                        |
+| Console to `InvokeAgentRuntime`           | The console asked for a stream; `accept: text/event-stream` then outranks `payload.stream` at the runtime |
 
 A streamed message answers with SSE frames carrying the runtime's `AgentEvent` protocol
 verbatim — `run.preparing`, `assistant.reasoning.delta`, `assistant.text.delta`,

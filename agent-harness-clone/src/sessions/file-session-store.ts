@@ -1,12 +1,25 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AgentHarnessError } from '../core/errors.js';
-import type { SessionStore, StoredSession } from './session-store.js';
+import {
+  assertSessionSize,
+  isExpired,
+  type SessionStore,
+  type SessionStoreOptions,
+  type StoredSession,
+  validateStoredSession,
+} from './session-store.js';
 
 export class FileSessionStore implements SessionStore {
+  readonly kind = 'file' as const;
   private readonly directory: string;
+  private lastSweepAt = 0;
 
-  constructor(directory: string) {
+  constructor(
+    directory: string,
+    private readonly options: SessionStoreOptions = {},
+  ) {
     this.directory = path.resolve(directory);
   }
 
@@ -14,7 +27,14 @@ export class FileSessionStore implements SessionStore {
     const target = this.pathFor(id);
     try {
       const parsed: unknown = JSON.parse(await readFile(target, 'utf8'));
-      return validateStoredSession(parsed);
+      const session = validateStoredSession(parsed);
+      if (isExpired(session, this.options.ttlMs)) {
+        await rm(target).catch((cleanupError: unknown) => {
+          if (!isNotFound(cleanupError)) throw cleanupError;
+        });
+        return undefined;
+      }
+      return session;
     } catch (error) {
       if (isNotFound(error)) return undefined;
       throw error;
@@ -22,14 +42,20 @@ export class FileSessionStore implements SessionStore {
   }
 
   async save(session: StoredSession): Promise<void> {
+    assertSessionSize(session, this.options.maxBytes);
     await mkdir(this.directory, { recursive: true });
+    await this.sweepExpiredIfDue();
     const target = this.pathFor(session.id);
-    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(session)}\n`, {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
-    await rename(temporary, target);
+    const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(session)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      await rename(temporary, target);
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
   }
 
   async delete(id: string): Promise<boolean> {
@@ -70,22 +96,24 @@ export class FileSessionStore implements SessionStore {
     }
     return path.join(this.directory, `${id}.json`);
   }
-}
 
-function validateStoredSession(value: unknown): StoredSession {
-  if (
-    !value ||
-    typeof value !== 'object' ||
-    !('version' in value) ||
-    value.version !== 1 ||
-    !('id' in value) ||
-    typeof value.id !== 'string' ||
-    !('messages' in value) ||
-    !Array.isArray(value.messages)
-  ) {
-    throw new AgentHarnessError('Stored session is invalid', 'INVALID_STORED_SESSION');
+  /** Opportunistic cleanup keeps one-off invocation IDs from accumulating forever. */
+  private async sweepExpiredIfDue(): Promise<void> {
+    const ttlMs = this.options.ttlMs ?? 0;
+    if (ttlMs <= 0) return;
+    const now = Date.now();
+    const interval = Math.max(60_000, Math.min(15 * 60_000, Math.floor(ttlMs / 4)));
+    if (now - this.lastSweepAt < interval) return;
+    this.lastSweepAt = now;
+    const entries = await readdir(this.directory);
+    await Promise.all(
+      entries
+        .filter((entry) => entry.endsWith('.json'))
+        // A corrupt unrelated record must not prevent the current session from
+        // being saved. Loading that specific id still reports the corruption.
+        .map((entry) => this.load(entry.slice(0, -5)).catch(() => undefined)),
+    );
   }
-  return value as StoredSession;
 }
 
 function isNotFound(error: unknown): boolean {

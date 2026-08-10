@@ -49,6 +49,7 @@ export function ChatPage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [resettingSession, setResettingSession] = useState(false);
   const [error, setError] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -172,6 +173,31 @@ export function ChatPage() {
     }
   };
 
+  const resetSession = async () => {
+    if (!chat || sending || resettingSession) return;
+    const confirmed = await confirm({
+      title: "Reset agent context",
+      body: "Start a fresh agent session? Existing messages stay visible, but they will not be included in the new context.",
+      confirmLabel: "Reset context",
+    });
+    if (!confirmed) return;
+    setResettingSession(true);
+    setError(null);
+    try {
+      const result = await api.resetChatSession(chat.id);
+      setChat(result.chat);
+      setLastRun(null);
+      setChats((current) => [
+        result.chat,
+        ...current.filter((item) => item.id !== result.chat.id),
+      ]);
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setResettingSession(false);
+    }
+  };
+
   const send = async (event) => {
     event.preventDefault();
     const content = draft.trim();
@@ -200,6 +226,7 @@ export function ChatPage() {
       };
       setChat((current) => ({
         ...current,
+        session: { ...(current?.session ?? {}), status: "running" },
         messages: [...(current?.messages ?? []), optimistic],
       }));
 
@@ -425,6 +452,27 @@ export function ChatPage() {
                   >
                     {agentReady ? "Ready" : "Needs setup"}
                   </Chip>
+                  {chat && (
+                    <Tooltip
+                      content={sessionDescription(chat.session)}
+                      size="sm"
+                    >
+                      <Chip
+                        size="sm"
+                        variant="flat"
+                        color={sessionPresentation(chat.session).color}
+                        classNames={{
+                          base: "hidden h-6 rounded-full md:flex",
+                          content: "px-1 text-tiny font-semibold",
+                        }}
+                        startContent={
+                          <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-current" />
+                        }
+                      >
+                        {sessionPresentation(chat.session).label}
+                      </Chip>
+                    </Tooltip>
+                  )}
                   <Tooltip content="Agent configuration" size="sm">
                     <Button
                       as={Link}
@@ -437,6 +485,23 @@ export function ChatPage() {
                       <Icon name="settings" className="h-4 w-4" />
                     </Button>
                   </Tooltip>
+                  {chat && (
+                    <Tooltip content="Reset agent context" size="sm">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        aria-label="Reset agent context"
+                        isLoading={resettingSession}
+                        isDisabled={sending || resettingSession}
+                        onPress={resetSession}
+                      >
+                        {!resettingSession && (
+                          <Icon name="refresh" className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </Tooltip>
+                  )}
                   {chat && (
                     <Tooltip content="Delete chat" size="sm" color="danger">
                       <Button
@@ -568,7 +633,7 @@ export function ChatPage() {
                       }}
                       rows={1}
                       placeholder={`Ask ${selectedAgent.name} to do something…`}
-                      disabled={sending || !agentReady}
+                      disabled={sending || resettingSession || !agentReady}
                       className="max-h-[208px] min-h-[28px] w-full resize-none border-0 bg-transparent py-1 text-small leading-relaxed text-foreground outline-none placeholder:text-default-400 disabled:opacity-60"
                     />
                     <Button
@@ -580,7 +645,12 @@ export function ChatPage() {
                       className="h-9 w-9 shrink-0"
                       aria-label={sending ? "Running" : "Send message"}
                       isLoading={sending}
-                      isDisabled={!draft.trim() || sending || !agentReady}
+                      isDisabled={
+                        !draft.trim() ||
+                        sending ||
+                        resettingSession ||
+                        !agentReady
+                      }
                     >
                       {!sending && <Icon name="send" className="h-4 w-4" />}
                     </Button>
@@ -769,10 +839,17 @@ function Message({ message, agentName }) {
             !
           </span>
         ) : (
-          <AgentAvatar circle name={agentName} size="xs" className="h-[30px] w-[30px]" />
+          <AgentAvatar
+            circle
+            name={agentName}
+            size="xs"
+            className="h-[30px] w-[30px]"
+          />
         ))}
 
-      <div className={`min-w-0 ${role === "user" ? "justify-self-end max-w-[min(86%,580px)]" : ""}`}>
+      <div
+        className={`min-w-0 ${role === "user" ? "justify-self-end max-w-[min(86%,580px)]" : ""}`}
+      >
         <header
           className={`mb-1.5 flex items-baseline gap-2 ${
             role === "user" ? "justify-end" : ""
@@ -1008,7 +1085,9 @@ function ToolCard({ tool }) {
   return (
     <div
       className={`mb-2 overflow-hidden rounded-medium border bg-content2 ${
-        tool.state === "error" ? "border-danger-200 dark:border-danger-500/25" : "border-divider"
+        tool.state === "error"
+          ? "border-danger-200 dark:border-danger-500/25"
+          : "border-divider"
       }`}
     >
       <div className="flex items-center gap-2 px-3 py-1.5 text-tiny text-default-500">
@@ -1060,7 +1139,10 @@ function PendingMessage({ agentName }) {
 
 function TypingDots() {
   return (
-    <span className="ml-1.5 inline-flex gap-[3px] align-middle" aria-hidden="true">
+    <span
+      className="ml-1.5 inline-flex gap-[3px] align-middle"
+      aria-hidden="true"
+    >
       <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400" />
       <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.15s]" />
       <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.3s]" />
@@ -1114,6 +1196,32 @@ function CopyButton({ value, label }) {
 function countLabel(count, noun) {
   if (!count) return null;
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function sessionPresentation(session) {
+  if (session?.status === "running")
+    return { label: "Session running", color: "primary" };
+  if (session?.status === "error")
+    return { label: "Session issue", color: "danger" };
+  if (session?.origin === "client_history")
+    return { label: "Context restored", color: "secondary" };
+  if (session?.status === "active")
+    return {
+      label: session?.storage === "s3" ? "S3 session active" : "Session active",
+      color: "success",
+    };
+  return { label: "New session", color: "default" };
+}
+
+function sessionDescription(session) {
+  const state = sessionPresentation(session).label;
+  const messages = session?.historyMessageCount ?? 0;
+  const generation = session?.generation ?? 1;
+  const storage =
+    session?.storage === "s3"
+      ? "S3 durable"
+      : `${session?.storage ?? "local"} storage`;
+  return `${state} · ${storage} · context ${generation} · ${messages} runtime messages`;
 }
 
 /**

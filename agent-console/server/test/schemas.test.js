@@ -136,7 +136,10 @@ test("rejects duplicate, unavailable, and out-of-scope agent tools", () => {
 
 test("accepts agent patches and rejects empty updates", () => {
   assert.equal(agentUpdateSchema.safeParse({ enabled: false }).success, true);
-  assert.equal(agentUpdateSchema.safeParse({ description: null }).success, true);
+  assert.equal(
+    agentUpdateSchema.safeParse({ description: null }).success,
+    true,
+  );
   assert.equal(agentUpdateSchema.safeParse({}).success, false);
 });
 
@@ -373,6 +376,12 @@ test("rejects malformed runtime results before persistence", () => {
       status: "success",
       sessionId: "session",
       agentName: "reviewer",
+      session: {
+        mode: "persistent",
+        resumed: false,
+        origin: "new",
+        historyMessageCount: 2,
+      },
       output: "done",
       messages: [],
       workingDirectory: "/tmp/work",

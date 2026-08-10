@@ -10,8 +10,19 @@ type EventBase = {
 
 export type AgentEvent = EventBase &
   (
-    | { type: 'session.started' }
-    | { type: 'session.completed'; reason: StopReason | 'closed' }
+    | {
+        type: 'session.started';
+        mode?: 'persistent' | 'stateless';
+        storage?: 'none' | 'memory' | 'file' | 's3' | 'custom';
+        resumed?: boolean;
+        origin?: 'new' | 'store' | 'client_history' | 'stateless';
+        historyMessageCount?: number;
+      }
+    | {
+        type: 'session.completed';
+        reason: StopReason | 'closed';
+        historyMessageCount?: number;
+      }
     | { type: 'turn.started'; turnId: string; turn: number }
     | {
         type: 'turn.completed';

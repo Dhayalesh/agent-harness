@@ -94,17 +94,24 @@ const refineAgent = (value, context) => {
       }
     }
   }
-  const unavailable = value.tools.filter((tool) => !AVAILABLE_TOOLS.includes(tool));
+  const unavailable = value.tools.filter(
+    (tool) => !AVAILABLE_TOOLS.includes(tool),
+  );
   if (unavailable.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["tools"],
-      message: "This AgentCore deployment does not advertise: " + unavailable.join(", "),
+      message:
+        "This AgentCore deployment does not advertise: " +
+        unavailable.join(", "),
     });
   }
 };
 
-export const agentCreateSchema = z.object(agentShape).strict().superRefine(refineAgent);
+export const agentCreateSchema = z
+  .object(agentShape)
+  .strict()
+  .superRefine(refineAgent);
 export const agentUpdateSchema = z
   .object(agentShape)
   .partial()
@@ -184,18 +191,31 @@ const refineModelProvider = (value, context) => {
   if (value.provider !== "openrouter" && !value.baseURL) {
     issue(context, ["baseURL"], value.provider + " requires baseURL");
   }
-  if (value.baseURL) validatePublicEndpoint(value.baseURL, ["baseURL"], context);
+  if (value.baseURL)
+    validatePublicEndpoint(value.baseURL, ["baseURL"], context);
   if (value.auth.kind !== "bearer") {
-    issue(context, ["auth", "kind"], "The deployed harness supports bearer model auth only");
+    issue(
+      context,
+      ["auth", "kind"],
+      "The deployed harness supports bearer model auth only",
+    );
   }
   if (!value.apiKey) {
     issue(context, ["apiKey"], "The model provider requires apiKey");
   }
   if (value.auth.headerName) {
-    issue(context, ["auth", "headerName"], "headerName is unsupported for bearer model auth");
+    issue(
+      context,
+      ["auth", "headerName"],
+      "headerName is unsupported for bearer model auth",
+    );
   }
   if (value.provider === "openrouter" && value.wire?.maxTokensField) {
-    issue(context, ["wire", "maxTokensField"], "OpenRouter fixes the max token field");
+    issue(
+      context,
+      ["wire", "maxTokensField"],
+      "OpenRouter fixes the max token field",
+    );
   }
   for (const name of Object.keys(value.headers ?? {})) {
     if (!allowedModelHeaders.has(name)) {
@@ -212,7 +232,9 @@ export const modelProviderUpdateSchema = z
   .object(modelProviderShape)
   .partial()
   .extend({
-    baseURL: z.union([z.string().trim().url(), z.literal(""), z.null()]).optional(),
+    baseURL: z
+      .union([z.string().trim().url(), z.literal(""), z.null()])
+      .optional(),
     apiKey: z.union([z.string().max(8_192), z.null()]).optional(),
     headers: nullableStringMapPatch,
     wire: z.union([modelWireSchema, z.null()]).optional(),
@@ -281,14 +303,24 @@ const reservedMcpHeaders = new Set([
 const refineMcpServer = (value, context) => {
   if (value.url) validatePublicEndpoint(value.url, ["url"], context);
   if (value.transport === "stdio") {
-    if (!value.command) issue(context, ["command"], "stdio transport requires command");
+    if (!value.command)
+      issue(context, ["command"], "stdio transport requires command");
     if (value.url) issue(context, ["url"], "stdio transport forbids url");
-    if (value.headers) issue(context, ["headers"], "stdio transport forbids headers");
+    if (value.headers)
+      issue(context, ["headers"], "stdio transport forbids headers");
     if (value.auth.kind !== "none") {
-      issue(context, ["auth", "kind"], "stdio transport requires auth.kind none");
+      issue(
+        context,
+        ["auth", "kind"],
+        "stdio transport requires auth.kind none",
+      );
     }
     if (value.wire?.sessionId) {
-      issue(context, ["wire", "sessionId"], "sessionId belongs to HTTP transport");
+      issue(
+        context,
+        ["wire", "sessionId"],
+        "sessionId belongs to HTTP transport",
+      );
     }
   } else {
     if (!value.url) issue(context, ["url"], "http transport requires url");
@@ -313,7 +345,11 @@ const refineMcpServer = (value, context) => {
   for (const name of Object.keys(value.headers ?? {})) {
     const lower = name.toLowerCase();
     if (reservedMcpHeaders.has(lower)) {
-      issue(context, ["headers", name], "Header is owned by MCP transport/auth");
+      issue(
+        context,
+        ["headers", name],
+        "Header is owned by MCP transport/auth",
+      );
     }
     if (
       value.auth.kind === "header" &&
@@ -332,8 +368,12 @@ export const mcpServerUpdateSchema = z
   .object(mcpServerShape)
   .partial()
   .extend({
-    command: z.union([z.string().trim().min(1).max(1_000), z.null()]).optional(),
-    args: z.union([z.array(z.string().max(4_096)).max(100), z.null()]).optional(),
+    command: z
+      .union([z.string().trim().min(1).max(1_000), z.null()])
+      .optional(),
+    args: z
+      .union([z.array(z.string().max(4_096)).max(100), z.null()])
+      .optional(),
     env: nullableStringMapPatch,
     url: z.union([z.string().trim().url(), z.literal(""), z.null()]).optional(),
     apiKey: z.union([z.string().max(8_192), z.null()]).optional(),
@@ -420,6 +460,15 @@ export const runtimeResultSchema = z
     status: z.enum(["success", "error"]),
     sessionId: z.string().min(1).max(200),
     agentName: z.string().min(1).max(100),
+    session: z
+      .object({
+        mode: z.enum(["persistent", "stateless"]),
+        storage: z.enum(["none", "memory", "file", "s3", "custom"]).optional(),
+        resumed: z.boolean(),
+        origin: z.enum(["new", "store", "client_history", "stateless"]),
+        historyMessageCount: z.number().int().nonnegative(),
+      })
+      .strict(),
     output: z.string(),
     messages: z.array(z.unknown()),
     workingDirectory: z.string(),
@@ -506,7 +555,11 @@ function validatePublicEndpoint(value, path, context) {
     issue(context, path, "Endpoint URLs must use HTTP or HTTPS");
   }
   if (url.username || url.password) {
-    issue(context, path, "Endpoint URLs cannot contain credentials; use the auth fields");
+    issue(
+      context,
+      path,
+      "Endpoint URLs cannot contain credentials; use the auth fields",
+    );
   }
   if (url.search || url.hash) {
     issue(

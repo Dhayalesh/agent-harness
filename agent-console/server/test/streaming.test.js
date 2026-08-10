@@ -47,7 +47,9 @@ test("keep-alive comments and CRLF framing are tolerated", async () => {
 
 test("a bare error frame becomes an error event rather than an unreadable object", async () => {
   const events = await collect(
-    readEventStream(chunks('event: error\ndata: {"error":"the runtime gave up"}\n\n')),
+    readEventStream(
+      chunks('event: error\ndata: {"error":"the runtime gave up"}\n\n'),
+    ),
   );
 
   assert.deepEqual(events, [
@@ -72,7 +74,15 @@ test("a final frame with no trailing blank line is still delivered", async () =>
 test("folding a stream produces the same result shape the buffered path returns", () => {
   const totals = new RunTotals();
   const stream = [
-    { type: "session.started", sessionId: "harness-session" },
+    {
+      type: "session.started",
+      sessionId: "harness-session",
+      mode: "persistent",
+      storage: "s3",
+      resumed: true,
+      origin: "store",
+      historyMessageCount: 4,
+    },
     { type: "assistant.reasoning.delta", delta: "Weighing " },
     { type: "assistant.reasoning.delta", delta: "the options." },
     { type: "assistant.text.delta", delta: "Hello " },
@@ -80,7 +90,10 @@ test("folding a stream produces the same result shape the buffered path returns"
       type: "tool.requested",
       call: { id: "call-1", name: "read_file", input: {} },
     },
-    { type: "tool.completed", result: { toolCallId: "call-1", isError: false } },
+    {
+      type: "tool.completed",
+      result: { toolCallId: "call-1", isError: false },
+    },
     { type: "tool.requested", call: { id: "call-2", name: "bash", input: {} } },
     { type: "tool.completed", result: { toolCallId: "call-2", isError: true } },
     { type: "usage.updated", usage: { inputTokens: 100, outputTokens: 20 } },
@@ -101,6 +114,7 @@ test("folding a stream produces the same result shape the buffered path returns"
   assert.equal(result.output, "Hello there.");
   assert.equal(result.reasoning, "Weighing the options.");
   assert.equal(result.sessionId, "harness-session");
+  assert.equal(result.session.storage, "s3");
   assert.equal(result.turns, 2);
   assert.equal(result.stopReason, "end_turn");
   // Usage is additive across updates, as the harness reports it.

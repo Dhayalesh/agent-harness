@@ -1,90 +1,55 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildReplayPrompt } from "../src/routes/chats.js";
+import { buildSessionHistory } from "../src/routes/chats.js";
 
-test("leaves a first chat turn unchanged", () => {
-  assert.equal(
-    buildReplayPrompt([], "Inspect the repository."),
-    "Inspect the repository.",
-  );
-  assert.equal(
-    buildReplayPrompt(
-      [{ role: "error", content: "A transient failure occurred." }],
-      "Try again.",
-    ),
-    "Try again.",
+const at = "2026-08-10T00:00:00.000Z";
+const message = (id, role, content) => ({ id, role, content, createdAt: at });
+
+test("builds typed recovery history and excludes errors", () => {
+  assert.deepEqual(
+    buildSessionHistory([
+      message("u1", "user", "Find authentication."),
+      message("e1", "error", "transient secret failure"),
+      message("a1", "assistant", "It is in src/auth.js."),
+    ]),
+    [
+      message("u1", "user", "Find authentication."),
+      message("a1", "assistant", "It is in src/auth.js."),
+    ],
   );
 });
 
-test("replays prior user and assistant turns in chronological order", () => {
-  const prompt = buildReplayPrompt(
+test("starts recovery at the most recent context reset", () => {
+  const history = buildSessionHistory(
     [
-      { role: "user", content: "Find the authentication code." },
-      { role: "assistant", content: "It is in src/auth.js." },
+      message("u1", "user", "old context"),
+      message("a1", "assistant", "old answer"),
+      message("u2", "user", "new context"),
     ],
-    "Now add tests for it.",
+    2,
   );
-
-  assert.match(prompt, /^Continue the conversation below\./);
-  const firstUser = prompt.indexOf("User:\nFind the authentication code.");
-  const assistant = prompt.indexOf("Assistant:\nIt is in src/auth.js.");
-  const finalUser = prompt.indexOf("User:\nNow add tests for it.");
-  assert.ok(firstUser >= 0);
-  assert.ok(firstUser < assistant);
-  assert.ok(assistant < finalUser);
+  assert.deepEqual(
+    history.map(({ id }) => id),
+    ["u2"],
+  );
 });
 
-test("omits error messages from replay context", () => {
-  const prompt = buildReplayPrompt(
+test("bounds recovery by characters and message count while favoring recent turns", () => {
+  const history = buildSessionHistory(
     [
-      { role: "user", content: "Inspect auth." },
-      { role: "error", content: "SECRET FAILURE DETAIL" },
-      { role: "assistant", content: "Auth uses middleware." },
+      message("old", "user", "x".repeat(100)),
+      message("a1", "assistant", "recent answer"),
+      message("u2", "user", "recent question"),
     ],
-    "Continue.",
+    0,
+    40,
+    2,
   );
-
-  assert.equal(prompt.includes("SECRET FAILURE DETAIL"), false);
-  assert.equal(prompt.includes("Assistant:\nAuth uses middleware."), true);
-});
-
-test("bounds replay size and favors the most recent context", () => {
-  const maximum = 180;
-  const prompt = buildReplayPrompt(
-    [
-      { role: "user", content: "old context ".repeat(100) },
-      { role: "assistant", content: "Recent answer." },
-    ],
-    "Recent question?",
-    maximum,
+  assert.deepEqual(
+    history.map(({ id }) => id),
+    ["a1", "u2"],
   );
-
-  assert.ok(prompt.length <= maximum);
-  assert.equal(prompt.includes("Recent answer."), true);
-  assert.equal(prompt.includes("old context"), false);
-  assert.match(prompt, /User:\nRecent question\?$/);
-
-  assert.equal(
-    buildReplayPrompt(
-      [{ role: "user", content: "prior" }],
-      "x".repeat(100),
-      50,
-    ),
-    "x".repeat(50),
-  );
-
-  // Header + final block can fit exactly while the separator required to join
-  // them does not. With no prior turn selected, return only the latest message.
-  const headerLength =
-    "Continue the conversation below. Preserve its context and answer the final user message.\n\n".length;
-  const latest = "boundary";
-  const boundary = headerLength + "User:\n".length + latest.length + 1;
-  assert.equal(
-    buildReplayPrompt(
-      [{ role: "assistant", content: "a prior answer that cannot fit" }],
-      latest,
-      boundary,
-    ),
-    latest,
+  assert.ok(
+    history.reduce((size, entry) => size + entry.content.length, 0) <= 40,
   );
 });

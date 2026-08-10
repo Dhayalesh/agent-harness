@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import os from 'node:os';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
 import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, parseLogLevel, StructuredLogSink } from '../services/observability.js';
+import { FileSessionStore } from '../sessions/file-session-store.js';
+import { InMemorySessionStore } from '../sessions/session-store.js';
+import { S3SessionStore } from '../sessions/s3-session-store.js';
+import { TieredSessionStore } from '../sessions/tiered-session-store.js';
 import { HEADLESS_HOST, HEADLESS_PORT, startHeadlessServer } from './server.js';
 
 /**
@@ -37,6 +42,43 @@ const workspaceRoot = process.env.AGENT_WORKSPACE
   ? path.resolve(process.env.AGENT_WORKSPACE)
   : undefined;
 const permissionCeiling = parseCeiling(process.env.AGENT_PERMISSION_CEILING);
+const region = process.env.AWS_REGION?.trim() || process.env.PLATFORM_CONTENT_S3_REGION?.trim();
+const sessionStoreKind = parseSessionStore(process.env.AGENT_SESSION_STORE);
+const sessionTtlMs =
+  parsePositiveInteger(process.env.AGENT_SESSION_TTL_SECONDS, 86_400, 'AGENT_SESSION_TTL_SECONDS') *
+  1_000;
+const sessionMaxBytes = parsePositiveInteger(
+  process.env.AGENT_SESSION_MAX_BYTES,
+  10 * 1024 * 1024,
+  'AGENT_SESSION_MAX_BYTES',
+);
+const sessionDirectory = path.resolve(
+  process.env.AGENT_SESSION_DIR?.trim() || path.join(os.tmpdir(), 'agent-harness-sessions'),
+);
+const sessionOptions = { ttlMs: sessionTtlMs, maxBytes: sessionMaxBytes };
+const localSessionStore = new FileSessionStore(sessionDirectory, sessionOptions);
+const s3SessionStore =
+  sessionStoreKind === 's3'
+    ? new S3SessionStore({
+        bucket: requiredEnvironment('AGENT_SESSION_S3_BUCKET'),
+        prefix: process.env.AGENT_SESSION_S3_PREFIX?.trim() || 'sessions',
+        ...(region ? { region } : {}),
+        requestTimeoutMs: parsePositiveInteger(
+          process.env.AGENT_SESSION_S3_REQUEST_TIMEOUT_MS,
+          10_000,
+          'AGENT_SESSION_S3_REQUEST_TIMEOUT_MS',
+        ),
+        maxBytes: sessionMaxBytes,
+      })
+    : undefined;
+const sessionStore =
+  sessionStoreKind === 'none'
+    ? undefined
+    : sessionStoreKind === 'memory'
+      ? new InMemorySessionStore(sessionOptions)
+      : sessionStoreKind === 's3' && s3SessionStore
+        ? new TieredSessionStore(localSessionStore, s3SessionStore)
+        : localSessionStore;
 // Names this deployment's tools need beyond the allowlist, such as a proxy setting.
 // Everything else in the process environment is withheld from spawned commands.
 const shellEnvironmentExtras = (process.env.AGENT_SHELL_ENV_ALLOWLIST ?? '')
@@ -67,7 +109,6 @@ const logLevel = parseLogLevel(process.env.AGENT_LOG_LEVEL);
 // after it because a deployment already configured for S3 skill reads has named its
 // region once, and making it name the same value twice to get logs is a trap rather
 // than a decision.
-const region = process.env.AWS_REGION?.trim() || process.env.PLATFORM_CONTENT_S3_REGION?.trim();
 const cloudWatch =
   logGroupName === '-'
     ? undefined
@@ -103,6 +144,7 @@ const running = await startHeadlessServer({
   // Naming it keeps the tool catalogue identical between the image and a developer's
   // Windows machine, so `agent.tools` in a payload validates the same in both.
   builtinToolOptions: { powershell: false },
+  ...(sessionStore === undefined ? {} : { sessionStore }),
   logSink,
 });
 
@@ -154,6 +196,16 @@ emitLog(logSink, {
   permissionCeiling: permissionCeiling ?? 'none',
   logDestination: cloudWatch ? `stdout+cloudwatch:${logGroupName}` : 'stdout',
   logLevel,
+  sessionStore: sessionStoreKind,
+  sessionTtlSeconds: sessionTtlMs / 1_000,
+  sessionMaxBytes,
+  ...(sessionStoreKind === 'file' || sessionStoreKind === 's3' ? { sessionDirectory } : {}),
+  ...(sessionStoreKind === 's3'
+    ? {
+        sessionS3Bucket: process.env.AGENT_SESSION_S3_BUCKET,
+        sessionS3Prefix: process.env.AGENT_SESSION_S3_PREFIX?.trim() || 'sessions',
+      }
+    : {}),
   ...(cloudWatch && region ? { region } : {}),
   shellEnvExtras: shellEnvironmentExtras,
   pid: process.pid,
@@ -174,6 +226,7 @@ const shutdown = async (): Promise<void> => {
     });
     throw error;
   } finally {
+    s3SessionStore?.destroy();
     // In `finally` so the shutdown-failure record above is sent too: queued lines
     // live in memory, and an unflushed buffer at exit loses exactly the lines
     // explaining why the process is exiting.
@@ -209,6 +262,34 @@ function parseCeiling(value: string | undefined): 'plan' | 'deny' | undefined {
   if (!trimmed || trimmed === 'none') return undefined;
   if (trimmed === 'plan' || trimmed === 'deny') return trimmed;
   throw new Error(`Invalid AGENT_PERMISSION_CEILING: ${value}. Expected plan, deny, or none.`);
+}
+
+function parseSessionStore(value: string | undefined): 'file' | 'memory' | 's3' | 'none' {
+  const normalized = value?.trim().toLowerCase() || 'file';
+  if (
+    normalized === 'file' ||
+    normalized === 'memory' ||
+    normalized === 's3' ||
+    normalized === 'none'
+  ) {
+    return normalized;
+  }
+  throw new Error(`Invalid AGENT_SESSION_STORE: ${value}. Expected file, memory, s3, or none.`);
+}
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required when AGENT_SESSION_STORE=s3.`);
+  return value;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
+  if (!value?.trim()) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${name}: ${value}. Expected a positive integer.`);
+  }
+  return parsed;
 }
 
 function describeError(error: unknown): { name: string; message: string; stack?: string } {

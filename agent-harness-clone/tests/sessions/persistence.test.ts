@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  AgentHarnessError,
   createAgentSession,
   FileSessionStore,
   InMemorySessionStore,
   resumeAgentSession,
   ScriptedModelProvider,
 } from '../../src/index.js';
+import { textMessage } from '../../src/core/messages.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -69,4 +71,60 @@ test('file session store survives a new store instance', async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('session start reports whether context was restored', async () => {
+  const initial = [textMessage('prior', 'user', 'Earlier context', new Date().toISOString())];
+  const session = createAgentSession({
+    provider: new ScriptedModelProvider([[{ type: 'completed', stopReason: 'end_turn' }]]),
+    initialMessages: initial,
+    sessionState: {
+      mode: 'persistent',
+      resumed: true,
+      origin: 'client_history',
+    },
+  });
+  const events = [];
+  for await (const event of session.run({ prompt: 'Continue' })) events.push(event);
+  const started = events.find((event) => event.type === 'session.started');
+  assert.deepEqual(
+    started && {
+      mode: started.mode,
+      resumed: started.resumed,
+      origin: started.origin,
+      historyMessageCount: started.historyMessageCount,
+    },
+    {
+      mode: 'persistent',
+      resumed: true,
+      origin: 'client_history',
+      historyMessageCount: 1,
+    },
+  );
+});
+
+test('session stores expire inactive transcripts and reject oversized data', async () => {
+  const expired = new InMemorySessionStore({ ttlMs: 1 });
+  await expired.save({
+    version: 1,
+    id: 'expired',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+    messages: [],
+    metadata: {},
+  });
+  assert.equal(await expired.load('expired'), undefined);
+
+  const bounded = new InMemorySessionStore({ maxBytes: 100 });
+  await assert.rejects(
+    bounded.save({
+      version: 1,
+      id: 'large',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [textMessage('message', 'user', 'x'.repeat(200), new Date().toISOString())],
+      metadata: {},
+    }),
+    (error: unknown) => error instanceof AgentHarnessError && error.code === 'SESSION_TOO_LARGE',
+  );
 });

@@ -6,6 +6,7 @@ export async function buildPayload({
   sessionId,
   permissionMode,
   includeEvents,
+  sessionHistory = [],
 }) {
   const resolved = await resolveAgentForInvocation(agentId);
   const agent = resolved.agent.value;
@@ -69,6 +70,10 @@ export async function buildPayload({
     permissionRules,
     permissionFallback: "deny",
     includeEvents: Boolean(includeEvents),
+    session: {
+      mode: "persistent",
+      history: sessionHistory,
+    },
     // Only present when the agent asked for it. The runtime payload schema is
     // strict, so an agent that never opted in keeps sending the payload a runtime
     // built before this field still accepts.
