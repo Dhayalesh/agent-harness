@@ -108,6 +108,25 @@ test('noisy AgentEvents require debug opt-in while failed tools remain errors', 
       isError: false,
     },
   };
+  const requestedTool = {
+    ...base,
+    sequence: 4,
+    type: 'tool.requested' as const,
+    turnId: 'turn-debug',
+    call: {
+      type: 'tool_call' as const,
+      id: 'tool-requested',
+      name: 'read_file',
+      input: { path: 'README.md' },
+    },
+  };
+  const preparing = {
+    ...base,
+    sequence: 5,
+    type: 'run.preparing' as const,
+    stage: 'agent' as const,
+    message: 'Assembling agent',
+  };
   const failedTool = {
     ...base,
     sequence: 3,
@@ -125,6 +144,8 @@ test('noisy AgentEvents require debug opt-in while failed tools remain errors', 
   const defaultSink = new StructuredLogSink((line) => defaultLines.push(line));
   defaultSink.onEvent(delta);
   defaultSink.onEvent(successfulTool);
+  defaultSink.onEvent(requestedTool);
+  defaultSink.onEvent(preparing);
   defaultSink.onEvent(failedTool);
   assert.equal(defaultLines.length, 1);
   assert.equal(json(defaultLines[0] as string).level, 'error');
@@ -135,9 +156,11 @@ test('noisy AgentEvents require debug opt-in while failed tools remain errors', 
   });
   debugSink.onEvent(delta);
   debugSink.onEvent(successfulTool);
+  debugSink.onEvent(requestedTool);
+  debugSink.onEvent(preparing);
   assert.deepEqual(
     debugLines.map((line) => json(line).level),
-    ['debug', 'debug'],
+    ['debug', 'debug', 'debug', 'debug'],
   );
   assert.ok(debugLines.map(json).every((record) => typeof record.message === 'string'));
 });

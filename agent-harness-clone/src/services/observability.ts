@@ -341,7 +341,9 @@ function agentEventEntryLevel(entry: HarnessLogEntry): HarnessLogLevel | undefin
     case 'assistant.text.delta':
     case 'assistant.reasoning.delta':
     case 'tool.input.delta':
+    case 'tool.requested':
     case 'tool.progress':
+    case 'run.preparing':
     case 'assistant.message.completed':
     case 'usage.updated':
       return 'debug';

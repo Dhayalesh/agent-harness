@@ -298,7 +298,6 @@ test('structured logs cover the full invocation, model, and tool lifecycle', asy
     'invocation.preparation.completed',
     'session.started',
     'model.request.started',
-    'tool.requested',
     'tool.execution.started',
     'tool.execution.completed',
     'output.completed',
@@ -334,8 +333,19 @@ test('structured logs cover the full invocation, model, and tool lifecycle', asy
   assert.equal(events.includes('invocation.payload.received'), false);
   assert.equal(events.includes('assistant.text.delta'), false);
   assert.equal(events.includes('tool.input.delta'), false);
+  assert.equal(events.includes('tool.requested'), false);
+  assert.equal(events.includes('run.preparing'), false);
   assert.doesNotMatch(lines.join('\n'), /Write hello\.txt with the text/);
   assert.doesNotMatch(lines.join('\n'), /test-key/);
+
+  const modelStarted = records.find((record) => record.event === 'model.request.started');
+  assert.ok(modelStarted);
+  assert.equal(typeof modelStarted.toolCount, 'number');
+  assert.equal('toolNames' in modelStarted, false);
+  const agentResolved = records.find((record) => record.event === 'agent.resolution.completed');
+  assert.ok(agentResolved);
+  assert.equal(typeof agentResolved.toolCount, 'number');
+  assert.equal('tools' in agentResolved, false);
 
   const completed = records.at(-1) as {
     outputChars: number;

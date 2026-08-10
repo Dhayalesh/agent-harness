@@ -182,7 +182,6 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
     (line) => JSON.parse(line) as Record<string, unknown>,
   );
   const lifecycle = [
-    'tool.requested',
     'tool.execution.started',
     'mcp.request.started',
     'mcp.request.completed',
@@ -203,6 +202,11 @@ test('discovers and calls MCP tools and resources over stdio', async () => {
   );
   assert.equal(nestedMcp.length, 2);
   assert.equal(nestedMcp[0]?.mcpRequestId, nestedMcp[1]?.mcpRequestId);
+  const discovery = structuredRecords.find((record) => record.event === 'mcp.tools.discovered');
+  assert.ok(discovery);
+  assert.equal(typeof discovery.toolCount, 'number');
+  assert.equal('tools' in discovery, false);
+  assert.equal('remoteTools' in discovery, false);
   assert.ok(
     structuredRecords.some(
       (record, index) =>

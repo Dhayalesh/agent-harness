@@ -195,12 +195,19 @@ runtime log stream. Unless `AGENT_LOG_GROUP=-`, it also uses the AWS SDK to deli
 same records to the configured group. That writer and S3 skill loading both use the
 host's ambient credentials rather than credentials from an invocation.
 
+Those are two destinations for the same logical records. A Logs Insights query that
+selects both the AgentCore runtime group and the direct group will therefore show each
+`invocationId` + `logSequence` pair twice. Query one group, or set
+`AGENT_LOG_GROUP=-` to use only the stdout stream. When intentionally combining both
+groups, treat that pair as the record identity.
+
 Logging is enabled by default. Each JSON record has a stable, readable envelope:
 `timestamp`, `level`, `category`, `event`, `message`, `outcome`, `component`,
 `schemaVersion`, and a monotonic `logSequence`. The default `info` level records concise
 lifecycle milestones and size/count summaries, not raw prompts, token deltas, model
-responses, tool inputs/results, or MCP bodies. Set `AGENT_LOG_LEVEL=debug` temporarily
-when reproducing a run to include those redacted details.
+responses, tool inputs/results, MCP bodies, or repeated full tool catalogs. Set
+`AGENT_LOG_LEVEL=debug` temporarily when reproducing a run to include those redacted
+details.
 
 The normal lifecycle is explicit rather than inferred from large payloads. Depending on
 the run, it includes records such as:

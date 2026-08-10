@@ -573,10 +573,19 @@ async function prepare(
     agentName: agent.record.name,
     provider: agent.provider.name,
     model: agent.model ?? agent.modelProvider.model,
+    toolCount: agent.tools.length,
+    skillCount: agent.skillRecords.length,
+    mcpServerCount: agent.mcpRecords.length,
+    durationMs: Date.now() - started,
+  });
+  log(options, logContext, {
+    level: 'debug',
+    event: 'agent.catalog.resolved',
+    sessionId,
+    agentName: agent.record.name,
     tools: agent.tools.map((tool) => tool.name),
     skills: agent.skillRecords.map((skill) => skill.name),
     mcpServers: agent.mcpRecords.map((server) => server.name),
-    durationMs: Date.now() - started,
   });
 
   try {
@@ -699,6 +708,7 @@ function preparationChannel(
       // Observability is never an execution dependency.
     }
     log(options, logContext, {
+      level: 'debug',
       event: 'run.preparing',
       timestamp: event.timestamp,
       sessionId,

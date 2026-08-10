@@ -281,7 +281,6 @@ class AgentSessionImpl implements AgentSession {
             model: this.config.model,
             messageCount: modelRequest.messages.length,
             toolCount: modelRequest.tools.length,
-            toolNames: modelRequest.tools.map((tool) => tool.name),
             estimatedInputTokens: prepared.estimatedTokens,
             systemPromptChars: modelRequest.systemPrompt?.length ?? 0,
             maxOutputTokens: modelRequest.maxOutputTokens,
@@ -1032,6 +1031,7 @@ function agentEventLogLevel(event: AgentEvent): 'debug' | 'info' | 'warn' | 'err
     event.type === 'assistant.reasoning.delta' ||
     event.type === 'assistant.message.completed' ||
     event.type === 'tool.input.delta' ||
+    event.type === 'tool.requested' ||
     event.type === 'tool.started' ||
     event.type === 'tool.completed' ||
     event.type === 'tool.progress' ||

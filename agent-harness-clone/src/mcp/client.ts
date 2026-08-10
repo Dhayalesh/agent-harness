@@ -238,6 +238,11 @@ export class McpConnection {
       event: 'mcp.tools.discovered',
       serverName: this.serverName,
       toolCount: tools.length,
+    });
+    this.log({
+      level: 'debug',
+      event: 'mcp.tools.details',
+      serverName: this.serverName,
       remoteTools: discovered.tools.map((tool) => tool.name),
       tools: tools.map((tool) => tool.name),
     });
