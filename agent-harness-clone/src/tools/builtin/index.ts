@@ -1,4 +1,5 @@
 import type { RuntimeHost } from '../../runtime/runtime-host.js';
+import type { ArtifactStore } from '../../artifacts/artifact-store.js';
 import type { Tool } from '../tool.js';
 import { createBashTool } from './bash.js';
 import { createEditFileTool } from './edit-file.js';
@@ -9,6 +10,7 @@ import { createPowerShellTool, isPowerShellAvailable } from './powershell.js';
 import { createReadFileTool } from './read-file.js';
 import { createTodoWriteTool, TodoStore } from './todo-write.js';
 import { createWriteFileTool } from './write-file.js';
+import { createMarkdownArtifactTool } from './create-markdown-artifact.js';
 
 export type BuiltinToolOptions = {
   maxReadBytes?: number;
@@ -24,6 +26,11 @@ export type BuiltinToolOptions = {
   todoStore?: TodoStore;
   /** Auto-approve shell commands classified as read-only. Defaults to true. */
   autoApproveReadOnlyCommands?: boolean;
+  /**
+   * Response artifact store. When supplied, offers `create_markdown_artifact` so
+   * the model can choose file presentation for document requests.
+   */
+  artifactStore?: ArtifactStore;
 };
 
 export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOptions = {}): Tool[] {
@@ -39,6 +46,7 @@ export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOpt
     createGrepTool(runtime),
     createWriteFileTool(runtime, snapshots),
     createEditFileTool(runtime, snapshots),
+    ...(options.artifactStore ? [createMarkdownArtifactTool(options.artifactStore)] : []),
     createBashTool(runtime, shellOptions),
     ...((options.powershell ?? isPowerShellAvailable())
       ? [createPowerShellTool(runtime, shellOptions)]
@@ -59,3 +67,4 @@ export { createReadFileTool } from './read-file.js';
 export { createTodoWriteTool, formatTodos, TodoStore } from './todo-write.js';
 export type { TodoItem, TodoStatus } from './todo-write.js';
 export { createWriteFileTool } from './write-file.js';
+export { createMarkdownArtifactTool } from './create-markdown-artifact.js';

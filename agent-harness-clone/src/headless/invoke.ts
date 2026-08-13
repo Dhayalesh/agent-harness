@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import type { ArtifactStore } from '../artifacts/artifact-store.js';
+import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import type { ContentStore } from '../content/content-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
 import { createAgentSession, type AgentSession } from '../core/agent-session.js';
@@ -151,8 +151,15 @@ export type HeadlessResult = {
   sessionId: string;
   agentName: string;
   session: HeadlessSessionInfo;
-  /** Every assistant text delta, concatenated. The answer, for most callers. */
+  /**
+   * Visible conversational output. Empty when `response.type` is `files`, so a
+   * legacy client does not render the model's redundant post-tool confirmation.
+   */
   output: string;
+  /** Discriminated presentation contract for chat clients. */
+  response: HeadlessResponse;
+  /** Response files created during the run. Also present on the `files` response. */
+  artifacts: readonly Artifact[];
   messages: readonly AgentMessage[];
   /** Where the file and shell tools were rooted. Not deleted; see `runWorkspace`. */
   workingDirectory: string;
@@ -165,6 +172,9 @@ export type HeadlessResult = {
   durationMs: number;
   error?: { code: string; message: string; recoverable: boolean };
 };
+
+export type HeadlessResponse =
+  { type: 'text'; text: string } | { type: 'files'; files: readonly Artifact[] };
 
 export type HeadlessSessionInfo = {
   mode: 'persistent' | 'stateless';
@@ -360,6 +370,7 @@ export async function* streamHeadless(
     prepared = settled.value;
     phase = 'execution';
     const totals = new RunTotals();
+    let presentingFiles = false;
     for await (const event of prepared.session.run({
       prompt: parsed.prompt,
       ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
@@ -367,6 +378,18 @@ export async function* streamHeadless(
       terminalEvent = event;
       if (event.type === 'error') runError = true;
       totals.observe(event);
+      if (event.type === 'artifact.created') presentingFiles = true;
+      // The artifact event is the response for document intent. Models commonly
+      // produce a short confirmation after a tool result; forwarding those deltas
+      // makes clients render both a file and a chat bubble for one answer.
+      if (
+        presentingFiles &&
+        (event.type === 'assistant.text.delta' ||
+          (event.type === 'assistant.message.completed' &&
+            event.message.content.every((block) => block.type === 'text')))
+      ) {
+        continue;
+      }
       yield event;
     }
     streamSummary = resultForLog(totals.result(prepared, Date.now() - started));
@@ -893,7 +916,10 @@ export function headlessToolCatalogue(
   options: HeadlessRunOptions = {},
 ): readonly Tool[] {
   return [
-    ...createBuiltinTools(runtime, options.builtinToolOptions ?? {}),
+    ...createBuiltinTools(runtime, {
+      ...(options.builtinToolOptions ?? {}),
+      ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
+    }),
     ...(options.webToolOptions === false ? [] : createWebTools(options.webToolOptions ?? {})),
     ...(options.additionalTools ?? []),
   ];
@@ -967,6 +993,7 @@ function permissionHandler(
 /** Folds the event stream into the counts and text the result reports. */
 class RunTotals {
   private readonly text: string[] = [];
+  private readonly artifacts: Artifact[] = [];
   private readonly toolCalls = new Map<string, HeadlessToolSummary>();
   private readonly toolNamesByCallId = new Map<string, string>();
   private readonly usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
@@ -978,6 +1005,9 @@ class RunTotals {
     switch (event.type) {
       case 'assistant.text.delta':
         this.text.push(event.delta);
+        break;
+      case 'artifact.created':
+        this.artifacts.push(event.artifact);
         break;
       case 'turn.completed':
         this.turns = Math.max(this.turns, event.turn);
@@ -1018,6 +1048,10 @@ class RunTotals {
   }
 
   result(prepared: PreparedRun, durationMs: number): HeadlessResult {
+    const text = this.text.join('');
+    const artifacts = [...this.artifacts];
+    const response: HeadlessResponse =
+      artifacts.length > 0 ? { type: 'files', files: artifacts } : { type: 'text', text };
     return {
       status: this.failure ? 'error' : 'success',
       sessionId: prepared.sessionId,
@@ -1026,7 +1060,9 @@ class RunTotals {
         ...prepared.sessionInfo,
         historyMessageCount: prepared.session.messages.length,
       },
-      output: this.text.join(''),
+      output: artifacts.length > 0 ? '' : text,
+      response,
+      artifacts,
       messages: prepared.session.messages,
       workingDirectory: prepared.workingDirectory,
       ...(this.stopReason === undefined ? {} : { stopReason: this.stopReason }),

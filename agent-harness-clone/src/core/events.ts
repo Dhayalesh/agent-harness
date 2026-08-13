@@ -1,4 +1,5 @@
 import type { AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
+import type { Artifact } from '../artifacts/artifact-store.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
 
 type EventBase = {
@@ -70,6 +71,13 @@ export type AgentEvent = EventBase &
         type: 'tool.completed';
         turnId: string;
         result: ToolResultBlock;
+      }
+    | {
+        /** A model-selected response file that a client should present to the user. */
+        type: 'artifact.created';
+        turnId: string;
+        toolCallId: string;
+        artifact: Artifact;
       }
     | {
         type: 'permission.requested';

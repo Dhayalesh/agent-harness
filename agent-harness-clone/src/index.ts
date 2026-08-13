@@ -96,6 +96,7 @@ export type {
 export {
   createBashTool,
   createBuiltinTools,
+  createMarkdownArtifactTool,
   createEditFileTool,
   createGlobTool,
   createGrepTool,
@@ -413,6 +414,7 @@ export {
 } from './headless/invoke.js';
 export type {
   HeadlessResult,
+  HeadlessResponse,
   HeadlessRunOptions,
   HeadlessSessionInfo,
   HeadlessToolSummary,

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import os from 'node:os';
+import { FileArtifactStore } from '../artifacts/artifact-store.js';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
 import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, parseLogLevel, StructuredLogSink } from '../services/observability.js';
@@ -55,6 +56,10 @@ const sessionMaxBytes = parsePositiveInteger(
 const sessionDirectory = path.resolve(
   process.env.AGENT_SESSION_DIR?.trim() || path.join(os.tmpdir(), 'agent-harness-sessions'),
 );
+const artifactDirectory = path.resolve(
+  process.env.AGENT_ARTIFACT_DIR?.trim() || path.join(os.tmpdir(), 'agent-harness-artifacts'),
+);
+const artifactStore = new FileArtifactStore(artifactDirectory);
 const sessionOptions = { ttlMs: sessionTtlMs, maxBytes: sessionMaxBytes };
 const localSessionStore = new FileSessionStore(sessionDirectory, sessionOptions);
 const s3SessionStore =
@@ -145,6 +150,7 @@ const running = await startHeadlessServer({
   // Windows machine, so `agent.tools` in a payload validates the same in both.
   builtinToolOptions: { powershell: false },
   ...(sessionStore === undefined ? {} : { sessionStore }),
+  artifactStore,
   logSink,
 });
 
@@ -199,6 +205,7 @@ emitLog(logSink, {
   sessionStore: sessionStoreKind,
   sessionTtlSeconds: sessionTtlMs / 1_000,
   sessionMaxBytes,
+  artifactDirectory,
   ...(sessionStoreKind === 'file' || sessionStoreKind === 's3' ? { sessionDirectory } : {}),
   ...(sessionStoreKind === 's3'
     ? {

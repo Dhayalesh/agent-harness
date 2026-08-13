@@ -10,6 +10,7 @@ import type { AgentEvent } from '../../src/index.js';
 import {
   AgentHarnessError,
   createBuiltinTools,
+  InMemoryArtifactStore,
   InMemorySessionStore,
   InMemoryContentStore,
   invokeHeadless,
@@ -317,6 +318,127 @@ test('a payload runs a full turn with no database, no S3, and no env vars', asyn
   const messages = first.messages as Array<{ role: string; content: string }>;
   assert.equal(messages[0]?.role, 'system');
   assert.match(messages[0]?.content ?? '', /You write files when asked\./);
+});
+
+test('a Markdown artifact becomes a file response instead of duplicate chat text', async (t) => {
+  const markdown = '# Launch plan\n\nShip the first release.';
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-doc', 'create_markdown_artifact', {
+      title: 'Launch plan',
+      filename: '../Launch plan',
+      content: markdown,
+    }),
+    textChunk('I created the requested document.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-artifact-'));
+  const artifactStore = new InMemoryArtifactStore();
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const result = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      prompt: 'Create a Markdown launch-plan document.',
+      agent: {
+        name: 'document-demo',
+        systemPrompt: 'Use the artifact tool for requested documents.',
+        // Response-presentation tools are injected even when operational tools are
+        // explicitly restricted.
+        tools: [],
+        limits: { maxTurns: 4 },
+      },
+      includeEvents: true,
+    }),
+    { workspaceRoot, artifactStore, builtinToolOptions: { powershell: false } },
+  );
+
+  assert.equal(result.output, '');
+  assert.equal(result.response.type, 'files');
+  assert.equal(result.artifacts.length, 1);
+  const artifact = result.artifacts[0]!;
+  assert.equal(artifact.contentType, 'text/markdown; charset=utf-8');
+  assert.equal(artifact.metadata.filename, 'Launch-plan.md');
+  assert.equal(await artifactStore.get(artifact.id), markdown);
+  assert.ok(result.events?.some((event) => event.type === 'artifact.created'));
+});
+
+test('a streamed Markdown artifact suppresses the model confirmation message', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('call-stream-doc', 'create_markdown_artifact', {
+      title: 'Streamed notes',
+      filename: 'streamed-notes.md',
+      content: '# Streamed notes',
+    }),
+    textChunk('I created the requested document.'),
+  ]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-stream-artifact-'));
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const events: AgentEvent[] = [];
+  for await (const event of streamHeadless(
+    payload(endpoint.baseURL, {
+      prompt: 'Create a Markdown notes document.',
+      agent: {
+        name: 'stream-document-demo',
+        systemPrompt: 'Use the artifact tool for requested documents.',
+        tools: [],
+        limits: { maxTurns: 4 },
+      },
+    }),
+    {
+      workspaceRoot,
+      artifactStore: new InMemoryArtifactStore(),
+      builtinToolOptions: { powershell: false },
+    },
+  )) {
+    events.push(event);
+  }
+
+  assert.ok(events.some((event) => event.type === 'artifact.created'));
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'assistant.text.delta' && event.delta.includes('I created the requested'),
+    ),
+    false,
+  );
+  assert.equal(
+    events.some(
+      (event) =>
+        event.type === 'assistant.message.completed' &&
+        event.message.content.some(
+          (block) => block.type === 'text' && block.text.includes('I created the requested'),
+        ),
+    ),
+    false,
+  );
+});
+
+test('the HTTP server downloads stored artifacts with their Markdown filename', async (t) => {
+  const artifactStore = new InMemoryArtifactStore();
+  const artifact = await artifactStore.put('# Notes', {
+    contentType: 'text/markdown; charset=utf-8',
+    metadata: { filename: 'notes.md', presentation: 'file' },
+  });
+  const running = await startHeadlessServer({
+    host: '127.0.0.1',
+    port: 0,
+    serviceKey: 'artifact-test-key',
+    artifactStore,
+  });
+  t.after(() => running.close());
+
+  const response = await fetch(`${running.url}/artifacts/${artifact.id}`, {
+    headers: { 'x-agent-service-key': 'artifact-test-key' },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'text/markdown; charset=utf-8');
+  assert.equal(response.headers.get('content-disposition'), 'attachment; filename="notes.md"');
+  assert.equal(await response.text(), '# Notes');
 });
 
 test('structured logs cover the full invocation, model, and tool lifecycle', async (t) => {

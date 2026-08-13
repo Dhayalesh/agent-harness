@@ -92,6 +92,7 @@ const DEFAULT_MCP_CAPABILITIES: McpServerCapabilities = {
 
 /** Matches the `maxTurns` ceiling `AgentSessionConfig` defaults to. */
 const DEFAULT_MAX_TURNS = 24;
+const RESPONSE_PRESENTATION_TOOLS = new Set(['create_markdown_artifact']);
 
 export type InlineAgentOptions = {
   /**
@@ -230,7 +231,17 @@ function completeAgent(
   const { agent } = payload;
   // Omitting `tools` offers the whole catalogue. Deduplicated because two factories
   // could contribute the same name and the record schema rejects a repeat.
-  const tools = agent.tools ?? [...new Set(refs.availableTools.map((tool) => tool.name))];
+  const availableToolNames = refs.availableTools.map((tool) => tool.name);
+  // Presentation tools are part of the response transport, not a workspace
+  // capability. Keep them available when the host configured them even if an agent
+  // uses an explicit allowlist for operational tools; otherwise every stored agent
+  // would need a migration before it could return a document.
+  const presentationTools = availableToolNames.filter((name) =>
+    RESPONSE_PRESENTATION_TOOLS.has(name),
+  );
+  const tools = [
+    ...new Set(agent.tools ? [...agent.tools, ...presentationTools] : availableToolNames),
+  ];
   return parseAgentRecord({
     name: agent.name,
     ...(agent.description === undefined ? {} : { description: agent.description }),

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { ArtifactStore } from '../artifacts/artifact-store.js';
 import { AgentHarnessError } from '../core/errors.js';
 import type { AgentEvent } from '../core/events.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
@@ -277,7 +278,12 @@ export async function startHeadlessServer(
     }
     const permissionRoute =
       request.method === 'POST' && url.pathname === '/invocations/permissions';
-    if (request.method !== 'POST' || (url.pathname !== '/invocations' && !permissionRoute)) {
+    const artifactId = artifactIdFromPath(url.pathname);
+    const artifactRoute = request.method === 'GET' && artifactId !== undefined;
+    if (
+      !artifactRoute &&
+      (request.method !== 'POST' || (url.pathname !== '/invocations' && !permissionRoute))
+    ) {
       rejected(runOptions.logSink, context, 404, 'Not found');
       sendJson(response, 404, { error: 'Not found' });
       return;
@@ -285,6 +291,11 @@ export async function startHeadlessServer(
     if (serviceKey !== undefined && header(request, 'x-agent-service-key') !== serviceKey) {
       rejected(runOptions.logSink, context, 401, 'Invalid agent service key');
       sendJson(response, 401, { error: 'Invalid agent service key' });
+      return;
+    }
+
+    if (artifactRoute) {
+      await sendArtifact(response, runOptions.artifactStore, artifactId);
       return;
     }
 
@@ -712,6 +723,43 @@ function sendJson(response: ServerResponse, status: number, value: unknown): voi
   if (response.headersSent) return;
   response.writeHead(status, { 'content-type': 'application/json' });
   response.end(JSON.stringify(value));
+}
+
+function artifactIdFromPath(pathname: string): string | undefined {
+  const match = /^\/artifacts\/([A-Za-z0-9_-]+)$/.exec(pathname);
+  return match?.[1];
+}
+
+async function sendArtifact(
+  response: ServerResponse,
+  store: ArtifactStore | undefined,
+  id: string,
+): Promise<void> {
+  if (!store) {
+    sendJson(response, 404, { error: 'Artifact storage is not enabled' });
+    return;
+  }
+  const [artifact, content] = await Promise.all([store.describe(id), store.get(id)]);
+  if (!artifact || content === undefined) {
+    sendJson(response, 404, { error: 'Artifact not found' });
+    return;
+  }
+  const body = typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
+  const metadataFilename = artifact.metadata.filename;
+  const filename =
+    typeof metadataFilename === 'string' ? headerFilename(metadataFilename) : `${artifact.id}.data`;
+  response.writeHead(200, {
+    'content-type': artifact.contentType,
+    'content-length': String(body.byteLength),
+    'content-disposition': `attachment; filename="${filename}"`,
+    'cache-control': 'private, no-store',
+  });
+  response.end(body);
+}
+
+function headerFilename(value: string): string {
+  const safe = value.replace(/[\x00-\x1F\x7F"\\]/g, '_').trim();
+  return safe || 'document.md';
 }
 
 function describe(error: unknown): string {

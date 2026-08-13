@@ -12,6 +12,7 @@ needs the same IAM access to them.
 ```
 POST /invocations               payload in, result or SSE event stream out
 POST /invocations/permissions   answers a suspended run's permission request
+GET  /artifacts/:id             downloads a response artifact
 GET  /ping                      health probe
 ```
 
@@ -153,6 +154,26 @@ where the process listens and what it will allow a payload to do:
 | `AGENT_SESSION_S3_BUCKET`                   | Durable bucket; required when the store is `s3`.              |
 | `AGENT_SESSION_S3_PREFIX`                   | Object prefix. Defaults to `sessions`.                        |
 | `AGENT_SESSION_S3_REQUEST_TIMEOUT_MS`       | S3 operation timeout. Defaults to 10 seconds.                 |
+| `AGENT_ARTIFACT_DIR`                        | Downloadable response files. Defaults under OS temp.          |
+
+## Markdown document responses
+
+When an artifact store is configured, the runtime automatically offers the
+`create_markdown_artifact` response tool, including to agents with an explicit
+operational tool list. Tell the agent to use it when the requested deliverable is a
+document rather than a conversational answer.
+The tool call is the intent decision: ordinary answers remain text, while a successful
+call produces `response.type: "files"`, an `artifact.created` stream event, and a
+download at `GET /artifacts/<id>`. `output` is empty for a file response so older chat
+clients do not also render the model's confirmation text.
+
+For example, add this to the agent's system prompt:
+
+```text
+When the user asks for a reusable document, report, proposal, specification, guide,
+or README, call create_markdown_artifact with the complete document and do not repeat
+its content in chat. For normal questions, answer in chat without calling the tool.
+```
 
 Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns
 on stderr at startup when it is, and that is appropriate only behind a front door that

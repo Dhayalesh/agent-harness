@@ -25,7 +25,7 @@ import type {
 import { AsyncEventQueue } from './event-queue.js';
 import type { SessionStore, StoredSession } from '../sessions/session-store.js';
 import type { CommandRegistry } from '../commands/commands.js';
-import type { ArtifactStore } from '../artifacts/artifact-store.js';
+import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import {
   emitLog,
   type EventSink,
@@ -886,6 +886,15 @@ class AgentSessionImpl implements AgentSession {
         durationMs: Date.now() - toolStarted,
       });
       yield this.event({ type: 'tool.completed', turnId, result });
+      const presentedArtifact = responseArtifact(result.metadata?.artifact);
+      if (presentedArtifact) {
+        yield this.event({
+          type: 'artifact.created',
+          turnId,
+          toolCallId: call.id,
+          artifact: presentedArtifact,
+        });
+      }
       return result;
     } catch (error) {
       // Whatever the tool reported before it failed has already been yielded.
@@ -1076,6 +1085,23 @@ class AgentSessionImpl implements AgentSession {
   }
 }
 
+function responseArtifact(value: unknown): Artifact | undefined {
+  if (value === null || typeof value !== 'object') return undefined;
+  const artifact = value as Partial<Artifact>;
+  if (
+    typeof artifact.id !== 'string' ||
+    typeof artifact.contentType !== 'string' ||
+    typeof artifact.size !== 'number' ||
+    typeof artifact.createdAt !== 'string' ||
+    artifact.metadata === null ||
+    typeof artifact.metadata !== 'object' ||
+    artifact.metadata.presentation !== 'file'
+  ) {
+    return undefined;
+  }
+  return artifact as Artifact;
+}
+
 function agentEventLogLevel(event: AgentEvent): 'debug' | 'info' | 'warn' | 'error' {
   if (event.type === 'error') return 'error';
   if (event.type === 'warning') return 'warn';
@@ -1216,9 +1242,11 @@ function eventCorrelation(event: AgentEvent): Record<string, unknown> {
       ? event.call.id
       : event.type === 'tool.completed'
         ? event.result.toolCallId
-        : event.type === 'tool.progress' || event.type === 'permission.requested'
+        : event.type === 'artifact.created'
           ? event.toolCallId
-          : undefined;
+          : event.type === 'tool.progress' || event.type === 'permission.requested'
+            ? event.toolCallId
+            : undefined;
   return {
     ...(turnId === undefined ? {} : { turnId }),
     ...(toolCallId === undefined ? {} : { toolCallId }),
