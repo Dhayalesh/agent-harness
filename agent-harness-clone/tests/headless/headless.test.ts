@@ -320,7 +320,7 @@ test('a payload runs a full turn with no database, no S3, and no env vars', asyn
   assert.match(messages[0]?.content ?? '', /You write files when asked\./);
 });
 
-test('a Markdown artifact becomes a file response instead of duplicate chat text', async (t) => {
+test('a Markdown artifact keeps accompanying chat text with the file response', async (t) => {
   const markdown = '# Launch plan\n\nShip the first release.';
   const endpoint = await scriptedEndpoint([
     toolCallChunk('call-doc', 'create_markdown_artifact', {
@@ -353,7 +353,7 @@ test('a Markdown artifact becomes a file response instead of duplicate chat text
     { workspaceRoot, artifactStore, builtinToolOptions: { powershell: false } },
   );
 
-  assert.equal(result.output, '');
+  assert.equal(result.output, 'I created the requested document.');
   assert.equal(result.response.type, 'files');
   assert.equal(result.artifacts.length, 1);
   const artifact = result.artifacts[0]!;
@@ -363,7 +363,7 @@ test('a Markdown artifact becomes a file response instead of duplicate chat text
   assert.ok(result.events?.some((event) => event.type === 'artifact.created'));
 });
 
-test('a streamed Markdown artifact suppresses the model confirmation message', async (t) => {
+test('a streamed Markdown artifact keeps the model confirmation message', async (t) => {
   const endpoint = await scriptedEndpoint([
     toolCallChunk('call-stream-doc', 'create_markdown_artifact', {
       title: 'Streamed notes',
@@ -404,7 +404,7 @@ test('a streamed Markdown artifact suppresses the model confirmation message', a
       (event) =>
         event.type === 'assistant.text.delta' && event.delta.includes('I created the requested'),
     ),
-    false,
+    true,
   );
   assert.equal(
     events.some(
@@ -414,7 +414,7 @@ test('a streamed Markdown artifact suppresses the model confirmation message', a
           (block) => block.type === 'text' && block.text.includes('I created the requested'),
         ),
     ),
-    false,
+    true,
   );
 });
 

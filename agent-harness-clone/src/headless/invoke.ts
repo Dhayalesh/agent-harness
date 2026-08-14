@@ -152,8 +152,8 @@ export type HeadlessResult = {
   agentName: string;
   session: HeadlessSessionInfo;
   /**
-   * Visible conversational output. Empty when `response.type` is `files`, so a
-   * legacy client does not render the model's redundant post-tool confirmation.
+   * Visible conversational output. Also retained when `response.type` is
+   * `files`, allowing chat clients to show the model's accompanying narrative.
    */
   output: string;
   /** Discriminated presentation contract for chat clients. */
@@ -370,7 +370,6 @@ export async function* streamHeadless(
     prepared = settled.value;
     phase = 'execution';
     const totals = new RunTotals();
-    let presentingFiles = false;
     for await (const event of prepared.session.run({
       prompt: parsed.prompt,
       ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
@@ -378,18 +377,6 @@ export async function* streamHeadless(
       terminalEvent = event;
       if (event.type === 'error') runError = true;
       totals.observe(event);
-      if (event.type === 'artifact.created') presentingFiles = true;
-      // The artifact event is the response for document intent. Models commonly
-      // produce a short confirmation after a tool result; forwarding those deltas
-      // makes clients render both a file and a chat bubble for one answer.
-      if (
-        presentingFiles &&
-        (event.type === 'assistant.text.delta' ||
-          (event.type === 'assistant.message.completed' &&
-            event.message.content.every((block) => block.type === 'text')))
-      ) {
-        continue;
-      }
       yield event;
     }
     streamSummary = resultForLog(totals.result(prepared, Date.now() - started));
@@ -1060,7 +1047,9 @@ class RunTotals {
         ...prepared.sessionInfo,
         historyMessageCount: prepared.session.messages.length,
       },
-      output: artifacts.length > 0 ? '' : text,
+      // `response.type` tells a client that files are the primary deliverable;
+      // `output` still carries the model's accompanying conversational text.
+      output: text,
       response,
       artifacts,
       messages: prepared.session.messages,

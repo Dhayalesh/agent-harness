@@ -165,8 +165,9 @@ operational tool list. Tell the agent to use it when the requested deliverable i
 document rather than a conversational answer.
 The tool call is the intent decision: ordinary answers remain text, while a successful
 call produces `response.type: "files"`, an `artifact.created` stream event, and a
-download at `GET /artifacts/<id>`. `output` is empty for a file response so older chat
-clients do not also render the model's confirmation text.
+download at `GET /artifacts/<id>`. `output` retains any conversational text the model
+wrote alongside the file, while `response.type` continues to mark the documents as the
+primary deliverable.
 
 With `AGENT_SESSION_S3_BUCKET` set, the tool writes an immutable UUID-named `.md`
 object under `AGENT_S3_ARTIFACT_PREFIX` before the event is emitted. Session JSON and
