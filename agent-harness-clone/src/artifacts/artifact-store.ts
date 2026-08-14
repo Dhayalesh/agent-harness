@@ -8,6 +8,16 @@ export type Artifact = {
   size: number;
   createdAt: string;
   metadata: Record<string, unknown>;
+  /** Durable object location. Contents are deliberately not embedded in events. */
+  storage?: {
+    kind: 's3';
+    bucket: string;
+    key: string;
+    region?: string;
+    versionId?: string;
+    etag?: string;
+    checksumSha256?: string;
+  };
 };
 
 export interface ArtifactStore {

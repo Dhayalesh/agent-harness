@@ -2,6 +2,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { FileArtifactStore } from '../artifacts/artifact-store.js';
+import { S3ArtifactStore } from '../artifacts/s3-artifact-store.js';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
 import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, parseLogLevel, StructuredLogSink } from '../services/observability.js';
@@ -59,13 +60,26 @@ const sessionDirectory = path.resolve(
 const artifactDirectory = path.resolve(
   process.env.AGENT_ARTIFACT_DIR?.trim() || path.join(os.tmpdir(), 'agent-harness-artifacts'),
 );
-const artifactStore = new FileArtifactStore(artifactDirectory);
+const sessionBucket = process.env.AGENT_SESSION_S3_BUCKET?.trim();
+const artifactStore = sessionBucket
+  ? new S3ArtifactStore({
+      bucket: sessionBucket,
+      prefix: process.env.AGENT_S3_ARTIFACT_PREFIX?.trim() || 'artifacts',
+      ...(region ? { region } : {}),
+      requestTimeoutMs: parsePositiveInteger(
+        process.env.AGENT_SESSION_S3_REQUEST_TIMEOUT_MS,
+        10_000,
+        'AGENT_SESSION_S3_REQUEST_TIMEOUT_MS',
+      ),
+      maxBytes: 2_000_000,
+    })
+  : new FileArtifactStore(artifactDirectory);
 const sessionOptions = { ttlMs: sessionTtlMs, maxBytes: sessionMaxBytes };
 const localSessionStore = new FileSessionStore(sessionDirectory, sessionOptions);
 const s3SessionStore =
   sessionStoreKind === 's3'
     ? new S3SessionStore({
-        bucket: requiredEnvironment('AGENT_SESSION_S3_BUCKET'),
+        bucket: sessionBucket ?? requiredEnvironment('AGENT_SESSION_S3_BUCKET'),
         prefix: process.env.AGENT_SESSION_S3_PREFIX?.trim() || 'sessions',
         ...(region ? { region } : {}),
         requestTimeoutMs: parsePositiveInteger(

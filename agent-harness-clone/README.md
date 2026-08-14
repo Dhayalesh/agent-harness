@@ -153,8 +153,9 @@ where the process listens and what it will allow a payload to do:
 | `AGENT_SESSION_MAX_BYTES`                   | Per-session size limit. Defaults to 10 MiB.                   |
 | `AGENT_SESSION_S3_BUCKET`                   | Durable bucket; required when the store is `s3`.              |
 | `AGENT_SESSION_S3_PREFIX`                   | Object prefix. Defaults to `sessions`.                        |
+| `AGENT_S3_ARTIFACT_PREFIX`                  | Markdown prefix in the same bucket. Defaults to `artifacts`.  |
 | `AGENT_SESSION_S3_REQUEST_TIMEOUT_MS`       | S3 operation timeout. Defaults to 10 seconds.                 |
-| `AGENT_ARTIFACT_DIR`                        | Downloadable response files. Defaults under OS temp.          |
+| `AGENT_ARTIFACT_DIR`                        | Local artifact fallback when no S3 bucket is configured.      |
 
 ## Markdown document responses
 
@@ -166,6 +167,15 @@ The tool call is the intent decision: ordinary answers remain text, while a succ
 call produces `response.type: "files"`, an `artifact.created` stream event, and a
 download at `GET /artifacts/<id>`. `output` is empty for a file response so older chat
 clients do not also render the model's confirmation text.
+
+With `AGENT_SESSION_S3_BUCKET` set, the tool writes an immutable UUID-named `.md`
+object under `AGENT_S3_ARTIFACT_PREFIX` before the event is emitted. Session JSON and
+Markdown therefore share one private bucket while remaining separated under `sessions/`
+and `artifacts/`. The artifact contains a structured bucket/key, version, ETag, and
+SHA-256 checksum reference; Markdown bytes are not embedded in the runtime response.
+Grant this runtime `s3:PutObject` for the artifact prefix and use an S3 lifecycle rule
+for retention and orphan cleanup. When the shared bucket is unset, the file store is
+the local-development fallback.
 
 For example, add this to the agent's system prompt:
 

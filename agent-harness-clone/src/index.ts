@@ -230,6 +230,8 @@ export type {
 export const AGENT_PROTOCOL_VERSION = 1 as const;
 export { FileArtifactStore, InMemoryArtifactStore } from './artifacts/artifact-store.js';
 export type { Artifact, ArtifactStore } from './artifacts/artifact-store.js';
+export { S3ArtifactStore } from './artifacts/s3-artifact-store.js';
+export type { S3ArtifactStoreOptions } from './artifacts/s3-artifact-store.js';
 export {
   CompositeEventSink,
   DEFAULT_MAX_LOG_LINE_BYTES,
