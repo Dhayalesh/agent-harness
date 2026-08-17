@@ -136,31 +136,34 @@ cp .env.example .env
 Nothing in it configures an agent. Every variable is optional, and what they set is
 where the process listens and what it will allow a payload to do:
 
-| Variable                                    | Effect                                                        |
-| ------------------------------------------- | ------------------------------------------------------------- |
-| `AGENT_SERVICE_HOST` / `AGENT_SERVICE_PORT` | Where the listener binds. Defaults `0.0.0.0:8080`.            |
-| `AGENT_SERVICE_KEY`                         | Required in `x-agent-service-key` when set.                   |
-| `AGENT_WORKSPACE`                           | Parent of the per-invocation workspace.                       |
-| `AGENT_PERMISSION_CEILING`                  | `plan`, `deny`, or `none`. Caps what any payload may ask for. |
-| `AGENT_SHELL_ENV_ALLOWLIST`                 | Extra variables spawned commands may see.                     |
-| `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.          |
-| `AGENT_LOG_GROUP`                           | Direct CloudWatch group. Set `-` for stdout only.             |
-| `AGENT_LOG_LEVEL`                           | `debug`, `info`, `warn`, or `error`. Defaults to `info`.      |
-| `AWS_REGION`                                | SDK region for CloudWatch, skills, and session S3 access.     |
-| `AGENT_SESSION_STORE`                       | `file` (default), `s3`, `memory`, or `none`.                  |
-| `AGENT_SESSION_DIR`                         | Directory for atomic session files. Defaults under OS temp.   |
-| `AGENT_SESSION_TTL_SECONDS`                 | Inactive transcript lifetime. Defaults to 24 hours.           |
-| `AGENT_SESSION_MAX_BYTES`                   | Per-session size limit. Defaults to 10 MiB.                   |
-| `AGENT_SESSION_S3_BUCKET`                   | Durable bucket; required when the store is `s3`.              |
-| `AGENT_SESSION_S3_PREFIX`                   | Object prefix. Defaults to `sessions`.                        |
-| `AGENT_S3_ARTIFACT_PREFIX`                  | Markdown prefix in the same bucket. Defaults to `artifacts`.  |
-| `AGENT_SESSION_S3_REQUEST_TIMEOUT_MS`       | S3 operation timeout. Defaults to 10 seconds.                 |
-| `AGENT_ARTIFACT_DIR`                        | Local artifact fallback when no S3 bucket is configured.      |
+| Variable                                    | Effect                                                             |
+| ------------------------------------------- | ------------------------------------------------------------------ |
+| `AGENT_SERVICE_HOST` / `AGENT_SERVICE_PORT` | Where the listener binds. Defaults `0.0.0.0:8080`.                 |
+| `AGENT_SERVICE_KEY`                         | Required in `x-agent-service-key` when set.                        |
+| `AGENT_WORKSPACE`                           | Parent of the per-invocation workspace.                            |
+| `AGENT_PERMISSION_CEILING`                  | `plan`, `deny`, or `none`. Caps what any payload may ask for.      |
+| `AGENT_SHELL_ENV_ALLOWLIST`                 | Extra variables spawned commands may see.                          |
+| `TAVILY_API_KEY`                            | Backend for `web_search`. Unset omits that one tool.               |
+| `AGENT_LOG_GROUP`                           | Direct CloudWatch group. Set `-` for stdout only.                  |
+| `AGENT_LOG_LEVEL`                           | `debug`, `info`, `warn`, or `error`. Defaults to `info`.           |
+| `AWS_REGION`                                | SDK region for CloudWatch, skills, and session S3 access.          |
+| `AGENT_SESSION_STORE`                       | `file` (default), `s3`, `memory`, or `none`.                       |
+| `AGENT_SESSION_DIR`                         | Directory for atomic session files. Defaults under OS temp.        |
+| `AGENT_SESSION_TTL_SECONDS`                 | Inactive transcript lifetime. Defaults to 24 hours.                |
+| `AGENT_SESSION_MAX_BYTES`                   | Per-session size limit. Defaults to 10 MiB.                        |
+| `AGENT_SESSION_S3_BUCKET`                   | Durable bucket; required when the store is `s3`.                   |
+| `AGENT_SESSION_S3_PREFIX`                   | Object prefix. Defaults to `sessions`.                             |
+| `AGENT_S3_ARTIFACT_PREFIX`                  | Generated-file prefix in the same bucket. Defaults to `artifacts`. |
+| `AGENT_SESSION_S3_REQUEST_TIMEOUT_MS`       | S3 operation timeout. Defaults to 10 seconds.                      |
+| `AGENT_ARTIFACT_MAX_BYTES`                  | Maximum generated-file size. Defaults to 25 MiB.                   |
+| `AGENT_ARTIFACT_DIR`                        | Local artifact fallback when no S3 bucket is configured.           |
 
-## Markdown document responses
+## Generated file responses
 
 When an artifact store is configured, the runtime automatically offers the
-`create_markdown_artifact` response tool, including to agents with an explicit
+artifact response tools (`create_markdown_artifact`, `create_html_artifact`,
+`create_document_artifact`, `create_spreadsheet_artifact`, and `create_csv_artifact`),
+including to agents with an explicit
 operational tool list. Tell the agent to use it when the requested deliverable is a
 document rather than a conversational answer.
 The tool call is the intent decision: ordinary answers remain text, while a successful
@@ -169,11 +172,18 @@ download at `GET /artifacts/<id>`. `output` retains any conversational text the 
 wrote alongside the file, while `response.type` continues to mark the documents as the
 primary deliverable.
 
-With `AGENT_SESSION_S3_BUCKET` set, the tool writes an immutable UUID-named `.md`
-object under `AGENT_S3_ARTIFACT_PREFIX` before the event is emitted. Session JSON and
-Markdown therefore share one private bucket while remaining separated under `sessions/`
+The five tools cover Markdown (`.md`), HTML (`.html`), editable Word documents
+(`.docx`), Excel workbooks (`.xlsx`), and CSV datasets (`.csv`). The model selects one
+only when the user's intent is a reusable file; normal questions remain conversational
+text.
+
+With `AGENT_SESSION_S3_BUCKET` set, these tools write immutable UUID-named objects under
+`AGENT_S3_ARTIFACT_PREFIX` before the event is emitted. New objects use the
+format-neutral key `<prefix>/<artifact-id>/content`; the filename and media type live in
+artifact metadata. Session JSON and generated files therefore share one private bucket
+while remaining separated under `sessions/`
 and `artifacts/`. The artifact contains a structured bucket/key, version, ETag, and
-SHA-256 checksum reference; Markdown bytes are not embedded in the runtime response.
+SHA-256 checksum reference; generated bytes are not embedded in the runtime response.
 Grant this runtime `s3:PutObject` for the artifact prefix and use an S3 lifecycle rule
 for retention and orphan cleanup. When the shared bucket is unset, the file store is
 the local-development fallback.
@@ -181,9 +191,11 @@ the local-development fallback.
 For example, add this to the agent's system prompt:
 
 ```text
-When the user asks for a reusable document, report, proposal, specification, guide,
-or README, call create_markdown_artifact with the complete document and do not repeat
-its content in chat. For normal questions, answer in chat without calling the tool.
+Choose a response artifact only when the user asks for a reusable file. Use
+create_markdown_artifact for Markdown, create_html_artifact for HTML,
+create_document_artifact for DOCX, create_spreadsheet_artifact for XLSX, and
+create_csv_artifact for CSV. For normal questions, answer in chat without calling an
+artifact tool. A short conversational summary may accompany a generated file.
 ```
 
 Leaving `AGENT_SERVICE_KEY` empty serves an unauthenticated endpoint. The process warns

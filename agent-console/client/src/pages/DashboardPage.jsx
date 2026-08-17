@@ -74,7 +74,9 @@ export function DashboardPage() {
         setDashboard(summary.dashboard ?? summary);
         const found = agentResult.agents ?? [];
         setAgents(found);
-        const preferred = found.find((agent) => agent.isDefault && agent.enabled);
+        const preferred = found.find(
+          (agent) => agent.isDefault && agent.enabled,
+        );
         setSelectedAgent(
           (preferred ?? found.find((agent) => agent.enabled) ?? found[0])?.id ??
             "",
@@ -124,10 +126,10 @@ export function DashboardPage() {
             to={card.to}
             isPressable
             shadow="none"
-            className="border border-divider bg-content1 transition-colors data-[hover=true]:border-primary/40"
+            className="border border-divider bg-content1 shadow-[0_1px_2px_rgba(31,29,26,0.025)] transition-all data-[hover=true]:border-[#c8c4bb] data-[hover=true]:shadow-[0_3px_12px_rgba(31,29,26,0.055)] dark:data-[hover=true]:border-content4"
           >
             <CardBody className="flex-row items-center gap-3.5 px-4 py-4">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-medium bg-primary/10 text-primary">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-medium border border-divider bg-content2 text-default-600">
                 <Icon name={card.icon} className="h-5 w-5" />
               </span>
               <div className="min-w-0 text-left">
@@ -150,22 +152,14 @@ export function DashboardPage() {
         <div className="flex flex-col gap-4">
           <Card
             shadow="none"
-            className="relative overflow-hidden border border-divider bg-content1"
+            className="relative overflow-hidden border border-divider bg-[#f0eee8] dark:bg-content2"
           >
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-secondary/10 blur-3xl"
-            />
-            <div
-              aria-hidden="true"
-              className="pointer-events-none absolute -bottom-28 -left-20 h-64 w-64 rounded-full bg-primary/10 blur-3xl"
-            />
             <CardBody className="relative gap-5 p-6">
               <div>
-                <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.11em] text-primary">
+                <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.14em] text-secondary">
                   Agent playground
                 </span>
-                <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
+                <h2 className="text-xl font-medium tracking-[-0.02em] sm:text-2xl">
                   What do you want your agent to do?
                 </h2>
                 <p className="mt-1 text-small text-default-500">
@@ -272,7 +266,10 @@ export function DashboardPage() {
         </div>
 
         <aside className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-1">
-          <SectionCard title="Setup" description="The shortest path to a first answer.">
+          <SectionCard
+            title="Setup"
+            description="The shortest path to a first answer."
+          >
             <ol className="flex flex-col gap-2">
               <SetupStep
                 complete={(counts.modelProviders ?? 0) > 0}
@@ -340,7 +337,7 @@ function SetupStep({ complete, label, to }) {
         className={`flex w-full items-center gap-2.5 rounded-medium border px-3 py-2.5 text-small transition-colors ${
           complete
             ? "border-success/30 bg-success/5 text-foreground"
-            : "border-divider bg-content2 text-foreground hover:border-primary/40"
+            : "border-divider bg-content2 text-foreground hover:border-[#bbb6ac] dark:hover:border-content4"
         }`}
       >
         <span

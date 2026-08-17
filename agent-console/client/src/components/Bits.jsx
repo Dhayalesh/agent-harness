@@ -13,7 +13,6 @@ import {
   ModalContent,
   ModalFooter,
   ModalHeader,
-  Spinner,
   Switch,
 } from "@heroui/react";
 import { useCallback, useRef, useState } from "react";
@@ -87,9 +86,23 @@ export function ErrorNote({ error, className = "" }) {
 
 export function Loading({ what = "data" }) {
   return (
-    <div className="flex min-h-[240px] w-full items-center justify-center py-16">
-      <Spinner color="primary" label={`Loading ${what}…`} labelColor="foreground" />
+    <div
+      className="flex min-h-[240px] w-full flex-col items-center justify-center gap-3 py-16"
+      role="status"
+      aria-live="polite"
+    >
+      <ActivityIndicator />
+      <span className="text-small text-default-500">Loading {what}…</span>
     </div>
+  );
+}
+
+export function ActivityIndicator({ size = "md", className = "" }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`enterprise-loader ${size === "sm" ? "enterprise-loader-sm" : ""} ${className}`}
+    />
   );
 }
 
@@ -121,21 +134,21 @@ export function PageHeader({
         {avatar}
         <div className="min-w-0">
           {eyebrow && (
-            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.11em] text-primary">
+            <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.14em] text-secondary">
               {eyebrow}
             </span>
           )}
           <h1
             className={
               large
-                ? "text-2xl font-semibold tracking-tight text-foreground sm:text-3xl lg:text-[2.1rem]"
-                : "text-2xl font-semibold tracking-tight text-foreground"
+                ? "text-2xl font-medium tracking-[-0.025em] text-foreground sm:text-3xl lg:text-[2rem]"
+                : "text-2xl font-medium tracking-[-0.02em] text-foreground"
             }
           >
             {title}
           </h1>
           {description && (
-            <p className="mt-1 max-w-[62ch] text-small text-default-500">
+            <p className="mt-1.5 max-w-[64ch] text-small leading-6 text-default-500">
               {description}
             </p>
           )}
@@ -160,7 +173,7 @@ export function SectionCard({
   return (
     <Card
       shadow="none"
-      className={`border border-divider bg-content1 ${className}`}
+      className={`border border-divider bg-content1 shadow-[0_1px_2px_rgba(31,29,26,0.025)] ${className}`}
     >
       {(title || action) && (
         <CardHeader className="flex items-start justify-between gap-4 px-5 pb-0 pt-5">
@@ -184,8 +197,8 @@ export function SectionCard({
 
 export function EmptyState({ icon = "spark", title, description, action }) {
   return (
-    <div className="flex min-h-[280px] flex-col items-center justify-center rounded-large border border-dashed border-divider bg-content1/40 px-5 py-10 text-center">
-      <span className="mb-3 grid h-11 w-11 place-items-center rounded-medium bg-primary/10 text-primary">
+    <div className="flex min-h-[280px] flex-col items-center justify-center rounded-large border border-dashed border-divider bg-content1/55 px-5 py-10 text-center">
+      <span className="mb-3 grid h-11 w-11 place-items-center rounded-medium border border-divider bg-content2 text-default-600">
         <Icon name={icon} className="h-5 w-5" />
       </span>
       <h2 className="text-medium font-semibold text-foreground">{title}</h2>
@@ -202,7 +215,7 @@ export function EmptyState({ icon = "spark", title, description, action }) {
 export function StatTile({ label, value, detail, className = "" }) {
   return (
     <div
-      className={`min-w-0 rounded-large border border-divider bg-content1 px-4 py-3.5 ${className}`}
+      className={`min-w-0 rounded-large border border-divider bg-content1 px-4 py-3.5 shadow-[0_1px_2px_rgba(31,29,26,0.025)] ${className}`}
     >
       <span className="block text-tiny text-default-500">{label}</span>
       <strong className="my-0.5 block truncate text-2xl font-semibold tracking-tight text-foreground">
@@ -253,7 +266,7 @@ export function ToggleCard({
       isSelected={isSelected}
       onValueChange={onValueChange}
       classNames={{
-        base: `inline-flex max-w-full flex-row-reverse items-center justify-between gap-3 rounded-medium border border-divider bg-content2 px-3 py-2.5 data-[selected=true]:border-primary/40 ${className}`,
+        base: `inline-flex max-w-full flex-row-reverse items-center justify-between gap-3 rounded-medium border border-divider bg-content2 px-3 py-2.5 data-[selected=true]:border-secondary/50 ${className}`,
         label: "ml-0 min-w-0",
       }}
     >
@@ -270,14 +283,22 @@ export function ToggleCard({
 /** One save/cancel bar shape, pinned so it stays reachable on a long form. */
 export function FormActions({ cancelHref, saving, isDisabled, label }) {
   return (
-    <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-large border border-divider bg-content1/85 px-4 py-3 backdrop-blur-md">
+    <div className="sticky bottom-0 z-10 flex items-center gap-2 rounded-large border border-divider bg-content1/90 px-4 py-3 shadow-[0_-8px_24px_rgba(34,31,27,0.04)] backdrop-blur-md">
       <Button
         type="submit"
         color="primary"
         radius="md"
-        isLoading={saving}
         isDisabled={isDisabled}
-        startContent={saving ? null : <Icon name="check" className="h-4 w-4" />}
+        startContent={
+          saving ? (
+            <ActivityIndicator
+              size="sm"
+              className="text-white dark:text-black"
+            />
+          ) : (
+            <Icon name="check" className="h-4 w-4" />
+          )
+        }
       >
         {saving ? "Saving…" : label}
       </Button>
@@ -300,7 +321,10 @@ export function SearchInput({ value, onValueChange, label, placeholder }) {
       aria-label={label}
       placeholder={placeholder}
       startContent={<Icon name="search" className="h-4 w-4 text-default-400" />}
-      classNames={{ base: "w-full sm:w-[260px]", inputWrapper: "h-9 bg-content1" }}
+      classNames={{
+        base: "w-full sm:w-[260px]",
+        inputWrapper: "h-9 bg-content1",
+      }}
     />
   );
 }
@@ -420,18 +444,27 @@ export function tokens(usage) {
  * headers; the chat surface asks for the circular variant so it reads as a speaker
  * rather than a record.
  */
-export function AgentAvatar({ name, size = "md", circle = false, className = "" }) {
+export function AgentAvatar({
+  name,
+  size = "md",
+  circle = false,
+  className = "",
+}) {
   const dimensions = {
     xs: "h-7 w-7 text-[11px]",
     sm: "h-8 w-8 text-tiny",
     md: "h-9 w-9 text-small",
     lg: "h-12 w-12 text-medium",
   }[size];
-  const radius = circle ? "rounded-full" : size === "lg" ? "rounded-large" : "rounded-medium";
+  const radius = circle
+    ? "rounded-full"
+    : size === "lg"
+      ? "rounded-large"
+      : "rounded-medium";
   return (
     <span
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center bg-gradient-to-br from-primary to-secondary font-bold text-white ${dimensions} ${radius} ${className}`}
+      className={`grid shrink-0 place-items-center border border-[#dbc9bc] bg-[#eee2d8] font-semibold text-[#704630] dark:border-[#644638] dark:bg-[#493329] dark:text-[#f0c2aa] ${dimensions} ${radius} ${className}`}
     >
       {(name ?? "?").trim().slice(0, 1).toUpperCase() || "?"}
     </span>

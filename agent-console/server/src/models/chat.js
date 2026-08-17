@@ -1,5 +1,53 @@
 import mongoose from "mongoose";
 
+const artifactStorageSchema = new mongoose.Schema(
+  {
+    kind: { type: String, enum: ["s3"], required: true },
+    bucket: { type: String, required: true },
+    key: { type: String, required: true },
+    region: String,
+    versionId: String,
+    etag: String,
+    checksumSha256: String,
+  },
+  { _id: false },
+);
+
+const artifactSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    kind: {
+      type: String,
+      enum: ["markdown", "html", "docx", "xlsx", "csv"],
+    },
+    title: { type: String, required: true },
+    filename: { type: String, required: true },
+    contentType: { type: String, required: true },
+    size: { type: Number, required: true },
+    createdAt: { type: String, required: true },
+    // `content` is legacy/local compatibility. New production generated files
+    // keep only an S3 reference in MongoDB.
+    content: String,
+    storage: { type: artifactStorageSchema },
+  },
+  { _id: false },
+);
+
+const toolCallSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    input: { type: String, default: "" },
+    output: { type: String, default: "" },
+    status: {
+      type: String,
+      enum: ["pending", "running", "done", "error"],
+      required: true,
+    },
+  },
+  { _id: false },
+);
+
 const chatMessageSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
@@ -9,6 +57,9 @@ const chatMessageSchema = new mongoose.Schema(
       required: true,
     },
     content: { type: String, required: true },
+    reasoning: String,
+    artifacts: { type: [artifactSchema], default: undefined },
+    toolCalls: { type: [toolCallSchema], default: undefined },
     runId: String,
     createdAt: { type: String, required: true },
     error: {
@@ -72,6 +123,22 @@ chatSchema.index({ updatedAt: -1 });
 function transformDocument(_document, plain) {
   plain.id = plain._id.toString();
   plain.messageCount = plain.messages?.length ?? 0;
+  plain.messages = plain.messages?.map((message) => ({
+    ...message,
+    ...(message.artifacts?.length
+      ? {
+          artifacts: message.artifacts.map(
+            ({ content: _content, storage: _storage, ...artifact }) => ({
+              ...artifact,
+              url: `/api/chats/${plain.id}/artifacts/${encodeURIComponent(artifact.id)}`,
+              downloadUrl:
+                `/api/chats/${plain.id}/artifacts/${encodeURIComponent(artifact.id)}` +
+                "?download=true",
+            }),
+          ),
+        }
+      : {}),
+  }));
   delete plain._id;
   return plain;
 }

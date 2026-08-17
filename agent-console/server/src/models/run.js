@@ -34,6 +34,7 @@ const runSchema = new mongoose.Schema(
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
     tools: { type: [toolSummarySchema], default: [] },
+    artifacts: { type: [mongoose.Schema.Types.Mixed], default: [] },
     agentRuntimeArn: String,
     agentRuntimeQualifier: String,
     runtimeSessionId: String,
@@ -62,6 +63,9 @@ runSchema.index({ createdAt: -1 });
 
 function transformDocument(_document, plain) {
   plain.id = plain._id.toString();
+  plain.artifacts = plain.artifacts?.map(
+    ({ content: _content, storage: _storage, ...artifact }) => artifact,
+  );
   delete plain._id;
   return plain;
 }

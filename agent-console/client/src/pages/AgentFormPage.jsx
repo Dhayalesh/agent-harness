@@ -343,7 +343,10 @@ export function AgentFormPage({ mode }) {
               classNames={{ base: "items-center py-2" }}
             >
               <span className="text-tiny">
-                Add a <HeroLink href="/model-providers/new" size="sm">model provider</HeroLink>{" "}
+                Add a{" "}
+                <HeroLink href="/model-providers/new" size="sm">
+                  model provider
+                </HeroLink>{" "}
                 before saving this agent.
               </span>
             </Alert>
@@ -413,7 +416,7 @@ export function AgentFormPage({ mode }) {
                 key={tool.name}
                 value={tool.name}
                 classNames={{
-                  base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-primary/40",
+                  base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-secondary/50",
                   label: "flex w-full items-center gap-2",
                 }}
               >
@@ -462,7 +465,7 @@ export function AgentFormPage({ mode }) {
                     key={server.id}
                     value={server.id}
                     classNames={{
-                      base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-primary/40",
+                      base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-secondary/50",
                       label: "w-full min-w-0",
                     }}
                   >
@@ -498,7 +501,7 @@ export function AgentFormPage({ mode }) {
                     <div
                       key={skill.id}
                       className={`rounded-medium border bg-content2 ${
-                        selected ? "border-primary/40" : "border-divider"
+                        selected ? "border-secondary/50" : "border-divider"
                       }`}
                     >
                       <Checkbox

@@ -99,6 +99,13 @@ test("folding a stream produces the same result shape the buffered path returns"
     { type: "usage.updated", usage: { inputTokens: 100, outputTokens: 20 } },
     { type: "usage.updated", usage: { inputTokens: 50, outputTokens: 5 } },
     { type: "assistant.text.delta", delta: "there." },
+    {
+      type: "assistant.message.completed",
+      message: {
+        reasoning: "Weighing the options.",
+        content: [{ type: "text", text: "Hello there." }],
+      },
+    },
     { type: "turn.completed", turn: 2, reason: "end_turn" },
     { type: "session.completed", reason: "end_turn" },
   ];
@@ -151,4 +158,77 @@ test("a reported error and a truncated stream both fold to a failed run", () => 
   assert.equal(cut.error.code, "RUNTIME_STREAM_INCOMPLETE");
   assert.equal(cut.error.recoverable, true);
   assert.equal(cut.output, "Half");
+});
+
+test("a streamed Markdown artifact becomes a file response with an S3 reference", () => {
+  const totals = new RunTotals();
+  totals.observe({
+    type: "tool.requested",
+    call: {
+      id: "call-doc",
+      name: "create_markdown_artifact",
+      input: {
+        title: "Technical design",
+        filename: "technical-design.md",
+        content: "# Technical design\n\nDetails.",
+      },
+    },
+  });
+  totals.observe({
+    type: "artifact.created",
+    toolCallId: "call-doc",
+    artifact: {
+      id: "artifact-stream",
+      contentType: "text/markdown; charset=utf-8",
+      size: 29,
+      createdAt: "2026-08-14T00:00:00.000Z",
+      metadata: { filename: "technical-design.md", title: "Technical design" },
+      storage: {
+        kind: "s3",
+        bucket: "private-agent-artifacts",
+        key: "production/artifacts/artifact-stream.md",
+      },
+    },
+  });
+  totals.observe({
+    type: "assistant.message.completed",
+    message: {
+      reasoning: "The requested technical design is ready.",
+      content: [
+        {
+          type: "text",
+          text: "I created the technical design and attached it below.",
+        },
+      ],
+    },
+  });
+  totals.observe({ type: "session.completed", reason: "end_turn" });
+
+  const result = totals.result({
+    agentName: "writer",
+    durationMs: 10,
+    runtimeSessionId: "runtime-session",
+  });
+  assert.equal(
+    result.output,
+    "I created the technical design and attached it below.",
+  );
+  assert.equal(result.reasoning, "The requested technical design is ready.");
+  assert.equal(result.response.type, "files");
+  assert.equal(Object.hasOwn(result.artifacts[0], "content"), false);
+  assert.deepEqual(result.artifacts[0].storage, {
+    kind: "s3",
+    bucket: "private-agent-artifacts",
+    key: "production/artifacts/artifact-stream.md",
+  });
+  assert.deepEqual(result.toolCalls, [
+    {
+      id: "call-doc",
+      name: "create_markdown_artifact",
+      input:
+        '{\n  "title": "Technical design",\n  "filename": "technical-design.md",\n  "content": "[saved as Markdown artifact]"\n}',
+      output: "",
+      status: "pending",
+    },
+  ]);
 });

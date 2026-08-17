@@ -56,6 +56,7 @@ const paths = {
   close: <path d="m6 6 12 12M18 6 6 18" />,
   send: <path d="M12 19V5M6 11l6-6 6 6" />,
   down: <path d="M12 5v14M6 13l6 6 6-6" />,
+  chevron: <path d="m8 10 4 4 4-4" />,
   arrow: <path d="M5 12h13M13 6l6 6-6 6" />,
   check: <path d="m5 12.5 4.5 4.5L19 7" />,
   tool: (
@@ -115,6 +116,25 @@ const paths = {
     <>
       <path d="M20 11a8 8 0 1 0-2 6" />
       <path d="M20 5v6h-6" />
+    </>
+  ),
+  document: (
+    <>
+      <path d="M6 3h8l4 4v14H6Z" />
+      <path d="M14 3v5h5M9 12h6M9 16h6" />
+    </>
+  ),
+  code: <path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14" />,
+  table: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M9 9v11M15 9v11" />
+    </>
+  ),
+  download: (
+    <>
+      <path d="M12 3v12M7 10l5 5 5-5" />
+      <path d="M5 21h14" />
     </>
   ),
 };

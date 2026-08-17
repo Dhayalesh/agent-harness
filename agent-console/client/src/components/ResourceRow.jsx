@@ -20,7 +20,7 @@ export function ResourceRow({
   return (
     <Card
       shadow="none"
-      className="border border-divider bg-content1 transition-colors hover:border-primary/30"
+      className="border border-divider bg-content1 shadow-[0_1px_2px_rgba(31,29,26,0.02)] transition-all hover:border-[#c8c4bb] hover:shadow-[0_3px_12px_rgba(31,29,26,0.045)] dark:hover:border-content4"
     >
       <CardBody className="flex-col gap-0 p-0 sm:flex-row">
         <div className="min-w-0 flex-1 p-5">
@@ -37,7 +37,9 @@ export function ResourceRow({
             </p>
           )}
 
-          {meta?.length > 0 && <MetaGrid wide items={meta} className="mt-3.5" />}
+          {meta?.length > 0 && (
+            <MetaGrid wide items={meta} className="mt-3.5" />
+          )}
         </div>
 
         <Divider className="sm:hidden" />

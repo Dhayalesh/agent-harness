@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ArtifactStore } from '../../artifacts/artifact-store.js';
 import type { Tool } from '../tool.js';
+import { artifactDescriptor } from './artifact-tool-utils.js';
 
 const schema = z.object({
   title: z.string().min(1).max(200),
@@ -43,34 +44,15 @@ export function createMarkdownArtifactTool(store: ArtifactStore): Tool<z.infer<t
     // workspace or an external system, so plan/default modes may safely allow it.
     checkPermissions: () => ({ decision: 'allow' }),
     async execute(input, context) {
-      const filename = markdownFilename(input.filename);
+      const descriptor = artifactDescriptor('markdown', input.title, input.filename, context);
       const artifact = await store.put(input.content, {
-        contentType: 'text/markdown; charset=utf-8',
-        metadata: {
-          kind: 'markdown',
-          title: input.title,
-          filename,
-          presentation: 'file',
-          sessionId: context.sessionId,
-          turnId: context.turnId,
-          toolCallId: context.toolCallId,
-        },
+        contentType: descriptor.contentType,
+        metadata: descriptor.metadata,
       });
       return {
-        content: `Created Markdown document ${filename}`,
+        content: `Created Markdown document ${descriptor.filename}`,
         metadata: { artifact },
       };
     },
   };
-}
-
-function markdownFilename(value: string): string {
-  const leaf = value.replaceAll('\\', '/').split('/').at(-1)?.trim() || 'document.md';
-  const safe = leaf
-    .replace(/[^A-Za-z0-9._ -]+/g, '-')
-    .replace(/\s+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 196);
-  const base = safe && safe !== '.' && safe !== '..' ? safe : 'document';
-  return base.toLowerCase().endsWith('.md') ? base : `${base}.md`;
 }

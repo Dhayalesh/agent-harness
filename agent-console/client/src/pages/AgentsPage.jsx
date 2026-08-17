@@ -118,7 +118,7 @@ export function AgentsPage() {
               <li key={agent.id} className="min-w-0">
                 <Card
                   shadow="none"
-                  className="h-full border border-divider bg-content1 transition-colors hover:border-primary/30"
+                  className="h-full border border-divider bg-content1 transition-all hover:border-[#c8c4bb] hover:shadow-[0_3px_12px_rgba(31,29,26,0.045)] dark:hover:border-content4"
                 >
                   <CardHeader className="flex items-start justify-between gap-3 px-5 pb-0 pt-5">
                     <div className="flex min-w-0 items-center gap-3">
@@ -150,9 +150,15 @@ export function AgentsPage() {
                     </p>
 
                     <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                      <Fact label="Model" value={agent.model ?? provider?.model ?? "—"} />
+                      <Fact
+                        label="Model"
+                        value={agent.model ?? provider?.model ?? "—"}
+                      />
                       <Fact label="Tools" value={agent.tools?.length ?? 0} />
-                      <Fact label="MCP" value={agent.mcpServerIds?.length ?? 0} />
+                      <Fact
+                        label="MCP"
+                        value={agent.mcpServerIds?.length ?? 0}
+                      />
                       <Fact label="Skills" value={agent.skills?.length ?? 0} />
                       <Fact
                         label="Updated"

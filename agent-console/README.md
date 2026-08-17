@@ -226,6 +226,10 @@ PATCH requests deliberately distinguish "unchanged" from "clear":
 
 ### Chats
 
+Generated Markdown, HTML, DOCX, XLSX, and CSV response artifacts are available at
+`GET /api/chats/:id/artifacts/:artifactId`; add `?download=true` for attachment
+delivery.
+
 | Method                   | Path                           | Purpose                                                                                                                                     |
 | ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET`, `POST`            | `/api/chats`                   | List chats or create one with `{ agentId, title? }`. List supports `agentId` and `limit`.                                                   |
@@ -296,6 +300,42 @@ to finish unwatched.
 
 Resuming a dropped stream and answering an interactive permission request are runtime
 features this console does not use yet; both need it to hold a run id across requests.
+
+## Generated file responses
+
+The console understands the harness's Markdown, HTML, Word, Excel, and CSV response
+paths in both buffered and streaming mode. In production the harness first uploads the generated object
+to the existing private `AGENT_SESSION_S3_BUCKET` under `AGENT_S3_ARTIFACT_PREFIX`, then
+emits `artifact.created` with its structured S3 reference. MongoDB stores that durable
+reference and display metadata, not a second copy of the file and never a temporary
+presigned URL.
+
+Chat JSON contains only artifact metadata and console preview/download URLs; the full
+Artifact bytes are returned only by the console-owned artifact endpoint, which resolves the
+owning chat and proxies checksum-aware `GetObject` from the allowlisted bucket and
+prefix. Keep this endpoint behind the console's authentication/front door in production. The console role therefore
+needs `s3:GetObject` only for the artifact prefix; the runtime role needs `s3:PutObject`.
+Keep the shared bucket private and use an S3 lifecycle rule for retention/orphan cleanup.
+
+Existing and local-development Markdown, HTML, and CSV artifacts that contain a MongoDB
+`content` field remain readable. Binary DOCX/XLSX files require shared S3 storage. In the chat UI, generated files
+appear as document cards and any separate assistant narrative remains visible above them.
+During a streamed write, its artifact workspace opens automatically. Markdown, HTML, and
+Word source update as text arrives; structured spreadsheet previews appear once their tool
+input is complete. The workspace provides format-aware controls (Preview/Code, Table/Raw,
+Word pages, or worksheet tabs), then switches to the saved S3-backed artifact when the turn
+finishes. Closing the workspace during a turn is respected; it does not repeatedly reopen.
+
+Tool activity is also part of the saved assistant message. Live calls appear in an expanded
+activity group, while completed messages keep the same calls in a collapsed dropdown. Opening
+Tools reveals a concise call list; each call then expands independently to show its bounded
+input and output. Provider-exposed reasoning follows the same lifecycle in a separate Thinking
+disclosure: open while streaming, collapsed after the response is saved. The console correlates
+tool requests and results for the current turn only, applies field-size and call-count bounds
+before persistence, and removes generated document bodies and spreadsheet cell data from
+artifact-tool inputs because S3 is the canonical file store. Selecting a file card reopens
+the same workspace, and its download action returns the original generated file. HTML preview
+runs in a scriptless sandbox; direct HTML and Office-file responses are attachment-only.
 
 ## Troubleshooting
 

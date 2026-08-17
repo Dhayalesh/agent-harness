@@ -8,6 +8,13 @@ import {
 import { buildPayload } from "./payload.js";
 import { nowIso } from "./platform.js";
 import { RunTotals } from "./run-totals.js";
+import {
+  artifactMetadata,
+  hydrateRuntimeArtifacts,
+} from "./response-artifacts.js";
+import { hydrateRuntimeReasoning } from "./response-reasoning.js";
+import { hydrateRuntimeText } from "./response-text.js";
+import { hydrateRuntimeToolCalls } from "./response-tool-calls.js";
 
 export async function invokeStoredAgent({
   agentId,
@@ -42,6 +49,11 @@ export async function invokeStoredAgent({
       payload,
       runtimeSessionId,
     });
+    invocation.result = hydrateRuntimeText(
+      hydrateRuntimeReasoning(
+        hydrateRuntimeToolCalls(hydrateRuntimeArtifacts(invocation.result)),
+      ),
+    );
   } catch (error) {
     await failRun(run, error);
     throw error;
@@ -201,6 +213,7 @@ function applyRuntimeResult(run, result, invocation) {
       (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
   };
   run.tools = result.tools ?? [];
+  run.artifacts = artifactMetadata(result.artifacts);
   run.harnessSessionId = result.sessionId;
   run.session = result.session;
   run.workingDirectory = result.workingDirectory;

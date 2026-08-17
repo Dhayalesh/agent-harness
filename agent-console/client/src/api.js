@@ -119,6 +119,36 @@ async function streamRequest(path, { body, onEvent, signal } = {}) {
   return { chat: completed.chat, run: completed.run };
 }
 
+async function textRequest(path) {
+  const response = await fetch(path);
+  const text = await response.text();
+  if (!response.ok) {
+    let message = text || `HTTP ${response.status}`;
+    try {
+      message = JSON.parse(text).error ?? message;
+    } catch {
+      // Markdown and plain-text errors are already readable.
+    }
+    throw new ApiError(message, response.status);
+  }
+  return text;
+}
+
+async function bytesRequest(path) {
+  const response = await fetch(path);
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text || `HTTP ${response.status}`;
+    try {
+      message = JSON.parse(text).error ?? message;
+    } catch {
+      // Binary endpoints can still return a readable plain-text error.
+    }
+    throw new ApiError(message, response.status);
+  }
+  return response.arrayBuffer();
+}
+
 function parseFrame(frame) {
   const data = [];
   for (const line of frame.split("\n")) {
@@ -218,6 +248,8 @@ export const api = {
   },
   createChat: (body) => request("/chats", { method: "POST", body }),
   getChat: (id) => request(`/chats/${id}`),
+  getArtifactText: (url) => textRequest(url),
+  getArtifactBytes: (url) => bytesRequest(url),
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
   resetChatSession: (id) =>
     request(`/chats/${id}/session/reset`, { method: "POST" }),

@@ -10,7 +10,11 @@ import { createPowerShellTool, isPowerShellAvailable } from './powershell.js';
 import { createReadFileTool } from './read-file.js';
 import { createTodoWriteTool, TodoStore } from './todo-write.js';
 import { createWriteFileTool } from './write-file.js';
+import { createCsvArtifactTool } from './create-csv-artifact.js';
+import { createDocumentArtifactTool } from './create-document-artifact.js';
+import { createHtmlArtifactTool } from './create-html-artifact.js';
 import { createMarkdownArtifactTool } from './create-markdown-artifact.js';
+import { createSpreadsheetArtifactTool } from './create-spreadsheet-artifact.js';
 
 export type BuiltinToolOptions = {
   maxReadBytes?: number;
@@ -27,8 +31,8 @@ export type BuiltinToolOptions = {
   /** Auto-approve shell commands classified as read-only. Defaults to true. */
   autoApproveReadOnlyCommands?: boolean;
   /**
-   * Response artifact store. When supplied, offers `create_markdown_artifact` so
-   * the model can choose file presentation for document requests.
+   * Response artifact store. When supplied, offers the format-specific artifact
+   * tools so the model can choose file presentation from user intent.
    */
   artifactStore?: ArtifactStore;
 };
@@ -46,7 +50,15 @@ export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOpt
     createGrepTool(runtime),
     createWriteFileTool(runtime, snapshots),
     createEditFileTool(runtime, snapshots),
-    ...(options.artifactStore ? [createMarkdownArtifactTool(options.artifactStore)] : []),
+    ...(options.artifactStore
+      ? [
+          createMarkdownArtifactTool(options.artifactStore),
+          createHtmlArtifactTool(options.artifactStore),
+          createDocumentArtifactTool(options.artifactStore),
+          createSpreadsheetArtifactTool(options.artifactStore),
+          createCsvArtifactTool(options.artifactStore),
+        ]
+      : []),
     createBashTool(runtime, shellOptions),
     ...((options.powershell ?? isPowerShellAvailable())
       ? [createPowerShellTool(runtime, shellOptions)]
@@ -68,3 +80,7 @@ export { createTodoWriteTool, formatTodos, TodoStore } from './todo-write.js';
 export type { TodoItem, TodoStatus } from './todo-write.js';
 export { createWriteFileTool } from './write-file.js';
 export { createMarkdownArtifactTool } from './create-markdown-artifact.js';
+export { createHtmlArtifactTool } from './create-html-artifact.js';
+export { createDocumentArtifactTool } from './create-document-artifact.js';
+export { createSpreadsheetArtifactTool } from './create-spreadsheet-artifact.js';
+export { createCsvArtifactTool } from './create-csv-artifact.js';

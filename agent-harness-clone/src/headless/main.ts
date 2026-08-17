@@ -60,6 +60,11 @@ const sessionDirectory = path.resolve(
 const artifactDirectory = path.resolve(
   process.env.AGENT_ARTIFACT_DIR?.trim() || path.join(os.tmpdir(), 'agent-harness-artifacts'),
 );
+const artifactMaxBytes = parsePositiveInteger(
+  process.env.AGENT_ARTIFACT_MAX_BYTES,
+  25 * 1024 * 1024,
+  'AGENT_ARTIFACT_MAX_BYTES',
+);
 const sessionBucket = process.env.AGENT_SESSION_S3_BUCKET?.trim();
 const artifactStore = sessionBucket
   ? new S3ArtifactStore({
@@ -71,9 +76,9 @@ const artifactStore = sessionBucket
         10_000,
         'AGENT_SESSION_S3_REQUEST_TIMEOUT_MS',
       ),
-      maxBytes: 2_000_000,
+      maxBytes: artifactMaxBytes,
     })
-  : new FileArtifactStore(artifactDirectory);
+  : new FileArtifactStore(artifactDirectory, { maxBytes: artifactMaxBytes });
 const sessionOptions = { ttlMs: sessionTtlMs, maxBytes: sessionMaxBytes };
 const localSessionStore = new FileSessionStore(sessionDirectory, sessionOptions);
 const s3SessionStore =

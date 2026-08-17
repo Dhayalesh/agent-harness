@@ -9,6 +9,7 @@ import {
   type PutObjectOutput,
 } from '@aws-sdk/client-s3';
 import { AgentHarnessError } from '../core/errors.js';
+import { artifactContentKey } from './artifact-formats.js';
 import type { Artifact, ArtifactStore } from './artifact-store.js';
 
 export type S3ArtifactStoreOptions = {
@@ -49,7 +50,7 @@ export class S3ArtifactStore implements ArtifactStore {
   ): Promise<Artifact> {
     const id = randomUUID();
     const body = typeof content === 'string' ? Buffer.from(content, 'utf8') : Buffer.from(content);
-    const maximum = this.options.maxBytes ?? 2_000_000;
+    const maximum = this.options.maxBytes ?? 25 * 1024 * 1024;
     if (body.byteLength > maximum) {
       throw new AgentHarnessError(
         `Artifact is ${body.byteLength} bytes; maximum is ${maximum}`,
@@ -97,72 +98,80 @@ export class S3ArtifactStore implements ArtifactStore {
   }
 
   async get(id: string): Promise<Uint8Array | undefined> {
-    const key = this.keyForId(id);
-    try {
-      const output = (await this.request(
-        new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
-      )) as GetObjectOutput;
-      if (!output.Body) {
-        throw new AgentHarnessError('S3 returned an empty artifact body', 'INVALID_ARTIFACT');
+    for (const key of this.keysForId(id)) {
+      try {
+        const output = (await this.request(
+          new GetObjectCommand({ Bucket: this.options.bucket, Key: key }),
+        )) as GetObjectOutput;
+        if (!output.Body) {
+          throw new AgentHarnessError('S3 returned an empty artifact body', 'INVALID_ARTIFACT');
+        }
+        const maximum = this.options.maxBytes ?? 25 * 1024 * 1024;
+        if (output.ContentLength !== undefined && output.ContentLength > maximum) {
+          throw new AgentHarnessError(
+            `Stored artifact is ${output.ContentLength} bytes; maximum is ${maximum}`,
+            'ARTIFACT_TOO_LARGE',
+          );
+        }
+        const bytes = await bodyBytes(output.Body);
+        if (bytes.byteLength > maximum) {
+          throw new AgentHarnessError(
+            `Stored artifact is ${bytes.byteLength} bytes; maximum is ${maximum}`,
+            'ARTIFACT_TOO_LARGE',
+          );
+        }
+        return bytes;
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        throw this.translate(error, 'read', key);
       }
-      const maximum = this.options.maxBytes ?? 2_000_000;
-      if (output.ContentLength !== undefined && output.ContentLength > maximum) {
-        throw new AgentHarnessError(
-          `Stored artifact is ${output.ContentLength} bytes; maximum is ${maximum}`,
-          'ARTIFACT_TOO_LARGE',
-        );
-      }
-      const bytes = await bodyBytes(output.Body);
-      if (bytes.byteLength > maximum) {
-        throw new AgentHarnessError(
-          `Stored artifact is ${bytes.byteLength} bytes; maximum is ${maximum}`,
-          'ARTIFACT_TOO_LARGE',
-        );
-      }
-      return bytes;
-    } catch (error) {
-      if (isNotFound(error)) return undefined;
-      throw this.translate(error, 'read', key);
     }
+    return undefined;
   }
 
   async describe(id: string): Promise<Artifact | undefined> {
-    const key = this.keyForId(id);
-    try {
-      const output = (await this.request(
-        new HeadObjectCommand({ Bucket: this.options.bucket, Key: key, ChecksumMode: 'ENABLED' }),
-      )) as HeadObjectOutput;
-      const metadata = decodeMetadata(output.Metadata?.descriptor);
-      return {
-        id,
-        contentType: output.ContentType ?? 'text/markdown; charset=utf-8',
-        size: output.ContentLength ?? 0,
-        createdAt: output.Metadata?.['created-at'] ?? output.LastModified?.toISOString() ?? '',
-        metadata,
-        storage: {
-          kind: 's3',
-          bucket: this.options.bucket,
-          key,
-          ...(this.options.region ? { region: this.options.region } : {}),
-          ...(output.VersionId ? { versionId: output.VersionId } : {}),
-          ...(output.ETag ? { etag: output.ETag } : {}),
-          ...(output.ChecksumSHA256 ? { checksumSha256: output.ChecksumSHA256 } : {}),
-        },
-      };
-    } catch (error) {
-      if (isNotFound(error)) return undefined;
-      throw this.translate(error, 'describe', key);
+    for (const key of this.keysForId(id)) {
+      try {
+        const output = (await this.request(
+          new HeadObjectCommand({ Bucket: this.options.bucket, Key: key, ChecksumMode: 'ENABLED' }),
+        )) as HeadObjectOutput;
+        const metadata = decodeMetadata(output.Metadata?.descriptor);
+        return {
+          id,
+          contentType: output.ContentType ?? 'application/octet-stream',
+          size: output.ContentLength ?? 0,
+          createdAt: output.Metadata?.['created-at'] ?? output.LastModified?.toISOString() ?? '',
+          metadata,
+          storage: {
+            kind: 's3',
+            bucket: this.options.bucket,
+            key,
+            ...(this.options.region ? { region: this.options.region } : {}),
+            ...(output.VersionId ? { versionId: output.VersionId } : {}),
+            ...(output.ETag ? { etag: output.ETag } : {}),
+            ...(output.ChecksumSHA256 ? { checksumSha256: output.ChecksumSHA256 } : {}),
+          },
+        };
+      } catch (error) {
+        if (isNotFound(error)) continue;
+        throw this.translate(error, 'describe', key);
+      }
     }
+    return undefined;
   }
 
-  private keyFor(id: string, contentType: string): string {
-    return `${this.objectPrefix()}${id}${contentType.startsWith('text/markdown') ? '.md' : '.data'}`;
-  }
-
-  private keyForId(id: string): string {
+  private keyFor(id: string, _contentType: string): string {
     assertArtifactId(id);
-    // S3ArtifactStore is currently used only by create_markdown_artifact.
-    return `${this.objectPrefix()}${id}.md`;
+    return `${this.objectPrefix()}${artifactContentKey(id)}`;
+  }
+
+  private keysForId(id: string): string[] {
+    assertArtifactId(id);
+    return [
+      `${this.objectPrefix()}${artifactContentKey(id)}`,
+      // Compatibility with Markdown objects created before format-neutral keys.
+      `${this.objectPrefix()}${id}.md`,
+    ];
   }
 
   private objectPrefix(): string {

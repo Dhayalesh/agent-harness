@@ -470,6 +470,15 @@ export const runtimeResultSchema = z
       })
       .strict(),
     output: z.string(),
+    response: z
+      .discriminatedUnion("type", [
+        z.object({ type: z.literal("text"), text: z.string() }).passthrough(),
+        z
+          .object({ type: z.literal("files"), files: z.array(z.unknown()) })
+          .passthrough(),
+      ])
+      .optional(),
+    artifacts: z.array(z.unknown()).optional(),
     messages: z.array(z.unknown()),
     workingDirectory: z.string(),
     stopReason: z.string().optional(),

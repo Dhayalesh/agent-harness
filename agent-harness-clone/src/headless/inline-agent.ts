@@ -92,7 +92,13 @@ const DEFAULT_MCP_CAPABILITIES: McpServerCapabilities = {
 
 /** Matches the `maxTurns` ceiling `AgentSessionConfig` defaults to. */
 const DEFAULT_MAX_TURNS = 24;
-const RESPONSE_PRESENTATION_TOOLS = new Set(['create_markdown_artifact']);
+const RESPONSE_PRESENTATION_TOOLS = new Set([
+  'create_markdown_artifact',
+  'create_html_artifact',
+  'create_document_artifact',
+  'create_spreadsheet_artifact',
+  'create_csv_artifact',
+]);
 
 export type InlineAgentOptions = {
   /**

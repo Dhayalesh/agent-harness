@@ -20,7 +20,16 @@
     @apply bg-background text-foreground font-sans antialiased;
     font-size: 15px;
     line-height: 1.55;
+    letter-spacing: -0.006em;
+    font-feature-settings:
+      "kern" 1,
+      "liga" 1,
+      "calt" 1;
     margin: 0;
+  }
+
+  ::selection {
+    background: rgba(182, 95, 66, 0.2);
   }
 
   code,
@@ -72,12 +81,190 @@
 
   /* A stored transcript is plain text; only the fenced spans get a code frame. */
   .message-text {
-    @apply whitespace-pre-wrap leading-7;
+    @apply whitespace-pre-wrap text-[15px] leading-7;
     overflow-wrap: anywhere;
   }
 
   .code-scroll {
     @apply overflow-auto whitespace-pre p-3 font-mono text-tiny leading-6;
+  }
+
+  .enterprise-loader {
+    display: inline-block;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    border: 2px solid rgba(182, 95, 66, 0.2);
+    border-top-color: #b65f42;
+    border-radius: 999px;
+    animation: enterprise-spin 0.72s linear infinite;
+  }
+
+  .enterprise-loader-sm {
+    width: 14px;
+    height: 14px;
+    border-color: currentColor;
+    border-right-color: transparent;
+  }
+
+  .markdown-document {
+    @apply mx-auto w-full max-w-[860px] text-small leading-7 text-foreground;
+  }
+
+  .markdown-document h1 {
+    @apply mb-5 mt-1 border-b border-divider pb-3 text-3xl font-bold tracking-tight;
+  }
+  .markdown-document h2 {
+    @apply mb-3 mt-8 text-2xl font-semibold tracking-tight;
+  }
+  .markdown-document h3 {
+    @apply mb-2 mt-6 text-xl font-semibold;
+  }
+  .markdown-document h4 {
+    @apply mb-2 mt-5 text-medium font-semibold;
+  }
+  .markdown-document p {
+    @apply my-3;
+  }
+  .markdown-document ul {
+    @apply my-3 list-disc space-y-1 pl-6;
+  }
+  .markdown-document ol {
+    @apply my-3 list-decimal space-y-1 pl-6;
+  }
+  .markdown-document blockquote {
+    @apply my-4 border-l-[3px] border-secondary bg-content2 px-4 py-2 text-default-600;
+  }
+  .markdown-document hr {
+    @apply my-7 border-divider;
+  }
+  .markdown-document a {
+    @apply font-medium text-secondary underline decoration-secondary/35 underline-offset-2 hover:decoration-secondary;
+  }
+  .markdown-document :not(pre) > code {
+    @apply rounded-small bg-content2 px-1.5 py-0.5 text-[0.9em] text-[#88482f] dark:text-[#e8a185];
+  }
+  .markdown-code {
+    @apply my-4 overflow-hidden rounded-large border border-divider bg-content2;
+  }
+  .markdown-code > span {
+    @apply block border-b border-divider px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider text-default-400;
+  }
+  .markdown-code pre {
+    @apply overflow-auto p-4 text-tiny leading-6;
+  }
+  .markdown-table-wrap {
+    @apply my-4 overflow-x-auto rounded-large border border-divider;
+  }
+  .markdown-document table {
+    @apply w-full border-collapse text-left text-tiny;
+  }
+  .markdown-document th {
+    @apply border-b border-divider bg-content2 px-3 py-2 font-semibold;
+  }
+  .markdown-document td {
+    @apply border-b border-divider px-3 py-2 align-top last:border-b-0;
+  }
+}
+
+.artifact-office-preview,
+.docx-preview-host {
+  min-height: 100%;
+}
+
+.docx-preview-host .docx-wrapper {
+  padding: 0 !important;
+  background: transparent !important;
+}
+
+.docx-preview-host .docx-wrapper > section.docx-page {
+  margin: 0 auto 20px;
+  border: 1px solid hsl(var(--heroui-divider));
+  box-shadow: 0 8px 30px rgb(33 29 24 / 8%);
+}
+
+.artifact-grid-shell {
+  overflow: hidden;
+  border: 1px solid hsl(var(--heroui-divider));
+  border-radius: 12px;
+  background: hsl(var(--heroui-content1));
+  box-shadow: 0 2px 12px rgb(33 29 24 / 5%);
+}
+
+.artifact-sheet-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 7px 8px 0;
+  border-bottom: 1px solid hsl(var(--heroui-divider));
+  background: hsl(var(--heroui-content2));
+}
+
+.artifact-sheet-tabs button {
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  padding: 6px 10px 7px;
+  color: hsl(var(--heroui-default-500));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.artifact-sheet-tabs button[aria-selected="true"] {
+  border-bottom-color: #b65f42;
+  color: hsl(var(--heroui-foreground));
+}
+
+.artifact-table-wrap {
+  max-height: calc(100vh - 190px);
+  overflow: auto;
+  border: 1px solid hsl(var(--heroui-divider));
+  border-radius: 12px;
+  background: hsl(var(--heroui-content1));
+}
+
+.artifact-grid-shell .artifact-table-wrap {
+  border: 0;
+  border-radius: 0;
+}
+
+.artifact-table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12px;
+}
+
+.artifact-table th,
+.artifact-table td {
+  max-width: 360px;
+  min-width: 120px;
+  overflow: hidden;
+  border-bottom: 1px solid hsl(var(--heroui-divider));
+  border-right: 1px solid hsl(var(--heroui-divider));
+  padding: 8px 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: hsl(var(--heroui-content2));
+  font-weight: 650;
+}
+
+.artifact-row-limit {
+  padding: 8px 10px;
+  color: hsl(var(--heroui-default-500));
+  font-size: 11px;
+}
+
+@keyframes enterprise-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 
@@ -88,5 +275,11 @@
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* A progress indicator must continue communicating that work is active. */
+  .enterprise-loader {
+    animation-duration: 0.9s !important;
+    animation-iteration-count: infinite !important;
   }
 }

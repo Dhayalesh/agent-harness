@@ -16,7 +16,7 @@ export const AGENT_RUNTIME_SUPPORT = {
    * Every local tool a host can offer, by the `name` each factory sets.
    *
    * - builtin (`src/tools/builtin/index.ts`): `read_file`, `glob`, `grep`,
-   *   `write_file`, `edit_file`, `create_markdown_artifact`, `bash`, `powershell`, `todo_write`
+   *   `write_file`, `edit_file`, response artifact tools, `bash`, `powershell`, `todo_write`
    * - web (`src/tools/web/index.ts`): `web_search`, `web_fetch`
    *
    * The plan-mode and `ask_user_question` tools are deliberately absent. Both need
@@ -37,6 +37,10 @@ export const AGENT_RUNTIME_SUPPORT = {
     'write_file',
     'edit_file',
     'create_markdown_artifact',
+    'create_html_artifact',
+    'create_document_artifact',
+    'create_spreadsheet_artifact',
+    'create_csv_artifact',
     'bash',
     'powershell',
     'todo_write',

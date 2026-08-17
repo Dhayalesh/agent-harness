@@ -18,7 +18,7 @@ function fakeS3(handler: (command: SentCommand) => unknown | Promise<unknown>) {
   return { client, commands };
 }
 
-test('uploads Markdown immutably and returns a durable S3 reference', async () => {
+test('uploads an artifact under a format-neutral key and returns a durable S3 reference', async () => {
   const fake = fakeS3(() => ({
     ETag: '"revision-1"',
     VersionId: 'version-1',
@@ -43,7 +43,7 @@ test('uploads Markdown immutably and returns a durable S3 reference', async () =
   const put = fake.commands[0];
   assert.equal(put?.constructor.name, 'PutObjectCommand');
   assert.equal(put?.input.Bucket, 'private-agent-artifacts');
-  assert.match(String(put?.input.Key), /^production\/markdown\/[\w-]+\.md$/);
+  assert.match(String(put?.input.Key), /^production\/markdown\/[\w-]+\/content$/);
   assert.equal(put?.input.IfNoneMatch, '*');
   assert.equal(put?.input.ServerSideEncryption, 'AES256');
   assert.equal(put?.input.SSEKMSKeyId, undefined);
@@ -53,6 +53,33 @@ test('uploads Markdown immutably and returns a durable S3 reference', async () =
   assert.equal(artifact.storage?.key, put?.input.Key);
   assert.equal(artifact.storage?.versionId, 'version-1');
   assert.equal(artifact.storage?.checksumSha256, 'server-checksum');
+});
+
+test('reads legacy Markdown keys after the format-neutral key is absent', async () => {
+  const body = { transformToByteArray: async () => new TextEncoder().encode('# Legacy') };
+  const fake = fakeS3((command) => {
+    const key = String(command.input.Key);
+    if (key.endsWith('/content')) {
+      throw Object.assign(new Error('missing'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      });
+    }
+    return { Body: body, ContentLength: 8 };
+  });
+  const store = new S3ArtifactStore({
+    bucket: 'private-agent-artifacts',
+    prefix: 'artifacts',
+    client: fake.client as never,
+  });
+
+  const bytes = await store.get('legacy-id');
+
+  assert.equal(new TextDecoder().decode(bytes), '# Legacy');
+  assert.deepEqual(
+    fake.commands.map((command) => command.input.Key),
+    ['artifacts/legacy-id/content', 'artifacts/legacy-id.md'],
+  );
 });
 
 test('does not emit an artifact when the S3 write fails', async () => {

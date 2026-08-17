@@ -1,21 +1,20 @@
 import { heroui } from "@heroui/react";
 
 /**
- * One brand ramp drives both themes. Light picks the 600 step so text on a filled
- * button stays white; dark picks 500 because the darker steps disappear against a
- * near-black surface.
+ * A warm graphite ramp keeps interaction states restrained. Copper is reserved for
+ * brand moments and status accents instead of washing whole screens in color.
  */
 const brand = {
-  50: "#eff6ff",
-  100: "#dbeafe",
-  200: "#bfdbfe",
-  300: "#93c5fd",
-  400: "#60a5fa",
-  500: "#3b82f6",
-  600: "#2563eb",
-  700: "#1d4ed8",
-  800: "#1e40af",
-  900: "#1e3a8a",
+  50: "#f3f2ef",
+  100: "#e7e5df",
+  200: "#d1cec6",
+  300: "#b2aea5",
+  400: "#8b867d",
+  500: "#68635c",
+  600: "#4c4944",
+  700: "#393632",
+  800: "#2b2926",
+  900: "#211f1d",
 };
 
 /** @type {import('tailwindcss').Config} */
@@ -35,11 +34,12 @@ export default {
     extend: {
       fontFamily: {
         sans: [
-          "Inter",
+          "Anthropic Sans",
+          "Helvetica Neue",
+          "Arial",
           "ui-sans-serif",
           "system-ui",
           "Segoe UI",
-          "Roboto",
           "sans-serif",
         ],
         mono: [
@@ -67,7 +67,7 @@ export default {
     heroui({
       addCommonColors: true,
       layout: {
-        radius: { small: "6px", medium: "10px", large: "14px" },
+        radius: { small: "5px", medium: "8px", large: "12px" },
         fontSize: {
           tiny: "0.72rem",
           small: "0.82rem",
@@ -78,36 +78,36 @@ export default {
       themes: {
         light: {
           colors: {
-            background: "#f5f7fb",
-            foreground: "#0f172a",
-            divider: "#e2e8f0",
-            focus: brand[600],
-            content1: "#ffffff",
-            content2: "#f1f5f9",
-            content3: "#e2e8f0",
-            content4: "#cbd5e1",
-            primary: { ...brand, DEFAULT: brand[600], foreground: "#ffffff" },
-            secondary: { DEFAULT: "#7c3aed", foreground: "#ffffff" },
-            success: { DEFAULT: "#16a34a", foreground: "#ffffff" },
-            warning: { DEFAULT: "#d97706", foreground: "#ffffff" },
-            danger: { DEFAULT: "#dc2626", foreground: "#ffffff" },
+            background: "#f7f6f2",
+            foreground: "#292724",
+            divider: "#dfddd7",
+            focus: "#9a4f36",
+            content1: "#fffefa",
+            content2: "#f1f0eb",
+            content3: "#e7e5df",
+            content4: "#d6d3cb",
+            primary: { ...brand, DEFAULT: brand[800], foreground: "#fffefa" },
+            secondary: { DEFAULT: "#b65f42", foreground: "#ffffff" },
+            success: { DEFAULT: "#397557", foreground: "#ffffff" },
+            warning: { DEFAULT: "#a86724", foreground: "#ffffff" },
+            danger: { DEFAULT: "#b5443c", foreground: "#ffffff" },
           },
         },
         dark: {
           colors: {
-            background: "#0a0f1c",
-            foreground: "#e2e8f0",
-            divider: "#1e293b",
-            focus: brand[500],
-            content1: "#111827",
-            content2: "#1a2233",
-            content3: "#243044",
-            content4: "#2f3d55",
-            primary: { ...brand, DEFAULT: brand[500], foreground: "#ffffff" },
-            secondary: { DEFAULT: "#a78bfa", foreground: "#1e1b4b" },
-            success: { DEFAULT: "#22c55e", foreground: "#052e16" },
-            warning: { DEFAULT: "#f59e0b", foreground: "#451a03" },
-            danger: { DEFAULT: "#f87171", foreground: "#450a0a" },
+            background: "#191816",
+            foreground: "#ece9e2",
+            divider: "#393733",
+            focus: "#d17a59",
+            content1: "#22211e",
+            content2: "#2a2925",
+            content3: "#34322e",
+            content4: "#45423c",
+            primary: { ...brand, DEFAULT: "#e4e0d7", foreground: "#211f1d" },
+            secondary: { DEFAULT: "#d17a59", foreground: "#211713" },
+            success: { DEFAULT: "#68a17d", foreground: "#13271b" },
+            warning: { DEFAULT: "#d39a52", foreground: "#2c1c0c" },
+            danger: { DEFAULT: "#df746b", foreground: "#32100d" },
           },
         },
       },

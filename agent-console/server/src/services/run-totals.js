@@ -7,9 +7,15 @@
  * `applyRuntimeResult`. A second shape would mean a run's fields depended on how
  * it happened to be invoked.
  */
+import { presentedArtifact } from "./response-artifacts.js";
+import { presentedReasoning } from "./response-reasoning.js";
+import { presentedToolCall } from "./response-tool-calls.js";
+
 export class RunTotals {
   #text = [];
   #reasoning = [];
+  #messageText = [];
+  #messageReasoning = [];
   #tools = new Map();
   #toolNamesByCallId = new Map();
   #usage = { inputTokens: 0, outputTokens: 0 };
@@ -18,6 +24,9 @@ export class RunTotals {
   #failure;
   #sessionId;
   #session;
+  #toolInputs = new Map();
+  #toolActivity = new Map();
+  #artifacts = [];
 
   observe(event) {
     if (typeof event?.type !== "string") return;
@@ -26,7 +35,19 @@ export class RunTotals {
     switch (event.type) {
       case "assistant.text.delta":
         this.#text.push(event.delta ?? "");
+        this.#messageText.push(event.delta ?? "");
         break;
+      case "tool.input.delta": {
+        const key = event.toolCallId || `index-${event.index}`;
+        const input = (this.#toolInputs.get(key) ?? "") + (event.delta ?? "");
+        this.#toolInputs.set(key, input);
+        this.#updateActivity(key, {
+          name: event.toolName,
+          input,
+          status: "pending",
+        });
+        break;
+      }
       case "session.started":
         this.#session = {
           mode: event.mode ?? "persistent",
@@ -38,6 +59,10 @@ export class RunTotals {
         break;
       case "assistant.reasoning.delta":
         this.#reasoning.push(event.delta ?? "");
+        this.#messageReasoning.push(event.delta ?? "");
+        break;
+      case "assistant.message.completed":
+        this.#completeAssistantMessage(event.message);
         break;
       case "turn.completed":
         this.#turns = Math.max(this.#turns, event.turn ?? 0);
@@ -53,10 +78,51 @@ export class RunTotals {
       // permission handler denied never starts but does produce a result.
       case "tool.requested":
         this.#countCall(event.call);
+        if (event.call?.id) {
+          this.#toolInputs.set(event.call.id, event.call.input);
+          this.#updateActivity(event.call.id, {
+            name: event.call.name,
+            input: event.call.input,
+            status: "pending",
+          });
+        }
+        break;
+      case "tool.started":
+        if (event.call?.id) {
+          this.#updateActivity(event.call.id, {
+            name: event.call.name,
+            input: event.call.input,
+            status: "running",
+          });
+        }
+        break;
+      case "tool.progress":
+        if (event.toolCallId) {
+          const existing = this.#toolActivity.get(event.toolCallId);
+          this.#updateActivity(event.toolCallId, {
+            output: [...(existing?.output ?? []), event.message].slice(-40),
+            status: "running",
+          });
+        }
         break;
       case "tool.completed":
         this.#countResult(event.result);
+        if (event.result?.toolCallId) {
+          this.#updateActivity(event.result.toolCallId, {
+            output: event.result.content,
+            status: event.result.isError ? "error" : "done",
+          });
+        }
         break;
+      case "artifact.created": {
+        const artifact = presentedArtifact(
+          event.artifact,
+          this.#toolInputs.get(event.toolCallId),
+          this.#toolNamesByCallId.get(event.toolCallId),
+        );
+        if (artifact) this.#artifacts.push(artifact);
+        break;
+      }
       case "usage.updated":
         this.#addUsage(event.usage);
         break;
@@ -106,6 +172,37 @@ export class RunTotals {
     }
   }
 
+  #completeAssistantMessage(message) {
+    const text = (message?.content ?? [])
+      .filter((block) => block?.type === "text")
+      .map((block) => block.text ?? "")
+      .join("");
+    appendMissingSuffix(this.#text, this.#messageText.join(""), text);
+    appendMissingSuffix(
+      this.#reasoning,
+      this.#messageReasoning.join(""),
+      message?.reasoning ?? "",
+    );
+    this.#messageText = [];
+    this.#messageReasoning = [];
+  }
+
+  #updateActivity(id, patch) {
+    const current = this.#toolActivity.get(id) ?? {
+      id,
+      name: "tool",
+      input: "",
+      output: [],
+      status: "pending",
+    };
+    this.#toolActivity.set(id, {
+      ...current,
+      ...Object.fromEntries(
+        Object.entries(patch).filter(([, value]) => value !== undefined),
+      ),
+    });
+  }
+
   /** The assistant's answer so far. Used for the persisted chat message. */
   get output() {
     return this.#text.join("");
@@ -130,6 +227,8 @@ export class RunTotals {
           }
         : undefined);
 
+    const artifacts = [...this.#artifacts];
+    const output = this.output;
     return {
       status: failure ? "error" : "success",
       sessionId: this.#sessionId ?? runtimeSessionId,
@@ -141,8 +240,15 @@ export class RunTotals {
         origin: "new",
         historyMessageCount: 0,
       },
-      output: this.output,
-      ...(this.reasoning ? { reasoning: this.reasoning } : {}),
+      output,
+      response: artifacts.length
+        ? { type: "files", files: artifacts }
+        : { type: "text", text: output },
+      artifacts,
+      toolCalls: [...this.#toolActivity.values()].map(presentedToolCall),
+      ...(this.reasoning
+        ? { reasoning: presentedReasoning(this.reasoning) }
+        : {}),
       messages: [],
       workingDirectory: "",
       ...(this.#stopReason === undefined
@@ -154,5 +260,16 @@ export class RunTotals {
       durationMs,
       ...(failure ? { error: failure } : {}),
     };
+  }
+}
+
+function appendMissingSuffix(target, streamed, completed) {
+  if (!completed || completed === streamed) return;
+  if (!streamed) {
+    target.push(completed);
+    return;
+  }
+  if (completed.startsWith(streamed)) {
+    target.push(completed.slice(streamed.length));
   }
 }

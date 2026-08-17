@@ -31,29 +31,30 @@ const navigation = [
 export function AppShell() {
   const [menuOpen, setMenuOpen] = useState(false);
   const location = useLocation();
+  const isChat = location.pathname.startsWith("/chat");
 
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
 
   return (
-    <div className="flex h-screen w-full overflow-hidden bg-background">
+    <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
       <a className="skip-link" href="#main-content">
         Skip to content
       </a>
 
       <aside
-        className={`fixed inset-y-0 left-0 z-40 flex w-[264px] flex-col border-r border-divider bg-content1 transition-transform duration-200 lg:static lg:translate-x-0 ${
+        className={`${isChat ? "hidden" : "fixed flex lg:static"} inset-y-0 left-0 z-40 w-[248px] flex-col border-r border-divider bg-[#f0eee8] transition-transform duration-200 dark:bg-[#1d1c19] lg:translate-x-0 ${
           menuOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
         }`}
       >
         <BrandBlock />
 
-        <ScrollShadow className="min-h-0 flex-1 px-3 pb-3" hideScrollBar>
-          <nav className="flex flex-col gap-6" aria-label="Main navigation">
+        <ScrollShadow className="min-h-0 flex-1 px-2.5 pb-4" hideScrollBar>
+          <nav className="flex flex-col gap-5" aria-label="Main navigation">
             {navigation.map((group) => (
               <div className="flex flex-col gap-1" key={group.label}>
-                <span className="px-3 pb-1 text-[10px] font-bold uppercase tracking-[0.11em] text-default-400">
+                <span className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-default-500">
                   {group.label}
                 </span>
                 {group.items.map((item) => (
@@ -62,10 +63,10 @@ export function AppShell() {
                     to={item.to}
                     end={item.end}
                     className={({ isActive }) =>
-                      `flex min-h-10 items-center gap-3 rounded-medium border px-3 py-2 text-small font-medium transition-colors ${
+                      `flex min-h-9 items-center gap-2.5 rounded-medium border px-2.5 py-1.5 text-small font-medium transition-all ${
                         isActive
-                          ? "border-primary/25 bg-primary/10 text-primary"
-                          : "border-transparent text-default-600 hover:bg-default-100 hover:text-foreground"
+                          ? "border-divider bg-content1 text-foreground shadow-[0_1px_2px_rgba(32,30,27,0.06)]"
+                          : "border-transparent text-default-600 hover:bg-content1/70 hover:text-foreground"
                       }`
                     }
                   >
@@ -79,24 +80,24 @@ export function AppShell() {
         </ScrollShadow>
 
         <Divider />
-        <div className="flex items-center gap-2.5 px-4 py-3">
+        <div className="flex items-center gap-2.5 px-4 py-3.5">
           <span className="relative flex h-2 w-2 shrink-0">
             <span className="absolute inline-flex h-full w-full rounded-full bg-success/50" />
             <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
           </span>
           <div className="min-w-0 flex-1">
             <strong className="block truncate text-tiny font-semibold text-foreground">
-              Control plane
+              Workspace online
             </strong>
             <span className="block truncate text-[10px] text-default-500">
-              MongoDB + AgentCore
+              AgentCore control plane
             </span>
           </div>
           <ThemeToggle />
         </div>
       </aside>
 
-      {menuOpen && (
+      {menuOpen && !isChat && (
         <button
           type="button"
           className="fixed inset-0 z-30 bg-black/40 backdrop-blur-sm lg:hidden"
@@ -106,7 +107,9 @@ export function AppShell() {
       )}
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-divider bg-content1 px-4 lg:hidden">
+        <header
+          className={`${isChat ? "hidden" : "flex"} h-14 shrink-0 items-center gap-3 border-b border-divider bg-content1/95 px-4 backdrop-blur lg:hidden`}
+        >
           <Button
             isIconOnly
             size="sm"
@@ -134,7 +137,13 @@ export function AppShell() {
           page pushes everything below it — the chat composer included — off screen.
         */}
         <main id="main-content" className="flex min-h-0 flex-1 flex-col">
-          <div className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <div
+            className={
+              isChat
+                ? "flex w-full flex-1 flex-col overflow-hidden"
+                : "mx-auto flex w-full max-w-[1380px] flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-6 lg:px-10 lg:py-9"
+            }
+          >
             <Outlet />
           </div>
         </main>
@@ -145,23 +154,23 @@ export function AppShell() {
 
 function BrandBlock() {
   return (
-    <div className="flex items-center gap-3 px-5 pb-5 pt-5">
+    <div className="flex h-[68px] items-center gap-3 px-4">
       <BrandMark />
       <div className="min-w-0 flex-1">
         <strong className="block truncate text-small font-semibold text-foreground">
           Agent Console
         </strong>
         <span className="block truncate text-[11px] text-default-500">
-          AgentCore workspace
+          Enterprise workspace
         </span>
       </div>
       <Chip
         size="sm"
-        variant="flat"
-        color="primary"
+        variant="bordered"
         classNames={{
-          base: "h-5 rounded-full",
-          content: "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
+          base: "h-5 rounded-full border-divider bg-content1/60",
+          content:
+            "px-1.5 text-[9px] font-semibold uppercase tracking-wider text-default-500",
         }}
       >
         beta
@@ -174,7 +183,7 @@ function BrandMark({ className = "h-8 w-8 rounded-medium" }) {
   return (
     <span
       aria-hidden="true"
-      className={`grid shrink-0 place-items-center bg-gradient-to-br from-primary to-secondary text-white ${className}`}
+      className={`grid shrink-0 place-items-center bg-[#d97757] text-white shadow-[inset_0_0_0_1px_rgba(75,35,23,0.12)] dark:bg-[#c86f50] ${className}`}
     >
       <Icon name="spark" className="h-[18px] w-[18px]" strokeWidth={1.6} />
     </span>

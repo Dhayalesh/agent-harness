@@ -74,6 +74,19 @@ export const config = {
     profile: trimmed("AWS_PROFILE"),
     timeoutMs: integer("AGENTCORE_TIMEOUT_MS", 900_000),
   },
+  artifacts: {
+    // Must match the private bucket configured on the harness. Keeping the
+    // allowlisted bucket here prevents a runtime event from becoming arbitrary
+    // S3 read access through the console-owned chat endpoint.
+    bucket: trimmed("AGENT_SESSION_S3_BUCKET"),
+    prefix: trimmed("AGENT_S3_ARTIFACT_PREFIX", "artifacts").replace(
+      /^\/+|\/+$/g,
+      "",
+    ),
+    region: regionOverride || parsedArn?.region,
+    requestTimeoutMs: integer("AGENT_SESSION_S3_REQUEST_TIMEOUT_MS", 10_000),
+    maxBytes: integer("AGENT_ARTIFACT_MAX_BYTES", 25 * 1024 * 1024),
+  },
   createdBy: trimmed("PLATFORM_CREATED_BY", "agent-console"),
 };
 

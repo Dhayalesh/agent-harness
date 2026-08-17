@@ -96,7 +96,11 @@ export type {
 export {
   createBashTool,
   createBuiltinTools,
+  createCsvArtifactTool,
+  createDocumentArtifactTool,
+  createHtmlArtifactTool,
   createMarkdownArtifactTool,
+  createSpreadsheetArtifactTool,
   createEditFileTool,
   createGlobTool,
   createGrepTool,
@@ -230,6 +234,12 @@ export type {
 export const AGENT_PROTOCOL_VERSION = 1 as const;
 export { FileArtifactStore, InMemoryArtifactStore } from './artifacts/artifact-store.js';
 export type { Artifact, ArtifactStore } from './artifacts/artifact-store.js';
+export {
+  ARTIFACT_FORMATS,
+  artifactFilename,
+  artifactKindFromContentType,
+} from './artifacts/artifact-formats.js';
+export type { ArtifactKind } from './artifacts/artifact-formats.js';
 export { S3ArtifactStore } from './artifacts/s3-artifact-store.js';
 export type { S3ArtifactStoreOptions } from './artifacts/s3-artifact-store.js';
 export {

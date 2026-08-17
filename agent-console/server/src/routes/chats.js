@@ -15,6 +15,11 @@ import {
   streamStoredAgent,
 } from "../services/invocation.js";
 import { loadAgent, nowIso, requireObjectId } from "../services/platform.js";
+import { loadArtifactBody } from "../services/artifact-content.js";
+import {
+  ARTIFACT_FORMATS,
+  artifactKind,
+} from "../services/artifact-formats.js";
 
 export const chatsRouter = express.Router();
 
@@ -66,6 +71,35 @@ chatsRouter.get(
   "/:id",
   asyncHandler(async (request, response) => {
     response.json({ chat: chatDetail(await loadChat(request.params.id)) });
+  }),
+);
+
+chatsRouter.get(
+  "/:id/artifacts/:artifactId",
+  asyncHandler(async (request, response) => {
+    const chat = await loadChat(request.params.id);
+    const artifact = chat.messages
+      .flatMap((message) => message.artifacts ?? [])
+      .find((candidate) => candidate.id === request.params.artifactId);
+    if (!artifact)
+      throw notFound("No artifact with id " + request.params.artifactId);
+    const kind = artifactKind(artifact);
+    if (!kind) throw notFound("Unsupported artifact format");
+    const disposition =
+      request.query.download === "true" ||
+      ["html", "docx", "xlsx"].includes(kind)
+        ? "attachment"
+        : "inline";
+    response.set({
+      "content-type": ARTIFACT_FORMATS[kind].contentType,
+      "content-disposition": `${disposition}; filename="${headerFilename(artifact.filename)}"`,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+      ...(kind === "html"
+        ? { "content-security-policy": "sandbox; default-src 'none'" }
+        : {}),
+    });
+    response.send(await loadArtifactBody(artifact));
   }),
 );
 
@@ -315,7 +349,18 @@ async function appendResult(chat, invocation, requestId) {
     content:
       invocation.result.output ||
       invocation.result.error?.message ||
-      "The agent returned no output.",
+      (invocation.result.artifacts?.length
+        ? ""
+        : "The agent returned no output."),
+    ...(invocation.result.artifacts?.length
+      ? { artifacts: invocation.result.artifacts }
+      : {}),
+    ...(invocation.result.toolCalls?.length
+      ? { toolCalls: invocation.result.toolCalls }
+      : {}),
+    ...(invocation.result.reasoning
+      ? { reasoning: invocation.result.reasoning }
+      : {}),
     runId: invocation.run._id.toString(),
     createdAt: timestamp,
     ...(invocation.result.error ? { error: invocation.result.error } : {}),
@@ -403,7 +448,10 @@ export function buildSessionHistory(
   const previous = messages
     .slice(startIndex)
     .filter(
-      (message) => message.role === "user" || message.role === "assistant",
+      (message) =>
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string" &&
+        message.content.length > 0,
     );
   const selected = [];
   let size = 0;
@@ -420,4 +468,11 @@ export function buildSessionHistory(
     size += message.content.length;
   }
   return selected;
+}
+
+function headerFilename(value) {
+  const safe = String(value ?? "document")
+    .replace(/[\x00-\x1F\x7F"\\]/g, "_")
+    .trim();
+  return safe || "document";
 }

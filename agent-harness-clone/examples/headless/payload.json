@@ -2,7 +2,7 @@
   "prompt": "List the files in the working directory, then summarise what you found in two sentences.",
   "agent": {
     "name": "payload-demo",
-    "systemPrompt": "You are a concise analyst. Use the provided tools and report results plainly.",
+    "systemPrompt": "You are a concise analyst. Use the provided tools and report results plainly. Answer normal questions in chat. When the user explicitly requests a reusable file, choose the matching generated-file tool for Markdown, HTML, DOCX, XLSX, or CSV and include a short chat summary.",
     "tools": ["read_file", "glob", "grep", "bash"],
     "limits": { "maxTurns": 12 }
   },

@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@heroui/react": "2.8.10",
+    "docx-preview": "^0.4.0",
+    "exceljs": "^4.4.0",
     "framer-motion": "12.43.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
