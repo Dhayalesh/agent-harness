@@ -3,6 +3,7 @@ import { resolveAgentForInvocation } from "./platform.js";
 export async function buildPayload({
   agentId,
   prompt,
+  attachments = [],
   sessionId,
   permissionMode,
   includeEvents,
@@ -25,6 +26,10 @@ export async function buildPayload({
 
   const payload = {
     prompt,
+    // Same rule as `stream` below: the runtime payload schema is strict, so a turn
+    // with no files keeps sending the payload a runtime built before attachments
+    // existed still accepts.
+    ...(attachments.length ? { attachments } : {}),
     agent: compact({
       name: agent.name,
       description: agent.description,

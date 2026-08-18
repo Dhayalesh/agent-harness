@@ -195,9 +195,69 @@ export const headlessSessionSchema = z
  * One request. `prompt` and the three definition blocks are the whole of it; the
  * rest are run options with defaults.
  */
+/**
+ * A file the caller sent with this turn, already reduced to model input.
+ *
+ * The caller extracts, not the runtime. A `text` attachment carries the content of
+ * whatever it was — a source file, a CSV, a Word document, a spreadsheet — because
+ * that text is a fraction of the original's size and survives the JSON body limits
+ * a workbook would not. An `image` carries base64 bytes for a vision model.
+ */
+export const invocationAttachmentSchema = z
+  .object({
+    kind: z.enum(['text', 'image']),
+    filename: z.string().min(1).max(300),
+    /** Media type of the original file, or of the image bytes for `image`. */
+    contentType: z.string().min(1).max(200),
+    /** Size of the original file, for reporting rather than for reading. */
+    size: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    /** Fence label for a text attachment, such as `python` or `csv`. */
+    language: z.string().min(1).max(50).optional(),
+    /** Extracted content. Required when `kind` is `text`. */
+    text: z.string().max(2_000_000).optional(),
+    /** Base64 bytes, no data-URL prefix. Required when `kind` is `image`. */
+    data: z.string().max(8_000_000).optional(),
+    /** What extraction had to do, surfaced to the model beside the content. */
+    notes: z.array(z.string().min(1).max(200)).max(8).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.kind === 'text' && !value.text) {
+      context.addIssue({
+        code: 'custom',
+        path: ['text'],
+        message: 'A text attachment requires extracted text',
+      });
+    }
+    if (value.kind === 'image') {
+      if (!value.data) {
+        context.addIssue({
+          code: 'custom',
+          path: ['data'],
+          message: 'An image attachment requires base64 data',
+        });
+      }
+      if (!value.contentType.startsWith('image/')) {
+        context.addIssue({
+          code: 'custom',
+          path: ['contentType'],
+          message: 'An image attachment requires an image/* content type',
+        });
+      }
+    }
+  });
+
+export type InvocationAttachment = z.output<typeof invocationAttachmentSchema>;
+
 export const invocationPayloadSchema = z
   .object({
-    prompt: z.string().min(1).max(2_000_000),
+    /**
+     * Empty only when `attachments` is not: a turn that sends files with no words
+     * is a real request, and the runtime supplies the instruction for it.
+     */
+    prompt: z.string().max(2_000_000),
+    /** Files sent with this turn. Not persisted as attachments; see `prepareAttachments`. */
+    attachments: z.array(invocationAttachmentSchema).max(20).default([]),
     agent: headlessAgentSchema,
     modelProvider: headlessModelProviderSchema,
     mcpServers: z.array(headlessMcpServerSchema).max(50).default([]),
@@ -263,7 +323,16 @@ export const invocationPayloadSchema = z
      */
     stream: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (!value.prompt.trim() && value.attachments.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['prompt'],
+        message: 'Provide a prompt, one or more attachments, or both',
+      });
+    }
+  });
 
 export type InvocationPayload = z.output<typeof invocationPayloadSchema>;
 export type InvocationPayloadInput = z.input<typeof invocationPayloadSchema>;

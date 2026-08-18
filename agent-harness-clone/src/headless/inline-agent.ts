@@ -98,6 +98,8 @@ const RESPONSE_PRESENTATION_TOOLS = new Set([
   'create_document_artifact',
   'create_spreadsheet_artifact',
   'create_csv_artifact',
+  'create_json_artifact',
+  'create_code_artifact',
 ]);
 
 export type InlineAgentOptions = {

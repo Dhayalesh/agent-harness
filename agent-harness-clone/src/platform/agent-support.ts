@@ -41,6 +41,8 @@ export const AGENT_RUNTIME_SUPPORT = {
     'create_document_artifact',
     'create_spreadsheet_artifact',
     'create_csv_artifact',
+    'create_json_artifact',
+    'create_code_artifact',
     'bash',
     'powershell',
     'todo_write',

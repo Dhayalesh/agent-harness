@@ -63,6 +63,9 @@ export class CompactingContextManager implements ContextManager {
           .map((block) => {
             if (block.type === 'text') return block.text;
             if (block.type === 'tool_call') return `[tool ${block.name}]`;
+            // An image cannot survive summarisation into text, so the summary
+            // records that one was here rather than pretending to describe it.
+            if (block.type === 'image') return `[image ${block.filename ?? block.mediaType}]`;
             return `[tool result ${block.toolCallId}: ${block.isError ? 'error' : 'ok'}]`;
           })
           .join(' ')
@@ -92,7 +95,28 @@ export class CompactingContextManager implements ContextManager {
   }
 }
 
+/**
+ * What one image costs, in place of its transport size.
+ *
+ * A vision model bills an image as a few hundred to roughly fifteen hundred tokens
+ * depending on how it is tiled. Its base64 payload is nothing like that: a 1 MB
+ * screenshot is about 1.4 million characters, which the character heuristic would
+ * read as several hundred thousand tokens and compact away every turn. This is a
+ * deliberately conservative flat charge instead.
+ */
+const IMAGE_TOKEN_ESTIMATE = 1_200;
+
 export function estimateMessagesTokens(messages: readonly AgentMessage[]): number {
-  const characters = JSON.stringify(messages).length;
-  return Math.max(1, Math.ceil(characters / 4));
+  let images = 0;
+  const measurable = messages.map((message) => ({
+    ...message,
+    content: message.content.map((block) => {
+      if (block.type !== 'image') return block;
+      images += 1;
+      // Everything but the bytes: the name and type still occupy the prompt.
+      return { type: block.type, mediaType: block.mediaType, filename: block.filename };
+    }),
+  }));
+  const characters = JSON.stringify(measurable).length;
+  return Math.max(1, Math.ceil(characters / 4) + images * IMAGE_TOKEN_ESTIMATE);
 }

@@ -19,6 +19,7 @@ import { hydrateRuntimeToolCalls } from "./response-tool-calls.js";
 export async function invokeStoredAgent({
   agentId,
   prompt,
+  attachments = [],
   runtimeSessionId = randomUUID(),
   permissionMode,
   includeEvents = false,
@@ -28,6 +29,7 @@ export async function invokeStoredAgent({
   const { payload, resolved } = await buildPayload({
     agentId,
     prompt,
+    attachments,
     sessionId: runtimeSessionId,
     permissionMode,
     includeEvents,
@@ -38,7 +40,7 @@ export async function invokeStoredAgent({
     resolved,
     runtime,
     runtimeSessionId,
-    prompt,
+    prompt: runPrompt(prompt, attachments),
     chatId,
   });
 
@@ -87,6 +89,7 @@ export async function invokeStoredAgent({
 export async function streamStoredAgent({
   agentId,
   prompt,
+  attachments = [],
   runtimeSessionId = randomUUID(),
   permissionMode,
   includeEvents = false,
@@ -98,6 +101,7 @@ export async function streamStoredAgent({
   const { payload, resolved } = await buildPayload({
     agentId,
     prompt,
+    attachments,
     sessionId: runtimeSessionId,
     permissionMode,
     includeEvents,
@@ -108,7 +112,7 @@ export async function streamStoredAgent({
     resolved,
     runtime,
     runtimeSessionId,
-    prompt,
+    prompt: runPrompt(prompt, attachments),
     chatId,
   });
   const started = Date.now();
@@ -169,6 +173,22 @@ export async function streamStoredAgent({
     payload,
     resolved,
   };
+}
+
+/**
+ * What the run record shows as the request.
+ *
+ * A files-only turn has no words, and a run listed with an empty prompt tells a
+ * reader nothing about what it did. The names stand in for the message; the model
+ * still receives the real prompt, which the harness composes from the attachments.
+ */
+function runPrompt(prompt, attachments) {
+  const text = String(prompt ?? "").trim();
+  if (text) return text;
+  if (!attachments.length) return "(no prompt)";
+  return `(${attachments.length} file${attachments.length === 1 ? "" : "s"}: ${attachments
+    .map((attachment) => attachment.filename)
+    .join(", ")})`;
 }
 
 function startRun({ resolved, runtime, runtimeSessionId, prompt, chatId }) {

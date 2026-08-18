@@ -445,15 +445,34 @@ export const chatCreateSchema = z
   })
   .strict();
 export const chatUpdateSchema = z
-  .object({ title: z.string().trim().min(1).max(200) })
-  .strict();
+  .object({
+    title: z.string().trim().min(1).max(200).optional(),
+    pinned: z.boolean().optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.title !== undefined || value.pinned !== undefined,
+    // An empty patch would report success without changing anything.
+    { message: "Provide title or pinned" },
+  );
 export const chatMessageSchema = z
   .object({
-    content: z.string().trim().min(1).max(2_000_000),
+    // Not `min(1)`: files with no words is a real message, and the refinement
+    // below judges the message as a whole.
+    content: z.string().trim().max(2_000_000),
+    /** Ids returned by POST /chats/:id/attachments, in the order to present them. */
+    attachmentIds: z.array(objectIdString).max(20).default([]),
     permissionMode: z.enum(["default", "plan", "bypass", "deny"]).optional(),
     includeEvents: z.boolean().default(false),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) => value.content.length > 0 || value.attachmentIds.length > 0,
+    {
+      message: "Provide a message, one or more attachments, or both",
+      path: ["content"],
+    },
+  );
 
 export const runtimeResultSchema = z
   .object({

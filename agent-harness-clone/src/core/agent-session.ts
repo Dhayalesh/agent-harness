@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { AgentAbortError, AgentHarnessError, errorMessage } from './errors.js';
 import type { AgentEvent, EventPayload } from './events.js';
 import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
-import { textMessage } from './messages.js';
+import { textMessage, userMessage } from './messages.js';
 import {
   CompactingContextManager,
   estimateMessagesTokens,
@@ -193,7 +193,9 @@ class AgentSessionImpl implements AgentSession {
     if (this.running) {
       throw new AgentHarnessError('Session already has an active turn', 'SESSION_BUSY');
     }
-    if (!input.prompt.trim()) {
+    // Images alone are a valid turn; a caller that sends them without words still
+    // gets a prompt, composed by `prepareAttachments`.
+    if (!input.prompt.trim() && !input.images?.length) {
       throw new AgentHarnessError('Prompt cannot be empty', 'EMPTY_PROMPT');
     }
     if (this.rateLimiter && !this.rateLimiter.acquire()) {
@@ -225,7 +227,7 @@ class AgentSessionImpl implements AgentSession {
           : resolvedInput?.type === 'prompt'
             ? resolvedInput.prompt
             : input.prompt;
-      this.history.push(textMessage(this.idFactory(), 'user', prompt, this.now()));
+      this.history.push(userMessage(this.idFactory(), prompt, this.now(), input.images ?? []));
       await this.persist();
 
       let reactiveCompactionAttempts = 0;

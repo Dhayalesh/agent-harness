@@ -1,8 +1,10 @@
 import {
   ARTIFACT_FORMATS,
   ARTIFACT_TOOL_NAMES,
+  artifactExtension,
   artifactFilename,
   artifactKind,
+  codeLanguage,
 } from "./artifact-formats.js";
 
 const MAX_TEXT_CHARS = 2_000_000;
@@ -39,19 +41,26 @@ export function presentedArtifact(artifact, input, toolName) {
   });
   if (!kind) return null;
   const format = ARTIFACT_FORMATS[kind];
+  // Only `code` varies its extension, and only it carries a language.
+  const language =
+    kind === "code"
+      ? codeLanguage(metadata.language ?? parsed?.language)
+      : null;
+  const options = language ? { language } : {};
   const filename = artifactFilename(
     metadata.filename ?? parsed?.filename,
     kind,
+    options,
   );
   if (!filename) return null;
+  const extension = artifactExtension(kind, options);
   const title = cleanTitle(
-    metadata.title ??
-      parsed?.title ??
-      filename.slice(0, -format.extension.length),
+    metadata.title ?? parsed?.title ?? filename.slice(0, -extension.length),
   );
   const base = {
     id: artifact.id,
     kind,
+    ...(language ? { language } : {}),
     contentType: format.contentType,
     size: Number.isSafeInteger(artifact.size) ? artifact.size : 0,
     createdAt:

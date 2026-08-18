@@ -23,11 +23,15 @@ export { isSerializableEvent } from './core/events.js';
 export type {
   AgentInput,
   AgentMessage,
+  ImageBlock,
   MessageContent,
   TextBlock,
   ToolCallBlock,
   ToolResultBlock,
 } from './core/messages.js';
+export { textMessage, userMessage } from './core/messages.js';
+export { prepareAttachments } from './files/attachments.js';
+export type { PreparedAttachments } from './files/attachments.js';
 export { AgentAbortError, AgentHarnessError } from './core/errors.js';
 export type {
   ModelProvider,
@@ -96,9 +100,11 @@ export type {
 export {
   createBashTool,
   createBuiltinTools,
+  createCodeArtifactTool,
   createCsvArtifactTool,
   createDocumentArtifactTool,
   createHtmlArtifactTool,
+  createJsonArtifactTool,
   createMarkdownArtifactTool,
   createSpreadsheetArtifactTool,
   createEditFileTool,
@@ -236,10 +242,18 @@ export { FileArtifactStore, InMemoryArtifactStore } from './artifacts/artifact-s
 export type { Artifact, ArtifactStore } from './artifacts/artifact-store.js';
 export {
   ARTIFACT_FORMATS,
+  artifactExtension,
   artifactFilename,
   artifactKindFromContentType,
+  CODE_LANGUAGE_NAMES,
+  CODE_LANGUAGES,
+  codeLanguageFromFilename,
 } from './artifacts/artifact-formats.js';
-export type { ArtifactKind } from './artifacts/artifact-formats.js';
+export type {
+  ArtifactFormatOptions,
+  ArtifactKind,
+  CodeLanguage,
+} from './artifacts/artifact-formats.js';
 export { S3ArtifactStore } from './artifacts/s3-artifact-store.js';
 export type { S3ArtifactStoreOptions } from './artifacts/s3-artifact-store.js';
 export {
@@ -404,6 +418,7 @@ export {
   headlessModelProviderSchema,
   headlessPermissionRuleSchema,
   headlessSkillSchema,
+  invocationAttachmentSchema,
   invocationPayloadSchema,
   parseInvocationPayload,
 } from './headless/payload.js';

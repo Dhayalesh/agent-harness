@@ -44,6 +44,52 @@ async function request(path, { method = "GET", body, signal } = {}) {
 }
 
 /**
+ * A multipart upload.
+ *
+ * Separate from `request` because that helper JSON-stringifies its body and sets a
+ * JSON content type; a `FormData` body must be passed through untouched so the
+ * browser can generate the multipart boundary itself. Failures surface identically.
+ */
+async function uploadRequest(path, files, { signal } = {}) {
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+
+  const response = await fetch(`/api${path}`, {
+    method: "POST",
+    body: form,
+    signal,
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    throw new ApiError(
+      `Unexpected response from the API: ${text.slice(0, 200)}`,
+      response.status,
+    );
+  }
+  // A partial success is a 201 carrying `rejected`, so the caller reports which
+  // files were refused. Only a total failure reaches the error path.
+  if (!response.ok) {
+    throw new ApiError(
+      payload.error ?? rejectionMessage(payload) ?? `HTTP ${response.status}`,
+      response.status,
+      payload.details,
+    );
+  }
+  return payload;
+}
+
+function rejectionMessage(payload) {
+  const rejected = payload?.rejected ?? [];
+  if (!rejected.length) return null;
+  return rejected
+    .map((entry) => `${entry.filename}: ${entry.reason}`)
+    .join("\n");
+}
+
+/**
  * The same request, read as frames.
  *
  * Kept beside `request` rather than folded into it because the two fail
@@ -250,18 +296,27 @@ export const api = {
   getChat: (id) => request(`/chats/${id}`),
   getArtifactText: (url) => textRequest(url),
   getArtifactBytes: (url) => bytesRequest(url),
+  /** Accepts `{ title }`, `{ pinned }`, or both. */
+  updateChat: (id, body) => request(`/chats/${id}`, { method: "PATCH", body }),
+  /** Resolves to `{ attachments, rejected }`; a partial success reports both. */
+  uploadChatAttachments: (id, files, { signal } = {}) =>
+    uploadRequest(`/chats/${id}/attachments`, files, { signal }),
+  renameChat: (id, title) =>
+    request(`/chats/${id}`, { method: "PATCH", body: { title } }),
+  setChatPinned: (id, pinned) =>
+    request(`/chats/${id}`, { method: "PATCH", body: { pinned } }),
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
   resetChatSession: (id) =>
     request(`/chats/${id}/session/reset`, { method: "POST" }),
-  sendChatMessage: (id, content) =>
+  sendChatMessage: (id, content, { attachmentIds = [] } = {}) =>
     request(`/chats/${id}/messages`, {
       method: "POST",
-      body: { content },
+      body: { content, ...(attachmentIds.length ? { attachmentIds } : {}) },
     }),
   /** Same call, same `{ chat, run }` result, with the events on the way there. */
-  streamChatMessage: (id, content, { onEvent, signal } = {}) =>
+  streamChatMessage: (id, content, { onEvent, signal, attachmentIds = [] } = {}) =>
     streamRequest(`/chats/${id}/messages`, {
-      body: { content },
+      body: { content, ...(attachmentIds.length ? { attachmentIds } : {}) },
       onEvent,
       ...(signal ? { signal } : {}),
     }),

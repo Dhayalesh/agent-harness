@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
-import { asyncHandler, conflict, notFound } from "../lib/http-error.js";
+import multer from "multer";
+import {
+  asyncHandler,
+  badRequest,
+  conflict,
+  notFound,
+} from "../lib/http-error.js";
 import { config } from "../config.js";
 import {
   chatCreateSchema,
@@ -8,13 +14,24 @@ import {
   chatUpdateSchema,
   parseOrThrow,
 } from "../lib/schemas.js";
+import { Attachment } from "../models/attachment.js";
 import { Chat, chatSummaries } from "../models/chat.js";
 import { Run } from "../models/run.js";
+import {
+  describeAttachment,
+  safeUploadFilename,
+} from "../services/attachment-types.js";
+import { extractAttachment } from "../services/attachment-extract.js";
+import {
+  loadAttachmentBytes,
+  storeAttachmentBytes,
+} from "../services/attachment-storage.js";
 import {
   invokeStoredAgent,
   streamStoredAgent,
 } from "../services/invocation.js";
 import { loadAgent, nowIso, requireObjectId } from "../services/platform.js";
+import { generateChatTitle, hasDefaultTitle } from "../services/chat-title.js";
 import { loadArtifactBody } from "../services/artifact-content.js";
 import {
   ARTIFACT_FORMATS,
@@ -103,13 +120,130 @@ chatsRouter.get(
   }),
 );
 
+/**
+ * Buffered in memory rather than spooled to disk.
+ *
+ * Every accepted upload is read end to end anyway — text is extracted from it
+ * immediately — so a temporary file would be written and deleted for no gain, and
+ * disk storage is the multer path with the orphaned-file failure mode.
+ */
+const uploads = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: config.uploads.maxFileBytes,
+    files: config.uploads.maxFiles,
+    // Nothing but files is expected on this endpoint; a bounded field count keeps
+    // the multipart parser from being handed arbitrary form data.
+    fields: 2,
+    parts: config.uploads.maxFiles + 2,
+  },
+});
+
+chatsRouter.post(
+  "/:id/attachments",
+  uploads.array("files", config.uploads.maxFiles),
+  asyncHandler(async (request, response) => {
+    const chat = await loadChat(request.params.id);
+    const files = request.files ?? [];
+    if (!files.length) throw badRequest("No files were uploaded");
+
+    const attachments = [];
+    const rejected = [];
+    for (const file of files) {
+      const descriptor = describeAttachment(file.originalname);
+      if (!descriptor.supported) {
+        rejected.push({ filename: file.originalname, reason: descriptor.reason });
+        continue;
+      }
+      const extraction = extractAttachment(file.buffer, descriptor);
+      if (!extraction.ok) {
+        rejected.push({ filename: file.originalname, reason: extraction.reason });
+        continue;
+      }
+      const stored = await storeAttachmentBytes({
+        buffer: file.buffer,
+        chatId: chat._id.toString(),
+        handling: extraction.handling,
+      });
+      const document = await Attachment.create({
+        chatId: chat._id.toString(),
+        filename: safeUploadFilename(file.originalname),
+        contentType: descriptor.contentType,
+        extension: descriptor.extension,
+        ...(descriptor.label ? { label: descriptor.label } : {}),
+        ...(descriptor.language ? { language: descriptor.language } : {}),
+        handling: extraction.handling,
+        size: file.size,
+        ...(extraction.text === null ? {} : { text: extraction.text }),
+        ...(extraction.notes?.length ? { notes: extraction.notes } : {}),
+        ...stored,
+        createdAt: nowIso(),
+      });
+      attachments.push(document.toJSON());
+    }
+
+    // Every file failing is a failed request; a partial success is still a success,
+    // because the caller can send what was accepted and see why the rest was not.
+    response
+      .status(attachments.length ? 201 : 400)
+      .json({ attachments, rejected });
+  }),
+);
+
+chatsRouter.get(
+  "/:id/attachments/:attachmentId",
+  asyncHandler(async (request, response) => {
+    const chat = await loadChat(request.params.id);
+    const attachment = await Attachment.findOne({
+      _id: requireObjectId(request.params.attachmentId, "attachment"),
+      // Scoped to the chat in the URL, so a valid id cannot read another chat's file.
+      chatId: chat._id.toString(),
+    });
+    if (!attachment) {
+      throw notFound("No attachment with id " + request.params.attachmentId);
+    }
+    const bytes = await loadAttachmentBytes(attachment);
+    const download = request.query.download === "true";
+    response.set({
+      "content-type": download
+        ? "application/octet-stream"
+        : servedContentType(attachment),
+      "content-disposition": `${download ? "attachment" : "inline"}; filename="${headerFilename(
+        attachment.filename,
+      )}"`,
+      "cache-control": "private, no-store",
+      "x-content-type-options": "nosniff",
+      // Uploads are user-supplied bytes served from the console's own origin, so
+      // nothing they contain is allowed to load, script, or navigate.
+      "content-security-policy": "sandbox; default-src 'none'",
+    });
+    response.send(bytes);
+  }),
+);
+
+/**
+ * What an inline preview is allowed to be labelled as.
+ *
+ * Images keep their real type so a browser can display them. Everything else is
+ * served as plain text no matter what it is: an uploaded .html or .svg served as
+ * its own type would be a stored-XSS delivery route through this origin.
+ */
+function servedContentType(attachment) {
+  return attachment.handling === "image"
+    ? attachment.contentType
+    : "text/plain; charset=utf-8";
+}
+
 chatsRouter.patch(
   "/:id",
   asyncHandler(async (request, response) => {
     const input = parseOrThrow(chatUpdateSchema, request.body);
     const chat = await loadChat(request.params.id);
-    chat.title = input.title;
-    chat.updatedAt = nowIso();
+    if (input.title !== undefined) chat.title = input.title;
+    if (input.pinned !== undefined) chat.pinned = input.pinned;
+    // `updatedAt` is both the sidebar's sort key and its "last activity" label, so
+    // renaming or pinning deliberately leaves it alone. Neither is activity, and
+    // bumping it would throw an untouched conversation to the top of the list.
     await chat.save();
     response.json({ chat: chatDetail(chat) });
   }),
@@ -125,8 +259,19 @@ chatsRouter.delete(
         (await Run.deleteMany({ chatId: chat._id.toString() })).deletedCount ??
         0;
     }
+    // Uploads live in their own collection, so deleting the chat would otherwise
+    // orphan them. Unconditional, unlike runs: an attachment has no meaning or
+    // route once the chat that owns it is gone.
+    const deletedAttachments =
+      (await Attachment.deleteMany({ chatId: chat._id.toString() }))
+        .deletedCount ?? 0;
     await chat.deleteOne();
-    response.json({ deleted: true, id: request.params.id, deletedRuns });
+    response.json({
+      deleted: true,
+      id: request.params.id,
+      deletedRuns,
+      deletedAttachments,
+    });
   }),
 );
 
@@ -189,6 +334,7 @@ chatsRouter.post(
     const input = parseOrThrow(chatMessageSchema, request.body);
     const existing = await loadChat(request.params.id);
     const agent = await loadAgent(existing.agentId, { requireEnabled: true });
+    const attachments = await claimAttachments(existing, input.attachmentIds);
     const userTimestamp = nowIso();
     const requestId = randomUUID();
     const userMessage = {
@@ -196,6 +342,9 @@ chatsRouter.post(
       role: "user",
       content: input.content,
       createdAt: userTimestamp,
+      ...(attachments.length
+        ? { attachments: attachments.map(attachmentReference) }
+        : {}),
     };
     const chat = await Chat.findOneAndUpdate(
       {
@@ -226,6 +375,15 @@ chatsRouter.post(
         "This chat already has a message in progress. Wait for it to finish and retry.",
       );
     }
+    // Bound to the message only once the lease is held, so a rejected turn leaves
+    // its uploads unclaimed and available to the retry.
+    if (attachments.length) {
+      await Attachment.updateMany(
+        { _id: { $in: attachments.map((item) => item._id) } },
+        { $set: { messageId: userMessage.id } },
+      );
+    }
+
     const previousMessages = chat.messages.slice(0, -1);
     const sessionHistory = buildSessionHistory(
       previousMessages,
@@ -235,6 +393,7 @@ chatsRouter.post(
     const invocationInput = {
       agentId: chat.agentId,
       prompt: input.content,
+      attachments: await attachmentPayloads(attachments),
       runtimeSessionId: chat.runtimeSessionId,
       permissionMode: input.permissionMode,
       includeEvents: input.includeEvents,
@@ -366,11 +525,13 @@ async function appendResult(chat, invocation, requestId) {
     ...(invocation.result.error ? { error: invocation.result.error } : {}),
   };
   const session = invocation.result.session;
+  const title = await autoTitle(chat, invocation);
   const updated = await Chat.findOneAndUpdate(
     { _id: chat._id, "session.activeRequestId": requestId },
     {
       $push: { messages: message },
       $set: {
+        ...(title ? { title } : {}),
         lastMessageAt: timestamp,
         updatedAt: timestamp,
         "session.status":
@@ -392,6 +553,121 @@ async function appendResult(chat, invocation, requestId) {
       "The chat session lease expired before the result was saved.",
     );
   return updated;
+}
+
+/**
+ * Resolves the ids a message claims into the uploads they name.
+ *
+ * Every id has to belong to this chat and be unclaimed. That rejects an id from
+ * another conversation, an id already sent with an earlier message, and an id that
+ * was never issued — all with one lookup, rather than trusting the client's list.
+ */
+async function claimAttachments(chat, ids) {
+  if (!ids.length) return [];
+  const unique = [...new Set(ids)];
+  if (unique.length !== ids.length) {
+    throw badRequest("The same attachment was listed more than once");
+  }
+  const found = await Attachment.find({
+    _id: { $in: unique.map((id) => requireObjectId(id, "attachment")) },
+    chatId: chat._id.toString(),
+    // Matches both an explicit null and a document that has never been sent,
+    // which is how MongoDB treats a null equality check on a missing field.
+    messageId: null,
+  });
+  if (found.length !== unique.length) {
+    throw badRequest(
+      "One or more attachments are unknown, belong to another chat, or were " +
+        "already sent with an earlier message",
+    );
+  }
+  // Client order is presentation order, which Mongo does not preserve.
+  const byId = new Map(found.map((item) => [item._id.toString(), item]));
+  const ordered = unique.map((id) => byId.get(id));
+
+  const totalChars = ordered.reduce(
+    (total, item) => total + (item.text?.length ?? 0),
+    0,
+  );
+  if (totalChars > config.uploads.maxPromptChars) {
+    throw badRequest(
+      `These attachments contain ${totalChars.toLocaleString()} characters of text, ` +
+        `over the ${config.uploads.maxPromptChars.toLocaleString()} character limit for ` +
+        "one message. Send fewer files or split them across messages.",
+    );
+  }
+  return ordered;
+}
+
+/** The bounded copy stored on the message, without the text or the bytes. */
+function attachmentReference(attachment) {
+  return {
+    id: attachment._id.toString(),
+    filename: attachment.filename,
+    contentType: attachment.contentType,
+    handling: attachment.handling,
+    ...(attachment.label ? { label: attachment.label } : {}),
+    ...(attachment.language ? { language: attachment.language } : {}),
+    size: attachment.size,
+    textChars: attachment.text?.length ?? 0,
+    downloadable: Boolean(attachment.content || attachment.storage),
+    ...(attachment.notes?.length ? { notes: attachment.notes } : {}),
+  };
+}
+
+/**
+ * The attachments as the harness takes them.
+ *
+ * Text is already extracted and travels as text. Image bytes are read now, because
+ * only the model needs them and only for this turn — they are never stored in the
+ * transcript the console keeps.
+ */
+async function attachmentPayloads(attachments) {
+  const payloads = [];
+  for (const attachment of attachments) {
+    if (attachment.handling === "image") {
+      const bytes = await loadAttachmentBytes(attachment);
+      payloads.push({
+        kind: "image",
+        filename: attachment.filename,
+        contentType: attachment.contentType,
+        size: attachment.size,
+        data: bytes.toString("base64"),
+      });
+      continue;
+    }
+    payloads.push({
+      kind: "text",
+      filename: attachment.filename,
+      contentType: attachment.contentType,
+      size: attachment.size,
+      ...(attachment.language ? { language: attachment.language } : {}),
+      text: attachment.text ?? "",
+      ...(attachment.notes?.length ? { notes: attachment.notes } : {}),
+    });
+  }
+  return payloads;
+}
+
+/**
+ * Names a chat the first time it has something to be named after.
+ *
+ * Keyed on the title still being a placeholder rather than on the message count,
+ * so a first turn that failed before producing an answer gets another chance on
+ * the next one instead of leaving the chat called "<agent> chat" for good. A chat
+ * the user has renamed never matches, so it is never silently retitled.
+ */
+async function autoTitle(chat, invocation) {
+  if (!hasDefaultTitle(chat)) return null;
+  const prompt = chat.messages?.find(
+    (message) => message.role === "user",
+  )?.content;
+  if (!prompt) return null;
+  return generateChatTitle({
+    provider: invocation.resolved?.modelProvider?.value,
+    prompt,
+    reply: invocation.result?.output ?? "",
+  });
 }
 
 async function appendFailure(chat, error, requestId) {
@@ -447,27 +723,44 @@ export function buildSessionHistory(
 ) {
   const previous = messages
     .slice(startIndex)
+    .map((message) => ({ message, text: historyText(message) }))
     .filter(
-      (message) =>
+      ({ message, text }) =>
         (message.role === "user" || message.role === "assistant") &&
-        typeof message.content === "string" &&
-        message.content.length > 0,
+        text.length > 0,
     );
   const selected = [];
   let size = 0;
   for (let index = previous.length - 1; index >= 0; index -= 1) {
-    const message = previous[index];
+    const { message, text } = previous[index];
     if (selected.length >= maximumMessages) break;
-    if (size + message.content.length > maximum) break;
+    if (size + text.length > maximum) break;
     selected.unshift({
       id: message.id,
       role: message.role,
-      content: message.content,
+      content: text,
       ...(message.createdAt ? { createdAt: message.createdAt } : {}),
     });
-    size += message.content.length;
+    size += text.length;
   }
   return selected;
+}
+
+/**
+ * What a stored message contributes to a replayed transcript.
+ *
+ * This history is only read when the runtime's own transcript is missing, and it is
+ * text-only by design. A turn that sent files with no words would otherwise vanish
+ * from the replay entirely, so it is recorded as what it carried.
+ */
+function historyText(message) {
+  if (typeof message.content === "string" && message.content.length > 0) {
+    return message.content;
+  }
+  const attachments = message.attachments ?? [];
+  if (!attachments.length) return "";
+  const names = attachments.map((attachment) => attachment.filename).join(", ");
+  return `[sent ${attachments.length} file${attachments.length === 1 ? "" : "s"}: ${names}]`;
 }
 
 function headerFilename(value) {

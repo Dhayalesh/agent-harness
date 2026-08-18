@@ -10,7 +10,8 @@ import { createAgentSession, type AgentSession } from '../core/agent-session.js'
 import { AgentHarnessError } from '../core/errors.js';
 import { AsyncEventQueue } from '../core/event-queue.js';
 import type { AgentEvent, RunPreparationStage, RunProgressReporter } from '../core/events.js';
-import { textMessage, type AgentMessage } from '../core/messages.js';
+import { textMessage, type AgentInput, type AgentMessage } from '../core/messages.js';
+import { prepareAttachments } from '../files/attachments.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
 import { RulePermissionHandler } from '../permissions/rule-permission-handler.js';
@@ -237,10 +238,7 @@ export async function invokeHeadless(
     phase = 'execution';
     const collected: AgentEvent[] = [];
     const totals = new RunTotals();
-    for await (const event of prepared.session.run({
-      prompt: parsed.prompt,
-      ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
-    })) {
+    for await (const event of prepared.session.run(runInput(parsed))) {
       totals.observe(event);
       if (parsed.includeEvents) collected.push(event);
     }
@@ -370,10 +368,7 @@ export async function* streamHeadless(
     prepared = settled.value;
     phase = 'execution';
     const totals = new RunTotals();
-    for await (const event of prepared.session.run({
-      prompt: parsed.prompt,
-      ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
-    })) {
+    for await (const event of prepared.session.run(runInput(parsed))) {
       terminalEvent = event;
       if (event.type === 'error') runError = true;
       totals.observe(event);
@@ -978,6 +973,21 @@ function permissionHandler(
 }
 
 /** Folds the event stream into the counts and text the result reports. */
+/**
+ * The one turn a payload describes.
+ *
+ * Attachments are folded in here rather than at each call site, so the buffered and
+ * streaming paths cannot drift on how a file reaches the model.
+ */
+function runInput(parsed: InvocationPayload): AgentInput {
+  const attachments = prepareAttachments(parsed.attachments, parsed.prompt);
+  return {
+    prompt: attachments.prompt,
+    ...(attachments.images.length ? { images: attachments.images } : {}),
+    ...(Object.keys(parsed.metadata).length === 0 ? {} : { metadata: parsed.metadata }),
+  };
+}
+
 class RunTotals {
   private readonly text: string[] = [];
   private readonly artifacts: Artifact[] = [];

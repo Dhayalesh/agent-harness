@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import multer from "multer";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
@@ -75,6 +76,26 @@ export function createApp() {
     if (error?.type === "entity.parse.failed") {
       return response.status(400).json({ error: "Request body is not valid JSON" });
     }
+    // Multipart limits, which the JSON body parser never sees. Reported with the
+    // configured ceiling, because "too large" without a number is not actionable.
+    if (error instanceof multer.MulterError) {
+      if (error.code === "LIMIT_FILE_SIZE") {
+        return response.status(413).json({
+          error:
+            "That file is larger than the " +
+            megabytes(config.uploads.maxFileBytes) +
+            " upload limit",
+        });
+      }
+      if (error.code === "LIMIT_FILE_COUNT" || error.code === "LIMIT_PART_COUNT") {
+        return response.status(400).json({
+          error: `Attach at most ${config.uploads.maxFiles} files at a time`,
+        });
+      }
+      return response
+        .status(400)
+        .json({ error: `Upload rejected: ${error.message}` });
+    }
     if (error?.type === "entity.too.large" || error?.status === 413) {
       return response.status(413).json({ error: "Request body exceeds the 5 MB limit" });
     }
@@ -85,4 +106,8 @@ export function createApp() {
   });
 
   return app;
+}
+
+function megabytes(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
 }

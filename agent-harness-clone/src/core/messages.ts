@@ -18,7 +18,28 @@ export type ToolResultBlock = {
   metadata?: Record<string, unknown>;
 };
 
-export type MessageContent = TextBlock | ToolCallBlock | ToolResultBlock;
+/**
+ * An image supplied with a user turn.
+ *
+ * Bytes rather than a URL: the model gateway is not given anything to fetch, so a
+ * caller's private upload never has to be publicly reachable for a model to read
+ * it. `data` is base64 without a data-URL prefix; the provider adds whatever
+ * envelope its wire format wants.
+ *
+ * Only ever produced by a caller's attachments — the harness does not generate
+ * these, and the model cannot return one.
+ */
+export type ImageBlock = {
+  type: 'image';
+  /** An image media type the provider accepts, such as `image/png`. */
+  mediaType: string;
+  /** Base64-encoded bytes, with no `data:` prefix. */
+  data: string;
+  /** Shown to the model so it can refer to the file by name. */
+  filename?: string;
+};
+
+export type MessageContent = TextBlock | ToolCallBlock | ToolResultBlock | ImageBlock;
 
 export type AgentMessage = {
   id: string;
@@ -37,6 +58,12 @@ export type AgentMessage = {
 
 export type AgentInput = {
   prompt: string;
+  /**
+   * Images to send with this turn. Text attachments are not listed here: a caller
+   * folds their extracted content into `prompt`, because every model reads text
+   * and only some read images.
+   */
+  images?: readonly ImageBlock[];
   metadata?: Record<string, unknown>;
 };
 
@@ -47,4 +74,24 @@ export function textMessage(
   createdAt: string,
 ): AgentMessage {
   return { id, role, createdAt, content: [{ type: 'text', text }] };
+}
+
+/**
+ * A user turn that may carry images.
+ *
+ * Images lead and the text follows, which is the order every provider documents
+ * for "here is a picture, now my question about it".
+ */
+export function userMessage(
+  id: string,
+  text: string,
+  createdAt: string,
+  images: readonly ImageBlock[] = [],
+): AgentMessage {
+  return {
+    id,
+    role: 'user',
+    createdAt,
+    content: [...images, { type: 'text', text }],
+  };
 }

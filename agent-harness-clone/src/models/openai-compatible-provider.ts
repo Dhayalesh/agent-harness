@@ -34,8 +34,19 @@ export type OpenAICompatibleProviderOptions = {
 /** The delta fields read for deliberation when none is configured. */
 const REASONING_FIELDS = ['reasoning', 'reasoning_content'] as const;
 
+/**
+ * The multimodal form of a user message.
+ *
+ * Only used when a turn actually carries an image: a plain string is what every
+ * gateway accepts, and some older ones reject the array form outright, so the
+ * simple shape stays the default.
+ */
+type CompatibleContentPart =
+  { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
 type CompatibleMessage =
-  | { role: 'system' | 'user'; content: string }
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string | CompatibleContentPart[] }
   | {
       role: 'assistant';
       content: string | null;
@@ -231,6 +242,7 @@ function toCompatibleMessages(
       .join('\n');
     const toolCalls = message.content.filter((block) => block.type === 'tool_call');
     const toolResults = message.content.filter((block) => block.type === 'tool_result');
+    const images = message.content.filter((block) => block.type === 'image');
     if (message.role === 'assistant') {
       compatible.push({
         role: 'assistant',
@@ -247,7 +259,22 @@ function toCompatibleMessages(
       });
       continue;
     }
-    if (text) compatible.push({ role: 'user', content: text });
+    if (images.length) {
+      compatible.push({
+        role: 'user',
+        content: [
+          ...images.map((image) => ({
+            type: 'image_url' as const,
+            // Inline data URL rather than a link: the gateway is never handed
+            // something to fetch, so a private upload stays private.
+            image_url: { url: `data:${image.mediaType};base64,${image.data}` },
+          })),
+          ...(text ? [{ type: 'text' as const, text }] : []),
+        ],
+      });
+    } else if (text) {
+      compatible.push({ role: 'user', content: text });
+    }
     for (const result of toolResults) {
       compatible.push({ role: 'tool', tool_call_id: result.toolCallId, content: result.content });
     }

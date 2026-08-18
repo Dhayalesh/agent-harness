@@ -87,6 +87,44 @@ export const config = {
     requestTimeoutMs: integer("AGENT_SESSION_S3_REQUEST_TIMEOUT_MS", 10_000),
     maxBytes: integer("AGENT_ARTIFACT_MAX_BYTES", 25 * 1024 * 1024),
   },
+  uploads: {
+    /** Per file, enforced by the multipart parser before anything is buffered. */
+    maxFileBytes: integer("CHAT_UPLOAD_MAX_FILE_BYTES", 25 * 1024 * 1024),
+    maxFiles: integer("CHAT_UPLOAD_MAX_FILES", 10),
+    /**
+     * Extracted text kept per attachment. Text is what reaches the model, so this
+     * is the real context cost of an upload, not the file size.
+     */
+    maxTextChars: integer("CHAT_UPLOAD_MAX_TEXT_CHARS", 200_000),
+    /** Total extracted text across every attachment on one message. */
+    maxPromptChars: integer("CHAT_UPLOAD_MAX_PROMPT_CHARS", 600_000),
+    /**
+     * Images travel to the model as base64, which inflates by a third and has to
+     * fit the console's 5 MB JSON body and the harness's 8 MB one.
+     */
+    maxImageBytes: integer("CHAT_UPLOAD_MAX_IMAGE_BYTES", 4 * 1024 * 1024),
+    /**
+     * Ceiling for keeping original bytes in MongoDB when S3 is not configured.
+     * Well below the 16 MB BSON document limit, since the bytes sit in a document
+     * alongside their metadata.
+     */
+    maxInlineBytes: integer("CHAT_UPLOAD_MAX_INLINE_BYTES", 2 * 1024 * 1024),
+    /** Sibling of the artifact prefix, in the same private bucket. */
+    prefix: trimmed("AGENT_S3_UPLOAD_PREFIX", "uploads").replace(
+      /^\/+|\/+$/g,
+      "",
+    ),
+  },
+  chatTitles: {
+    /**
+     * Name a new chat from its first exchange using the agent's own model provider.
+     * Turning this off keeps the placeholder name; it does not disable the
+     * prompt-derived fallback, which costs nothing and always runs.
+     */
+    enabled: trimmed("CHAT_AUTO_TITLE", "true").toLowerCase() !== "false",
+    timeoutMs: integer("CHAT_TITLE_TIMEOUT_MS", 8_000),
+    maxLength: integer("CHAT_TITLE_MAX_LENGTH", 60),
+  },
   createdBy: trimmed("PLATFORM_CREATED_BY", "agent-console"),
 };
 

@@ -1,6 +1,10 @@
 import {
   Button,
   Chip,
+  Dropdown,
+  DropdownItem,
+  DropdownMenu,
+  DropdownTrigger,
   Link as HeroLink,
   Input,
   Select,
@@ -33,11 +37,13 @@ import {
   relative,
   tokens,
   useConfirm,
+  usePrompt,
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
 import {
+  artifactExtension,
   artifactIcon,
   artifactKind,
   artifactLabel,
@@ -64,11 +70,20 @@ export function ChatPage() {
   const [atBottom, setAtBottom] = useState(true);
   const [live, setLive] = useState(null);
   const [documentPane, setDocumentPane] = useState(null);
+  const [attachments, setAttachments] = useState([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [uploadAccept, setUploadAccept] = useState("");
   const [confirm, confirmDialog] = useConfirm();
+  const [promptText, promptDialog] = usePrompt();
   const threadEnd = useRef(null);
   const composer = useRef(null);
   const inFlight = useRef(null);
   const documentAutoOpened = useRef(false);
+  const filePicker = useRef(null);
+  // Depth rather than a boolean: dragging over a child fires leave on the parent,
+  // which would otherwise clear the highlight while the pointer is still inside.
+  const dragDepth = useRef(0);
 
   // Leaving the page stops the run rather than leaving it to finish unwatched:
   // the server aborts its AgentCore call when this connection closes.
@@ -140,6 +155,23 @@ export function ChatPage() {
     setSidebarOpen(false);
   }, [agentId, chatId]);
 
+  // The server owns the accepted-type list, so the picker offers exactly what the
+  // upload route will take. Fetched once; a failure just leaves the filter open.
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .catalogue()
+      .then((result) => {
+        if (!cancelled) {
+          setUploadAccept((result.uploads?.accept ?? []).join(","));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const liveDocument = useMemo(() => artifactDraftFromLive(live), [live]);
 
   useEffect(() => {
@@ -163,6 +195,8 @@ export function ChatPage() {
 
   const selectAgent = (nextId) => {
     setDraft("");
+    // Pending uploads belong to the chat they were uploaded against.
+    setAttachments([]);
     setDocumentPane(null);
     navigate(nextId ? "/chat/" + nextId : "/chat");
   };
@@ -172,6 +206,7 @@ export function ChatPage() {
     setChat(null);
     setLastRun(null);
     setDraft("");
+    setAttachments([]);
     setDocumentPane(null);
     navigate("/chat/" + agentId);
   };
@@ -196,6 +231,60 @@ export function ChatPage() {
           replace: true,
         });
       }
+    } catch (caught) {
+      setError(caught);
+    }
+  };
+
+  /**
+   * Keeps the summary list and the open chat in step after a metadata edit.
+   *
+   * Only the three fields a rename or a pin can change are copied across: the
+   * PATCH response is a full chat, and merging it wholesale would push a stored
+   * transcript into the sidebar summaries.
+   */
+  const applyChatPatch = (updated) => {
+    const patch = {
+      title: updated.title,
+      pinned: updated.pinned,
+      updatedAt: updated.updatedAt,
+    };
+    setChats((current) =>
+      current.map((item) =>
+        item.id === updated.id ? { ...item, ...patch } : item,
+      ),
+    );
+    setChat((current) =>
+      current?.id === updated.id ? { ...current, ...patch } : current,
+    );
+  };
+
+  const renameChat = async (target) => {
+    const victim = target ?? chat;
+    if (!victim) return;
+    const current = victim.title ?? "";
+    const title = await promptText({
+      title: "Rename chat",
+      label: "Chat name",
+      placeholder: "Chat name",
+      defaultValue: current,
+      confirmLabel: "Rename",
+    });
+    if (title === null || title === current) return;
+    try {
+      applyChatPatch((await api.renameChat(victim.id, title)).chat);
+    } catch (caught) {
+      setError(caught);
+    }
+  };
+
+  const togglePin = async (target) => {
+    const victim = target ?? chat;
+    if (!victim) return;
+    try {
+      applyChatPatch(
+        (await api.setChatPinned(victim.id, !victim.pinned)).chat,
+      );
     } catch (caught) {
       setError(caught);
     }
@@ -229,12 +318,14 @@ export function ChatPage() {
   const send = async (event) => {
     event.preventDefault();
     const content = draft.trim();
-    if (!content || !agentId || sending) return;
+    const sent = attachments;
+    if ((!content && !sent.length) || !agentId || sending || uploading) return;
 
     const streaming = selectedAgent?.stream === true;
     setSending(true);
     setError(null);
     setDraft("");
+    setAttachments([]);
     setLive(streaming ? EMPTY_LIVE : null);
     documentAutoOpened.current = false;
 
@@ -252,6 +343,7 @@ export function ChatPage() {
         role: "user",
         content,
         createdAt: new Date().toISOString(),
+        ...(sent.length ? { attachments: sent } : {}),
       };
       setChat((current) => ({
         ...current,
@@ -261,13 +353,15 @@ export function ChatPage() {
 
       const controller = new AbortController();
       inFlight.current = controller;
+      const attachmentIds = sent.map((item) => item.id);
       const result = streaming
         ? await api.streamChatMessage(currentChat.id, content, {
             signal: controller.signal,
+            attachmentIds,
             onEvent: (event) =>
               setLive((current) => applyLiveEvent(current, event)),
           })
-        : await api.sendChatMessage(currentChat.id, content);
+        : await api.sendChatMessage(currentChat.id, content, { attachmentIds });
       setChat(result.chat);
       setLastRun(result.run ?? null);
       const completedArtifact = latestArtifact(result.chat);
@@ -303,6 +397,74 @@ export function ChatPage() {
       setSending(false);
       setLive(null);
     }
+  };
+
+  /**
+   * Uploads on selection rather than on send.
+   *
+   * The file is validated, extracted, and sized server-side before the user has
+   * written anything, so an unreadable upload is reported while they can still do
+   * something about it. It also means the chat has to exist, so one is created here
+   * if this is the first thing to happen in a new conversation.
+   */
+  const addFiles = async (fileList) => {
+    const files = [...(fileList ?? [])];
+    if (!files.length || !agentId || uploading) return;
+    setUploading(true);
+    setError(null);
+    try {
+      let currentChat = chat;
+      if (!currentChat) {
+        const created = await api.createChat({ agentId });
+        currentChat = created.chat;
+        setChat(currentChat);
+        setChats((current) => [currentChat, ...current]);
+        navigate("/chat/" + agentId + "?chat=" + currentChat.id, {
+          replace: true,
+        });
+      }
+      const result = await api.uploadChatAttachments(currentChat.id, files);
+      setAttachments((current) => [...current, ...(result.attachments ?? [])]);
+      // A partial success is not an error, but the user still needs to know which
+      // files did not make it and why.
+      if (result.rejected?.length) {
+        setError(
+          new Error(
+            result.rejected
+              .map((entry) => `${entry.filename}: ${entry.reason}`)
+              .join("\n"),
+          ),
+        );
+      }
+    } catch (caught) {
+      setError(caught);
+    } finally {
+      setUploading(false);
+      composer.current?.focus();
+    }
+  };
+
+  const removeAttachment = (id) => {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  };
+
+  const onDragEnter = (event) => {
+    if (![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+    dragDepth.current += 1;
+    setDragging(true);
+  };
+
+  const onDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  };
+
+  const onDrop = (event) => {
+    if (![...(event.dataTransfer?.types ?? [])].includes("Files")) return;
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    void addFiles(event.dataTransfer?.files);
   };
 
   const applySuggestion = (value) => {
@@ -431,6 +593,8 @@ export function ChatPage() {
                         key={item.id}
                         item={item}
                         active={item.id === chat?.id}
+                        onRename={renameChat}
+                        onPin={togglePin}
                         onRemove={removeChat}
                       />
                     ))}
@@ -482,7 +646,30 @@ export function ChatPage() {
           />
         )}
 
-        <div className="relative flex min-h-0 min-w-0 flex-col bg-content1">
+        <div
+          className="relative flex min-h-0 min-w-0 flex-col bg-content1"
+          onDragEnter={onDragEnter}
+          onDragLeave={onDragLeave}
+          // Without preventDefault on dragover the browser refuses the drop and
+          // navigates to the file instead.
+          onDragOver={(event) => {
+            if ([...(event.dataTransfer?.types ?? [])].includes("Files")) {
+              event.preventDefault();
+            }
+          }}
+          onDrop={onDrop}
+        >
+          {dragging && selectedAgent && (
+            <div
+              className="pointer-events-none absolute inset-3 z-40 grid place-items-center rounded-large border-2 border-dashed border-secondary/60 bg-background/80 backdrop-blur-sm"
+              role="status"
+            >
+              <span className="flex flex-col items-center gap-2 text-small font-medium text-secondary">
+                <Icon name="paperclip" className="h-6 w-6" />
+                Drop files to attach
+              </span>
+            </div>
+          )}
           <header className="flex min-h-[64px] items-center gap-3 border-b border-divider bg-content1/95 px-4 py-2.5 backdrop-blur sm:px-5">
             <Button
               isIconOnly
@@ -560,6 +747,42 @@ export function ChatPage() {
                       <Icon name="settings" className="h-4 w-4" />
                     </Button>
                   </Tooltip>
+                  {chat && (
+                    <Tooltip content="Rename chat" size="sm">
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        aria-label="Rename this chat"
+                        onPress={() => renameChat(chat)}
+                      >
+                        <Icon name="edit" className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                  )}
+                  {chat && (
+                    <Tooltip
+                      content={chat.pinned ? "Unpin chat" : "Pin chat"}
+                      size="sm"
+                    >
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="light"
+                        aria-label={
+                          chat.pinned ? "Unpin this chat" : "Pin this chat"
+                        }
+                        aria-pressed={Boolean(chat.pinned)}
+                        className={chat.pinned ? "text-secondary" : undefined}
+                        onPress={() => togglePin(chat)}
+                      >
+                        <Icon
+                          name={chat.pinned ? "unpin" : "pin"}
+                          className="h-4 w-4"
+                        />
+                      </Button>
+                    </Tooltip>
+                  )}
                   {chat && (
                     <Tooltip content="Reset agent context" size="sm">
                       <Button
@@ -698,12 +921,53 @@ export function ChatPage() {
                   <label className="sr-only" htmlFor="chat-message">
                     Message {selectedAgent.name}
                   </label>
+                  {(attachments.length > 0 || uploading) && (
+                    <AttachmentTray
+                      attachments={attachments}
+                      uploading={uploading}
+                      onRemove={removeAttachment}
+                    />
+                  )}
                   <div className="flex items-end gap-2">
+                    <input
+                      ref={filePicker}
+                      type="file"
+                      multiple
+                      accept={uploadAccept}
+                      className="hidden"
+                      onChange={(event) => {
+                        void addFiles(event.target.files);
+                        // Cleared so choosing the same file twice still fires.
+                        event.target.value = "";
+                      }}
+                    />
+                    <Tooltip content="Attach files" size="sm">
+                      <Button
+                        isIconOnly
+                        radius="md"
+                        size="sm"
+                        variant="light"
+                        className="h-9 w-9 shrink-0 text-default-500"
+                        aria-label="Attach files"
+                        isDisabled={sending || resettingSession || !agentReady}
+                        onPress={() => filePicker.current?.click()}
+                      >
+                        <Icon name="paperclip" className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
                     <textarea
                       id="chat-message"
                       ref={composer}
                       value={draft}
                       onChange={(event) => setDraft(event.target.value)}
+                      onPaste={(event) => {
+                        // Screenshot straight from the clipboard, the way every
+                        // other chat client behaves.
+                        const pasted = [...(event.clipboardData?.files ?? [])];
+                        if (!pasted.length) return;
+                        event.preventDefault();
+                        void addFiles(pasted);
+                      }}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" && !event.shiftKey) {
                           event.preventDefault();
@@ -723,7 +987,9 @@ export function ChatPage() {
                       className="h-9 w-9 shrink-0 bg-[#302e2b] text-white shadow-[0_1px_2px_rgba(30,28,25,0.16)] hover:bg-[#242220] dark:bg-[#ece8df] dark:text-[#242220] dark:hover:bg-white"
                       aria-label={sending ? "Running" : "Send message"}
                       isDisabled={
-                        !draft.trim() ||
+                        // Files alone are a valid message.
+                        (!draft.trim() && attachments.length === 0) ||
+                        uploading ||
                         sending ||
                         resettingSession ||
                         !agentReady
@@ -769,11 +1035,106 @@ export function ChatPage() {
       </div>
 
       {confirmDialog}
+      {promptDialog}
     </section>
   );
 }
 
-function ChatListItem({ item, active, onRemove }) {
+/** Pending uploads above the composer, each removable before the message is sent. */
+function AttachmentTray({ attachments, uploading, onRemove }) {
+  return (
+    <ul className="mb-2 flex flex-wrap gap-1.5 px-0.5">
+      {attachments.map((attachment) => (
+        <li key={attachment.id}>
+          <AttachmentChip attachment={attachment} onRemove={onRemove} />
+        </li>
+      ))}
+      {uploading && (
+        <li className="flex h-8 items-center gap-2 rounded-medium border border-divider bg-content2 px-2.5 text-tiny text-default-500">
+          <ActivityIndicator size="sm" />
+          Reading files…
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/**
+ * One attachment, as a chip.
+ *
+ * Reports the extracted character count rather than the file size for text, because
+ * that is what the upload actually costs in context — a 4 MB workbook and a 4 MB
+ * screenshot are nothing alike once one of them has been reduced to a grid.
+ */
+function AttachmentChip({ attachment, onRemove }) {
+  const detail = [
+    attachment.label,
+    attachment.handling === "image"
+      ? fileSize(attachment.size)
+      : attachment.textChars
+        ? `${attachment.textChars.toLocaleString()} chars`
+        : fileSize(attachment.size),
+    ...(attachment.notes ?? []),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <span
+      className={`group/chip flex h-8 max-w-[240px] items-center gap-1.5 rounded-medium border border-divider bg-content2 pl-2 text-tiny ${
+        onRemove ? "pr-1" : "pr-2.5"
+      }`}
+    >
+      <Icon
+        name={attachment.handling === "image" ? "image" : "file"}
+        className="h-3.5 w-3.5 shrink-0 text-default-500"
+      />
+      <span className="min-w-0 flex-1 leading-tight">
+        <span className="block truncate font-medium text-foreground">
+          {attachment.url ? (
+            <HeroLink
+              href={attachment.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-tiny text-foreground"
+            >
+              {attachment.filename}
+            </HeroLink>
+          ) : (
+            attachment.filename
+          )}
+        </span>
+        {detail && (
+          <span className="block truncate text-[10px] text-default-500">
+            {detail}
+          </span>
+        )}
+      </span>
+      {onRemove && (
+        <Button
+          isIconOnly
+          size="sm"
+          variant="light"
+          className="h-6 w-6 min-w-6 shrink-0 text-default-500"
+          aria-label={`Remove ${attachment.filename}`}
+          onPress={() => onRemove(attachment.id)}
+        >
+          <Icon name="close" className="h-3 w-3" />
+        </Button>
+      )}
+    </span>
+  );
+}
+
+function fileSize(bytes) {
+  const value = Number(bytes ?? 0);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function ChatListItem({ item, active, onRename, onPin, onRemove }) {
   const title = item.title || item.agentName || "Untitled chat";
   return (
     <li
@@ -787,23 +1148,65 @@ function ChatListItem({ item, active, onRemove }) {
         href={`/chat/${item.agentId}?chat=${item.id}`}
         className="block rounded-medium py-2 pl-2.5 pr-9 text-foreground"
       >
-        <span className="block truncate text-small font-medium">{title}</span>
+        <span className="flex items-center gap-1.5">
+          {item.pinned && (
+            <Icon name="pin" className="h-3 w-3 shrink-0 text-secondary" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-small font-medium">
+            {title}
+          </span>
+        </span>
         <span className="mt-0.5 block truncate text-tiny text-default-500">
           {item.agentName ? item.agentName + " · " : ""}
           {relative(item.updatedAt ?? item.createdAt)}
         </span>
       </HeroLink>
-      <Button
-        isIconOnly
-        size="sm"
-        variant="light"
-        color="danger"
-        className="absolute right-1 top-1/2 h-7 w-7 min-w-7 -translate-y-1/2 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-        aria-label={`Delete ${title}`}
-        onPress={() => onRemove(item)}
-      >
-        <Icon name="trash" className="h-3.5 w-3.5" />
-      </Button>
+      <Dropdown placement="bottom-end">
+        <DropdownTrigger>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="light"
+            // Stays visible while its own menu is open, or the trigger vanishes
+            // from under the pointer the moment the menu takes focus.
+            className="absolute right-1 top-1/2 h-7 w-7 min-w-7 -translate-y-1/2 opacity-0 transition-opacity aria-expanded:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+            aria-label={`Actions for ${title}`}
+          >
+            <Icon name="dots" className="h-3.5 w-3.5" />
+          </Button>
+        </DropdownTrigger>
+        <DropdownMenu
+          aria-label={`Actions for ${title}`}
+          onAction={(key) => {
+            if (key === "rename") onRename(item);
+            if (key === "pin") onPin(item);
+            if (key === "delete") onRemove(item);
+          }}
+        >
+          <DropdownItem
+            key="rename"
+            startContent={<Icon name="edit" className="h-4 w-4" />}
+          >
+            Rename
+          </DropdownItem>
+          <DropdownItem
+            key="pin"
+            startContent={
+              <Icon name={item.pinned ? "unpin" : "pin"} className="h-4 w-4" />
+            }
+          >
+            {item.pinned ? "Unpin" : "Pin"}
+          </DropdownItem>
+          <DropdownItem
+            key="delete"
+            color="danger"
+            className="text-danger"
+            startContent={<Icon name="trash" className="h-4 w-4" />}
+          >
+            Delete
+          </DropdownItem>
+        </DropdownMenu>
+      </Dropdown>
     </li>
   );
 }
@@ -977,15 +1380,31 @@ function Message({ message, agentName, onOpenDocument }) {
           {role !== "user" && message.toolCalls?.length > 0 && (
             <ToolHistory toolCalls={message.toolCalls} />
           )}
-          {segments(content).map((segment, index) =>
-            segment.kind === "code" ? (
-              <CodeBlock key={index} value={segment.value} />
-            ) : (
-              <p key={index} className="message-text [&+&]:mt-3">
-                {segment.value}
-              </p>
-            ),
+          {message.attachments?.length > 0 && (
+            <ul
+              className={`flex flex-wrap gap-1.5 ${content ? "mb-2" : ""} ${
+                role === "user" ? "justify-end" : ""
+              }`}
+            >
+              {message.attachments.map((attachment) => (
+                <li key={attachment.id}>
+                  <AttachmentChip attachment={attachment} />
+                </li>
+              ))}
+            </ul>
           )}
+          {/* A files-only turn has no text, and an empty paragraph would just add space. */}
+          {content
+            ? segments(content).map((segment, index) =>
+                segment.kind === "code" ? (
+                  <CodeBlock key={index} value={segment.value} />
+                ) : (
+                  <p key={index} className="message-text [&+&]:mt-3">
+                    {segment.value}
+                  </p>
+                ),
+              )
+            : null}
           {(message.artifacts ?? []).map((artifact) => (
             <DocumentCard
               key={artifact.id}
@@ -1178,6 +1597,8 @@ const ARTIFACT_TOOL_KINDS = {
   create_document_artifact: "docx",
   create_spreadsheet_artifact: "xlsx",
   create_csv_artifact: "csv",
+  create_json_artifact: "json",
+  create_code_artifact: "code",
 };
 
 function artifactDraftFromLive(live) {
@@ -1186,7 +1607,19 @@ function artifactDraftFromLive(live) {
     .find((candidate) => ARTIFACT_TOOL_KINDS[candidate.name]);
   if (!tool) return null;
   const parsed = parseJsonObject(tool.input);
-  const kind = ARTIFACT_TOOL_KINDS[tool.name];
+  // One tool writes both JSON flavours, so its `format` argument picks the kind.
+  // Until the arguments finish streaming it reads as plain JSON, which renders
+  // the same either way.
+  const kind =
+    tool.name === "create_json_artifact" && parsed?.format === "ndjson"
+      ? "ndjson"
+      : ARTIFACT_TOOL_KINDS[tool.name];
+  const language =
+    kind === "code"
+      ? (parsed?.language ??
+        partialJsonStringField(tool.input, "language") ??
+        undefined)
+      : undefined;
   const artifact = [...(live?.artifacts ?? [])]
     .reverse()
     .find((candidate) => artifactKind(candidate) === kind);
@@ -1194,6 +1627,7 @@ function artifactDraftFromLive(live) {
     kind: "live",
     key: tool.key,
     artifactKind: kind,
+    language,
     title:
       artifact?.metadata?.title ??
       parsed?.title ??
@@ -1203,7 +1637,7 @@ function artifactDraftFromLive(live) {
       artifact?.metadata?.filename ??
       parsed?.filename ??
       partialJsonStringField(tool.input, "filename") ??
-      `document.${kind === "markdown" ? "md" : kind}`,
+      `document${artifactExtension(kind, language)}`,
     content:
       parsed?.content ?? partialJsonStringField(tool.input, "content") ?? "",
     draft: parsed ?? {
@@ -1816,15 +2250,25 @@ const GROUP_ORDER = [
   "Older",
 ];
 
-/** Buckets chat summaries the way every mainstream chat sidebar does. */
+/**
+ * Buckets chat summaries the way every mainstream chat sidebar does.
+ *
+ * Pinned chats leave the date buckets entirely and lead the list, because the
+ * point of pinning one is that it stops drifting down as newer chats arrive.
+ */
 function groupChats(chats) {
+  const pinned = chats.filter((item) => item.pinned);
   const buckets = new Map(GROUP_ORDER.map((label) => [label, []]));
   for (const item of chats) {
+    if (item.pinned) continue;
     buckets.get(bucketOf(item.updatedAt ?? item.createdAt)).push(item);
   }
-  return GROUP_ORDER.filter((label) => buckets.get(label).length > 0).map(
-    (label) => ({ label, items: buckets.get(label) }),
-  );
+  return [
+    ...(pinned.length ? [{ label: "Pinned", items: pinned, pinned: true }] : []),
+    ...GROUP_ORDER.filter((label) => buckets.get(label).length > 0).map(
+      (label) => ({ label, items: buckets.get(label) }),
+    ),
+  ];
 }
 
 function bucketOf(iso) {

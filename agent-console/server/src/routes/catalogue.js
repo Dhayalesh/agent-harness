@@ -1,6 +1,7 @@
 import express from "express";
-import { AVAILABLE_TOOLS, READ_ONLY_TOOLS } from "../config.js";
+import { AVAILABLE_TOOLS, READ_ONLY_TOOLS, config } from "../config.js";
 import { asyncHandler } from "../lib/http-error.js";
+import { acceptedExtensions } from "../services/attachment-types.js";
 import { McpServer } from "../models/mcp-server.js";
 import { ModelProvider } from "../models/model-provider.js";
 import { Skill } from "../models/skill.js";
@@ -28,5 +29,13 @@ catalogueRouter.get("/", asyncHandler(async (_request, response) => {
     modelProviders: providers.map(safeModelProvider),
     mcpServers: servers.map(safeMcpServer),
     skills: skills.map(safeSkill),
+    // Published so the file picker offers exactly what the server will accept,
+    // rather than a second list in the client that can drift from this one.
+    uploads: {
+      accept: acceptedExtensions(),
+      maxFiles: config.uploads.maxFiles,
+      maxFileBytes: config.uploads.maxFileBytes,
+      maxImageBytes: config.uploads.maxImageBytes,
+    },
   });
 }));

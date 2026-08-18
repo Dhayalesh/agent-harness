@@ -18,8 +18,19 @@ const artifactSchema = new mongoose.Schema(
     id: { type: String, required: true },
     kind: {
       type: String,
-      enum: ["markdown", "html", "docx", "xlsx", "csv"],
+      enum: [
+        "markdown",
+        "html",
+        "docx",
+        "xlsx",
+        "csv",
+        "json",
+        "ndjson",
+        "code",
+      ],
     },
+    // Set only for `code`, whose extension and highlighting depend on it.
+    language: String,
     title: { type: String, required: true },
     filename: { type: String, required: true },
     contentType: { type: String, required: true },
@@ -48,6 +59,28 @@ const toolCallSchema = new mongoose.Schema(
   { _id: false },
 );
 
+/**
+ * An uploaded file as it appears on the message that sent it.
+ *
+ * A reference, not the file: the bytes and the extracted text live in the
+ * `chat_attachments` collection so a transcript stays cheap to read.
+ */
+const messageAttachmentSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    filename: { type: String, required: true },
+    contentType: { type: String, required: true },
+    handling: { type: String, enum: ["text", "image"], required: true },
+    label: String,
+    language: String,
+    size: { type: Number, required: true },
+    textChars: Number,
+    downloadable: Boolean,
+    notes: { type: [String], default: undefined },
+  },
+  { _id: false },
+);
+
 const chatMessageSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
@@ -56,8 +89,12 @@ const chatMessageSchema = new mongoose.Schema(
       enum: ["user", "assistant", "error"],
       required: true,
     },
-    content: { type: String, required: true },
+    // Empty for a turn that sent files with no words. Mongoose treats "" as
+    // missing for a required String, so the requirement lives in the zod layer,
+    // which can see the attachments and judge the message as a whole.
+    content: { type: String, default: "" },
     reasoning: String,
+    attachments: { type: [messageAttachmentSchema], default: undefined },
     artifacts: { type: [artifactSchema], default: undefined },
     toolCalls: { type: [toolCallSchema], default: undefined },
     runId: String,
@@ -101,6 +138,7 @@ const sessionSchema = new mongoose.Schema(
 const chatSchema = new mongoose.Schema(
   {
     title: { type: String, required: true },
+    pinned: { type: Boolean, default: false },
     agentId: { type: String, required: true, index: true },
     agentName: { type: String, required: true },
     runtimeSessionId: { type: String, required: true },
@@ -125,6 +163,21 @@ function transformDocument(_document, plain) {
   plain.messageCount = plain.messages?.length ?? 0;
   plain.messages = plain.messages?.map((message) => ({
     ...message,
+    ...(message.attachments?.length
+      ? {
+          attachments: message.attachments.map((attachment) => ({
+            ...attachment,
+            ...(attachment.downloadable
+              ? {
+                  url: `/api/chats/${plain.id}/attachments/${encodeURIComponent(attachment.id)}`,
+                  downloadUrl:
+                    `/api/chats/${plain.id}/attachments/${encodeURIComponent(attachment.id)}` +
+                    "?download=true",
+                }
+              : {}),
+          })),
+        }
+      : {}),
     ...(message.artifacts?.length
       ? {
           artifacts: message.artifacts.map(
@@ -153,13 +206,17 @@ export const Chat = mongoose.models.Chat ?? mongoose.model("Chat", chatSchema);
 export function chatSummaries(filter = {}, limit = 50) {
   return Chat.aggregate([
     { $match: filter },
-    { $sort: { updatedAt: -1 } },
-    { $limit: limit },
+    // Projected before the sort, so ordering never carries stored transcripts
+    // through it. Pinned chats lead, and each group stays newest-first.
     {
       $project: {
         _id: 0,
         id: { $toString: "$_id" },
         title: 1,
+        // Chats created before pinning existed have no field to sort on, and a
+        // missing value sorts as its own group — which would split the unpinned
+        // chats into two separately ordered blocks.
+        pinned: { $ifNull: ["$pinned", false] },
         agentId: 1,
         agentName: 1,
         runtimeSessionId: 1,
@@ -170,5 +227,7 @@ export function chatSummaries(filter = {}, limit = 50) {
         messageCount: { $size: { $ifNull: ["$messages", []] } },
       },
     },
+    { $sort: { pinned: -1, updatedAt: -1 } },
+    { $limit: limit },
   ]);
 }

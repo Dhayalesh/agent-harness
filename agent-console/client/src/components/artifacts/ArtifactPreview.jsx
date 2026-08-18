@@ -34,6 +34,25 @@ export function ArtifactPreview({ kind, mode, bytes, draft }) {
     return <DocxPreview bytes={bytes} />;
   }
   if (kind === "xlsx") return <WorkbookPreview bytes={bytes} draft={draft} />;
+  if (kind === "json" || kind === "code") {
+    const source = draft?.content ?? decodeArtifact(bytes);
+    return (
+      <SourceView
+        source={source}
+        empty={
+          kind === "json" ? "Waiting for JSON content..." : "Waiting for source..."
+        }
+      />
+    );
+  }
+  if (kind === "ndjson") {
+    const source = draft?.content ?? decodeArtifact(bytes);
+    return mode === "code" ? (
+      <SourceView source={source} empty="Waiting for NDJSON records..." />
+    ) : (
+      <NdjsonPreview source={source} />
+    );
+  }
   if (kind === "csv") {
     const source = draft
       ? csvFromDraft(draft)
@@ -199,6 +218,56 @@ function CsvPreview({ source }) {
   ) : (
     <EmptyPreview label="Waiting for CSV data" />
   );
+}
+
+/**
+ * NDJSON as a table, since one record per line is nearly always a dataset.
+ *
+ * Columns are the union of keys in file order rather than the first record's keys,
+ * so a field that only some records carry still gets a column. A line that has not
+ * finished streaming is skipped instead of failing the whole view.
+ */
+function NdjsonPreview({ source }) {
+  const rows = useMemo(() => {
+    const records = [];
+    const columns = [];
+    for (const line of source.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let value;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const record =
+        value && typeof value === "object" && !Array.isArray(value)
+          ? value
+          : { value };
+      for (const key of Object.keys(record)) {
+        if (!columns.includes(key)) columns.push(key);
+      }
+      records.push(record);
+    }
+    if (!records.length) return [];
+    return [
+      columns,
+      ...records.map((record) =>
+        columns.map((key) =>
+          key in record ? scalarText(record[key]) : "",
+        ),
+      ),
+    ];
+  }, [source]);
+  return rows.length ? (
+    <DataTable rows={rows} />
+  ) : (
+    <EmptyPreview label="Waiting for NDJSON records" />
+  );
+}
+
+function scalarText(value) {
+  if (value === null || value === undefined) return "";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
 }
 
 function DataTable({ rows }) {

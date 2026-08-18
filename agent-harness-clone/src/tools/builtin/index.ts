@@ -10,9 +10,11 @@ import { createPowerShellTool, isPowerShellAvailable } from './powershell.js';
 import { createReadFileTool } from './read-file.js';
 import { createTodoWriteTool, TodoStore } from './todo-write.js';
 import { createWriteFileTool } from './write-file.js';
+import { createCodeArtifactTool } from './create-code-artifact.js';
 import { createCsvArtifactTool } from './create-csv-artifact.js';
 import { createDocumentArtifactTool } from './create-document-artifact.js';
 import { createHtmlArtifactTool } from './create-html-artifact.js';
+import { createJsonArtifactTool } from './create-json-artifact.js';
 import { createMarkdownArtifactTool } from './create-markdown-artifact.js';
 import { createSpreadsheetArtifactTool } from './create-spreadsheet-artifact.js';
 
@@ -57,6 +59,8 @@ export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOpt
           createDocumentArtifactTool(options.artifactStore),
           createSpreadsheetArtifactTool(options.artifactStore),
           createCsvArtifactTool(options.artifactStore),
+          createJsonArtifactTool(options.artifactStore),
+          createCodeArtifactTool(options.artifactStore),
         ]
       : []),
     createBashTool(runtime, shellOptions),
@@ -84,3 +88,5 @@ export { createHtmlArtifactTool } from './create-html-artifact.js';
 export { createDocumentArtifactTool } from './create-document-artifact.js';
 export { createSpreadsheetArtifactTool } from './create-spreadsheet-artifact.js';
 export { createCsvArtifactTool } from './create-csv-artifact.js';
+export { createJsonArtifactTool } from './create-json-artifact.js';
+export { createCodeArtifactTool } from './create-code-artifact.js';

@@ -137,6 +137,42 @@ const paths = {
       <path d="M5 21h14" />
     </>
   ),
+  dots: (
+    <>
+      <circle cx="12" cy="5" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="12" cy="19" r="1" />
+    </>
+  ),
+  pin: (
+    <>
+      <path d="M12 15v6" />
+      <path d="M8.5 3.5h7l-1 5.5 3 3.5H6.5l3-3.5Z" />
+    </>
+  ),
+  unpin: (
+    <>
+      <path d="M12 15v6" />
+      <path d="M8.5 3.5h7l-1 5.5 3 3.5H6.5l3-3.5Z" />
+      <path d="m4 4 16 16" />
+    </>
+  ),
+  paperclip: (
+    <path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8-8a3.4 3.4 0 0 1 4.8 4.8l-8 8a1.8 1.8 0 0 1-2.5-2.5l7-7" />
+  ),
+  image: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <circle cx="9" cy="10" r="1.6" />
+      <path d="m4 18 5-5 4 4 2.5-2.5L20 18" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M6 3h8l4 4v14H6Z" />
+      <path d="M14 3v5h5" />
+    </>
+  ),
 };
 
 export function Icon({ name, className = "h-4 w-4", strokeWidth = 1.8 }) {

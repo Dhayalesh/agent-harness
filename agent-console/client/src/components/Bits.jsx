@@ -396,6 +396,103 @@ export function useConfirm() {
   return [confirm, dialog];
 }
 
+/**
+ * `useConfirm` for a value rather than a yes/no.
+ *
+ * Resolves to the trimmed string, or null when the dialog was dismissed, so a call
+ * site can `await` a rename the same way it awaits a confirmation. Submitting an
+ * unchanged value still resolves, and the caller decides whether that is a no-op.
+ */
+export function usePrompt() {
+  const [request, setRequest] = useState(null);
+  const [value, setValue] = useState("");
+  const [open, setOpen] = useState(false);
+  const resolver = useRef(null);
+
+  const prompt = useCallback(
+    (options = {}) =>
+      new Promise((resolve) => {
+        resolver.current = resolve;
+        setRequest(options);
+        setValue(options.defaultValue ?? "");
+        setOpen(true);
+      }),
+    [],
+  );
+
+  const settle = useCallback((answer) => {
+    setOpen(false);
+    const resolve = resolver.current;
+    resolver.current = null;
+    resolve?.(answer);
+  }, []);
+
+  const maxLength = request?.maxLength ?? 200;
+  const trimmed = value.trim();
+  const valid = trimmed.length > 0 && trimmed.length <= maxLength;
+
+  const dialog = (
+    <Modal
+      isOpen={open}
+      onOpenChange={(next) => {
+        if (!next) settle(null);
+      }}
+      size="md"
+      placement="center"
+      backdrop="blur"
+    >
+      <ModalContent>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (valid) settle(trimmed);
+          }}
+        >
+          <ModalHeader className="flex items-center gap-2.5 text-medium">
+            <span className="grid h-8 w-8 place-items-center rounded-medium bg-secondary/10 text-secondary">
+              <Icon name={request?.icon ?? "edit"} className="h-4 w-4" />
+            </span>
+            {request?.title ?? "Rename"}
+          </ModalHeader>
+          <ModalBody>
+            <Input
+              autoFocus
+              size="sm"
+              variant="bordered"
+              radius="md"
+              label={request?.label}
+              placeholder={request?.placeholder}
+              value={value}
+              maxLength={maxLength}
+              onValueChange={setValue}
+              // Enter is handled by the form; Escape is handled by the modal.
+              classNames={{ inputWrapper: "bg-content1" }}
+            />
+            {request?.body && (
+              <p className="text-tiny text-default-500">{request.body}</p>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="light" onPress={() => settle(null)}>
+              {request?.cancelLabel ?? "Cancel"}
+            </Button>
+            <Button
+              type="submit"
+              color="primary"
+              isDisabled={!valid}
+              startContent={<Icon name="check" className="h-4 w-4" />}
+            >
+              {request?.confirmLabel ?? "Save"}
+            </Button>
+          </ModalFooter>
+        </form>
+      </ModalContent>
+    </Modal>
+  );
+
+  return [prompt, dialog];
+}
+
 /** Milliseconds as something a person reads at a glance. */
 export function duration(ms) {
   if (ms == null) return "—";
