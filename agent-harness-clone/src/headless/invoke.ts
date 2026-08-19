@@ -3,7 +3,10 @@ import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { DynamicCompactingContextManager } from '../context/context-manager.js';
+import {
+  contextPolicyFromPercent,
+  DynamicCompactingContextManager,
+} from '../context/context-manager.js';
 import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import type { ContentStore } from '../content/content-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
@@ -712,22 +715,22 @@ async function prepare(
         maxOutputTokens: agent.modelProvider.capabilities.maxOutputTokens,
       },
       ...(payload.compactContext ? { compactContext: true } : {}),
-      // When a compaction summarizer is configured (e.g. via COMPACTION_MODEL),
-      // build a context manager that uses it. Otherwise the session default
-      // DynamicCompactingContextManager is used with deterministic fallback.
-      ...(options.compactionSummarizer === undefined
-        ? {}
-        : {
-            contextManager: new DynamicCompactingContextManager({
-              summarizer: options.compactionSummarizer,
-              ...(agent.limits.maxInputTokens === undefined
-                ? {}
-                : { maxInputTokens: agent.limits.maxInputTokens }),
-              ...(agent.limits.maxOutputTokens === undefined
-                ? {}
-                : { maxOutputTokens: agent.limits.maxOutputTokens }),
-            }),
-          }),
+      // Built here rather than left to the session default because the record's
+      // `compactionThresholdPercent` and the deployment's summarizer are two
+      // independent inputs to the same policy, and only this layer sees both. A
+      // summarizer is attached when one is configured (e.g. via COMPACTION_MODEL);
+      // without one the same manager compacts using its deterministic fallback.
+      contextManager: new DynamicCompactingContextManager({
+        ...(options.compactionSummarizer === undefined
+          ? {}
+          : { summarizer: options.compactionSummarizer }),
+        ...(agent.limits.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: agent.limits.maxOutputTokens }),
+        ...(agent.limits.compactionThresholdPercent === undefined
+          ? {}
+          : { policy: contextPolicyFromPercent(agent.limits.compactionThresholdPercent) }),
+      }),
       // Continues the numbering the preparation events already used, so one run
       // is one sequence from the first `run.preparing` to `session.completed`.
       ...(progress === undefined ? {} : { initialSequence: progress.count() }),

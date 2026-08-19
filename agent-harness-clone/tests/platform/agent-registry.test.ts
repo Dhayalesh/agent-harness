@@ -244,12 +244,12 @@ test('a stored agent resolves to its prompt, model, tool selection, and limits',
       ['read_file', 'grep'],
     );
 
-    // Both token ceilings come from the model provider record when the agent
-    // leaves them out, and the input budget is what the window leaves.
+    // The reply reservation comes from the model provider record when the agent
+    // leaves it out, and no input ceiling is carried at all: the context layer
+    // derives that from the window this reservation leaves.
     assert.deepEqual(resolved.limits, {
       maxTurns: 8,
       maxOutputTokens: 4_096,
-      maxInputTokens: 27_904,
     });
     await resolved.close();
   } finally {
@@ -732,12 +732,14 @@ test('a tool the running host does not offer is reported, not dropped', async ()
 
 test('stored limits may narrow the model provider budget but not widen it', async () => {
   const narrowed = await registry(
-    agentRecord({ limits: { maxTurns: 4, maxOutputTokens: 1_024, maxInputTokens: 8_000 } }),
+    agentRecord({
+      limits: { maxTurns: 4, maxOutputTokens: 1_024, compactionThresholdPercent: 60 },
+    }),
   ).resolveById(RECORD_ID);
   assert.deepEqual(narrowed.limits, {
     maxTurns: 4,
     maxOutputTokens: 1_024,
-    maxInputTokens: 8_000,
+    compactionThresholdPercent: 60,
   });
   await narrowed.close();
 
@@ -751,15 +753,24 @@ test('stored limits may narrow the model provider budget but not widen it', asyn
       return true;
     },
   );
-  await assert.rejects(
-    registry(
-      agentRecord({ limits: { maxTurns: 4, maxOutputTokens: 4_096, maxInputTokens: 30_000 } }),
-    ).resolveById(RECORD_ID),
-    (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'AGENT_LIMIT_EXCEEDS_MODEL');
-      assert.match((error as Error).message, /above the 32000 context window/);
-      return true;
-    },
+});
+
+test('a stored compaction threshold outside 1-99 percent is rejected at write', () => {
+  const writable = {
+    name: 'reviewer',
+    systemPrompt: SYSTEM_PROMPT,
+    modelProviderId: PROVIDER_ID,
+  };
+  // 100 would mean "compact once the budget is completely full", which is one turn
+  // too late — the provider has already refused the request by then.
+  assert.throws(() =>
+    parseAgentInput({ ...writable, limits: { maxTurns: 4, compactionThresholdPercent: 100 } }),
+  );
+  assert.throws(() =>
+    parseAgentInput({ ...writable, limits: { maxTurns: 4, compactionThresholdPercent: 0 } }),
+  );
+  assert.doesNotThrow(() =>
+    parseAgentInput({ ...writable, limits: { maxTurns: 4, compactionThresholdPercent: 99 } }),
   );
 });
 

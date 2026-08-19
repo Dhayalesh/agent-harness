@@ -54,7 +54,7 @@ export const AGENT_RUNTIME_SUPPORT = {
    * verbatim, and the session applies them per run
    * (`src/core/agent-session.ts`).
    */
-  limitsHonoured: ['maxTurns', 'maxOutputTokens', 'maxInputTokens'] as const,
+  limitsHonoured: ['maxTurns', 'maxOutputTokens', 'compactionThresholdPercent'] as const,
   /**
    * Every other stored field is acted on too, which is why there is no ignored
    * list here as there is for `model_providers`: `systemPrompt` and `model` reach

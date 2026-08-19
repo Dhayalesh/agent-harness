@@ -36,7 +36,7 @@ const EMPTY = {
   skills: [],
   mcpServerIds: [],
   maxTurns: 12,
-  maxInputTokens: "",
+  compactionThresholdPercent: "",
   maxOutputTokens: "",
   stream: false,
   enabled: true,
@@ -90,7 +90,8 @@ export function AgentFormPage({ mode }) {
             })),
             mcpServerIds: [...(agent.mcpServerIds ?? [])],
             maxTurns: agent.limits?.maxTurns ?? 12,
-            maxInputTokens: agent.limits?.maxInputTokens ?? "",
+            compactionThresholdPercent:
+              agent.limits?.compactionThresholdPercent ?? "",
             maxOutputTokens: agent.limits?.maxOutputTokens ?? "",
           });
           return;
@@ -183,8 +184,10 @@ export function AgentFormPage({ mode }) {
     setSaving(true);
     setError(null);
     const limits = { maxTurns: Number(form.maxTurns) || 12 };
-    if (form.maxInputTokens !== "")
-      limits.maxInputTokens = Number(form.maxInputTokens);
+    if (form.compactionThresholdPercent !== "")
+      limits.compactionThresholdPercent = Number(
+        form.compactionThresholdPercent,
+      );
     if (form.maxOutputTokens !== "")
       limits.maxOutputTokens = Number(form.maxOutputTokens);
 
@@ -609,16 +612,19 @@ export function AgentFormPage({ mode }) {
             <Input
               type="number"
               min={1}
-              max={10000000}
-              label="Max input tokens"
+              max={99}
+              label="Shrink context at"
               labelPlacement="outside"
-              placeholder="provider default"
+              placeholder="90"
               variant="bordered"
-              value={String(form.maxInputTokens)}
-              onValueChange={setNumber("maxInputTokens")}
-              description="Blank derives from the provider."
-              isInvalid={Boolean(fieldErrors["limits.maxInputTokens"])}
-              errorMessage={fieldErrors["limits.maxInputTokens"]}
+              endContent={<span className="text-small text-default-400">%</span>}
+              value={String(form.compactionThresholdPercent)}
+              onValueChange={setNumber("compactionThresholdPercent")}
+              description="Percentage of the provider's input budget. Blank uses 90%."
+              isInvalid={Boolean(
+                fieldErrors["limits.compactionThresholdPercent"],
+              )}
+              errorMessage={fieldErrors["limits.compactionThresholdPercent"]}
             />
             <Input
               type="number"

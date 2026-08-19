@@ -376,18 +376,20 @@ export function agentProviderLimitIssue(agent, provider) {
     );
   }
   const output = agent.limits.maxOutputTokens ?? provider.capabilities.maxOutputTokens;
-  const input =
-    agent.limits.maxInputTokens ?? provider.capabilities.contextWindow - output;
   if (output > providerOutput) {
     return issueValue(
       "MODEL_LIMITS_INVALID",
       "Agent maxOutputTokens exceeds the model provider capability.",
     );
   }
-  if (input + output > contextWindow) {
+  // The agent no longer states an input ceiling, so there is no pair of limits to
+  // add up. What remains is that the reply has to be carved out of the same window
+  // the context goes into: a reservation at or above the window leaves nothing to
+  // read, and the runtime refuses it at resolution.
+  if (output >= contextWindow) {
     return issueValue(
       "MODEL_LIMITS_INVALID",
-      "Agent input and output limits exceed the provider context window.",
+      "Agent maxOutputTokens leaves no room for input in the provider context window.",
     );
   }
   return null;

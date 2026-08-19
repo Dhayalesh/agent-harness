@@ -165,10 +165,8 @@ export function AgentDetailPage() {
                 },
                 { label: "Max turns", value: agent.limits?.maxTurns ?? "—" },
                 {
-                  label: "Input ceiling",
-                  value:
-                    agent.limits?.maxInputTokens?.toLocaleString?.() ??
-                    "provider default",
+                  label: "Shrinks context at",
+                  value: `${agent.limits?.compactionThresholdPercent ?? 90}%`,
                 },
                 {
                   label: "Output ceiling",

@@ -39,11 +39,18 @@ const nullableStringMapPatch = z
   .union([stringMap, z.literal(""), z.null()])
   .optional();
 
+/**
+ * `compactionThresholdPercent` replaces what used to be an absolute
+ * `maxInputTokens`. The tokens are a property of the model, so they live on the
+ * model provider record; the percentage is the only part that is a choice. Capped
+ * at 99 because a context that only shrinks once the budget is completely full has
+ * already been refused by the provider.
+ */
 export const limitsSchema = z
   .object({
     maxTurns: z.number().int().positive().max(1_000).default(24),
     maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
-    maxInputTokens: z.number().int().positive().max(10_000_000).optional(),
+    compactionThresholdPercent: z.number().int().min(1).max(99).optional(),
   })
   .strict();
 

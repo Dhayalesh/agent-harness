@@ -128,7 +128,12 @@ export const headlessLimitsSchema = z
   .object({
     maxTurns: z.number().int().positive().max(1_000).optional(),
     maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
-    maxInputTokens: z.number().int().positive().max(10_000_000).optional(),
+    /**
+     * Percentage of the derived input budget at which context shrinks. There is no
+     * input token field: the budget comes from the model provider's own
+     * `contextWindow` less the reserved reply, and this says how full it may get.
+     */
+    compactionThresholdPercent: z.number().int().min(1).max(99).optional(),
   })
   .strict();
 

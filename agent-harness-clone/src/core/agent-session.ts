@@ -4,6 +4,7 @@ import type { AgentEvent, EventPayload } from './events.js';
 import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
 import { textMessage, userMessage } from './messages.js';
 import {
+  contextPolicyFromPercent,
   DynamicCompactingContextManager,
   estimateMessagesTokens,
   type ContextManager,
@@ -39,7 +40,17 @@ import { formatProjectContext, type ProjectContextProvider } from '../context/pr
 export type AgentLimits = {
   maxTurns: number;
   maxOutputTokens?: number;
-  maxInputTokens?: number;
+  /**
+   * How full the derived input budget may get, as a percentage, before the
+   * context layer summarises older turns out of the request.
+   *
+   * A percentage rather than a token ceiling because the budget itself belongs to
+   * the model: it is the provider's context window less the reserved reply. An
+   * absolute ceiling has to be restated every time the model changes and is
+   * silently catastrophic when it is set too low, where a percentage is
+   * self-limiting by construction.
+   */
+  compactionThresholdPercent?: number;
 };
 
 export type AgentSessionConfig = {
@@ -180,8 +191,24 @@ class AgentSessionImpl implements AgentSession {
       config.tools instanceof ToolRegistry ? config.tools : new ToolRegistry(config.tools ?? []);
     this.permissions = config.permissionHandler ?? new DefaultPermissionHandler();
     this.limits = { ...DEFAULT_LIMITS, ...config.limits };
+    // Built from the limits rather than left at its defaults, so a session given a
+    // `compactionThresholdPercent` and no explicit manager still shrinks where the
+    // record asked it to. An explicit `contextManager` is left entirely alone; a
+    // caller that supplied one has already chosen its policy.
+    const derivedPolicy =
+      this.limits.compactionThresholdPercent === undefined
+        ? undefined
+        : contextPolicyFromPercent(this.limits.compactionThresholdPercent);
     this.workingDirectory = config.workingDirectory ?? process.cwd();
-    this.contextManager = config.contextManager ?? new DynamicCompactingContextManager();
+    // Only the policy is handed over. The reply reservation is deliberately left to
+    // the context layer's own resolution, which reserves what the *model* reports
+    // rather than what this session happens to cap a single response at — narrowing
+    // it here would quietly widen the input budget beyond what the model can hold.
+    this.contextManager =
+      config.contextManager ??
+      new DynamicCompactingContextManager(
+        derivedPolicy === undefined ? {} : { policy: derivedPolicy },
+      );
     this.hooks = config.hooks ?? new HookRegistry();
     this.sessionStore = config.sessionStore;
     this.metadata = structuredClone(config.metadata ?? {});
@@ -249,7 +276,10 @@ class AgentSessionImpl implements AgentSession {
       await this.persist();
 
       let reactiveCompactionAttempts = 0;
-      let reactiveMaxInputTokens = this.limits.maxInputTokens;
+      // Starts unset: the only input ceiling a run has is the one the context layer
+      // derives from the model. This is filled in only by the reactive retry below,
+      // after the provider has rejected a context the estimate thought would fit.
+      let reactiveMaxInputTokens: number | undefined;
       // Spent on the first turn that asks for it, so a requested compaction happens
       // once rather than on every turn of the run.
       let pendingForcedCompaction = this.config.compactContext === true;
@@ -296,10 +326,7 @@ class AgentSessionImpl implements AgentSession {
           // from the context layer when it reported one, and falls back to the
           // session's own ceiling so the event is still meaningful with a
           // passthrough or custom context manager.
-          const contextBudget =
-            prepared.budget?.effectiveInputBudget ??
-            reactiveMaxInputTokens ??
-            this.limits.maxInputTokens;
+          const contextBudget = prepared.budget?.effectiveInputBudget ?? reactiveMaxInputTokens;
           if (contextBudget !== undefined && contextBudget > 0) {
             yield this.event({
               type: 'context.usage',

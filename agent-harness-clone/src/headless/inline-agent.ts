@@ -62,9 +62,10 @@ const PAYLOAD_ORIGIN = 'headless-payload';
 /**
  * What a provider record claims when the payload does not say.
  *
- * These bound the run: `maxInputTokens` is derived as `contextWindow -
- * maxOutputTokens`, so the numbers decide when context compaction starts, and an
- * `agent.limits` above them is refused. Chosen to be unremarkable for a current
+ * These bound the run: the input budget is derived as `contextWindow -
+ * maxOutputTokens` less a safety margin, so these numbers decide what the agent's
+ * `compactionThresholdPercent` is a percentage *of*, and an `agent.limits`
+ * reservation above them is refused. Chosen to be unremarkable for a current
  * frontier model rather than generous; a payload that knows its model should say so.
  */
 const DEFAULT_MODEL_CAPABILITIES: ModelProviderCapabilities = {
@@ -267,9 +268,9 @@ function completeAgent(
       ...(agent.limits?.maxOutputTokens === undefined
         ? {}
         : { maxOutputTokens: agent.limits.maxOutputTokens }),
-      ...(agent.limits?.maxInputTokens === undefined
+      ...(agent.limits?.compactionThresholdPercent === undefined
         ? {}
-        : { maxInputTokens: agent.limits.maxInputTokens }),
+        : { compactionThresholdPercent: agent.limits.compactionThresholdPercent }),
     },
     enabled: true,
     createdAt: refs.timestamp,

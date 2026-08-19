@@ -525,13 +525,16 @@ function assertAllowedToolsAvailable(
  * provider record's `contextWindow` is a property of the model itself, so an
  * agent allowed to exceed it would fail on the first full context instead of at
  * resolution.
+ *
+ * Only the reply reservation is a token count here. The input budget is derived
+ * downstream from the window that reservation leaves, which is why a record can
+ * no longer name an absolute input ceiling: the one it named was free to be
+ * smaller than a single turn, and nothing on this path could tell that apart
+ * from a deliberately frugal agent.
  */
 function resolveLimits(record: AgentRecord, modelProvider: ModelProviderRecord): AgentLimits {
   const { contextWindow, maxOutputTokens: providerOutput } = modelProvider.capabilities;
   const maxOutputTokens = record.limits.maxOutputTokens ?? providerOutput;
-  // The input budget is what the window leaves once the reply is reserved, so a
-  // full context plus a full reply cannot exceed `contextWindow`.
-  const maxInputTokens = record.limits.maxInputTokens ?? contextWindow - maxOutputTokens;
   if (maxOutputTokens > providerOutput) {
     throw new AgentHarnessError(
       `Agent '${record.name}' sets limits.maxOutputTokens ${maxOutputTokens}, above the ` +
@@ -539,15 +542,27 @@ function resolveLimits(record: AgentRecord, modelProvider: ModelProviderRecord):
       'AGENT_LIMIT_EXCEEDS_MODEL',
     );
   }
-  if (maxInputTokens + maxOutputTokens > contextWindow) {
+  // The reply has to come out of the same window the context goes into, so a
+  // provider whose reserved reply leaves no room to read is misconfigured at the
+  // provider record rather than at any agent that references it.
+  if (maxOutputTokens >= contextWindow) {
     throw new AgentHarnessError(
-      `Agent '${record.name}' sets limits.maxInputTokens ${maxInputTokens} with ` +
-        `maxOutputTokens ${maxOutputTokens}, above the ${contextWindow} context window of its ` +
-        `model provider '${modelProvider.name}'.`,
+      `Agent '${record.name}' reserves ${maxOutputTokens} output tokens of the ` +
+        `${contextWindow} context window of its model provider ` +
+        `'${modelProvider.name}', leaving nothing for input.`,
       'AGENT_LIMIT_EXCEEDS_MODEL',
     );
   }
-  return { maxTurns: record.limits.maxTurns, maxOutputTokens, maxInputTokens };
+  // No input ceiling is carried: the context layer derives the input budget from
+  // the provider's window less this reply, and the record's percentage decides
+  // only how full that budget may get before older turns are summarised out.
+  return {
+    maxTurns: record.limits.maxTurns,
+    maxOutputTokens,
+    ...(record.limits.compactionThresholdPercent === undefined
+      ? {}
+      : { compactionThresholdPercent: record.limits.compactionThresholdPercent }),
+  };
 }
 
 /** Records with `capabilities.tools` false contribute none. */

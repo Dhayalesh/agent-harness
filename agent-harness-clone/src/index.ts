@@ -199,6 +199,8 @@ export {
   DynamicCompactingContextManager,
   estimateMessagesTokens,
   PassthroughContextManager,
+  contextPolicyFromPercent,
+  DEFAULT_COMPACTION_PERCENT,
   DEFAULT_CONTEXT_POLICY,
 } from './context/context-manager.js';
 export type {

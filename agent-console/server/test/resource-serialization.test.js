@@ -216,25 +216,27 @@ test("reports agent token limits that exceed the referenced provider", () => {
     )?.code,
     "MODEL_LIMITS_INVALID",
   );
+  // A reservation that swallows the whole window leaves nothing to read into.
   assert.equal(
     agentProviderLimitIssue(
       {
         limits: {
           maxTurns: 12,
-          maxInputTokens: 95_000,
-          maxOutputTokens: 8_000,
+          maxOutputTokens: 100_000,
         },
       },
-      provider,
+      { capabilities: { contextWindow: 100_000, maxOutputTokens: 100_000 } },
     )?.code,
     "MODEL_LIMITS_INVALID",
   );
+  // The threshold is a percentage of a budget the provider defines, so no value it
+  // may hold can conflict with the provider's own numbers.
   assert.equal(
     agentProviderLimitIssue(
       {
         limits: {
           maxTurns: 12,
-          maxInputTokens: 90_000,
+          compactionThresholdPercent: 99,
           maxOutputTokens: 10_000,
         },
       },

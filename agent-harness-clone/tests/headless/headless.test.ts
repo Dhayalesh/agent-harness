@@ -688,9 +688,10 @@ test('an S3-referenced skill is downloaded, materialized, and deleted on close',
   const onDisk = await readFile(path.join(agent.skillDirectory, 'abap-review', 'SKILL.md'), 'utf8');
   assert.match(onDisk, /hardcoded clients/);
   assert.equal(onDisk, document);
-  // Limits derived from the provider's defaults: the window less the reply.
+  // The reply reservation comes from the provider's defaults. No input ceiling is
+  // carried, and the payload named no threshold, so the context layer keeps its own.
   assert.equal(agent.limits.maxOutputTokens, 8_192);
-  assert.equal(agent.limits.maxInputTokens, 200_000 - 8_192);
+  assert.equal(agent.limits.compactionThresholdPercent, undefined);
 
   const skillDirectory = agent.skillDirectory;
   await agent.close();

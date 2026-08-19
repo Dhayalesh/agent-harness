@@ -8,11 +8,18 @@ const skillReferenceSchema = new mongoose.Schema(
   { _id: false },
 );
 
+/**
+ * No input token field. The input budget belongs to the model provider record,
+ * which already carries `contextWindow` and `maxOutputTokens`; the runtime derives
+ * the budget as the window less the reserved reply. What an agent chooses is
+ * `compactionThresholdPercent` — how full that budget may get before the runtime
+ * summarises older turns out of the request.
+ */
 const limitsSchema = new mongoose.Schema(
   {
     maxTurns: { type: Number, required: true },
     maxOutputTokens: Number,
-    maxInputTokens: Number,
+    compactionThresholdPercent: Number,
   },
   { _id: false },
 );

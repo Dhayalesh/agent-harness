@@ -26,6 +26,7 @@ import {
   DEFAULT_CONTEXT_POLICY,
   DefaultTokenEstimator,
   DynamicCompactingContextManager,
+  contextPolicyFromPercent,
   estimateMessagesTokens,
   PassthroughContextManager,
   createAgentSession,
@@ -292,6 +293,54 @@ test('configured maxInputTokens larger than model capacity is clamped', async ()
   });
   // Would exceed: 999_999 + 2_000 > 10_000 → clamp to rawBudget = 10_000 - 2_000 - 2_000 = 6_000
   assert.equal(result.budget!.effectiveInputBudget, 6_000);
+});
+
+// ---------------------------------------------------------------------------
+// 9b. A stored percentage maps onto the policy, and 90 reproduces the defaults
+// ---------------------------------------------------------------------------
+test('a compaction percentage reproduces the default policy at 90', () => {
+  assert.deepEqual(contextPolicyFromPercent(90), {
+    compactionThreshold: DEFAULT_CONTEXT_POLICY.compactionThreshold,
+    warningThreshold: DEFAULT_CONTEXT_POLICY.warningThreshold,
+    aggressiveThreshold: DEFAULT_CONTEXT_POLICY.aggressiveThreshold,
+  });
+});
+
+test('a compaction percentage below the default warning threshold stays ordered', () => {
+  const policy = contextPolicyFromPercent(50);
+  assert.equal(policy.compactionThreshold, 0.5);
+  // The invariant the constructor enforces: a percentage under 80 would otherwise
+  // leave warning (0.7) and aggressive (0.8) above compaction and throw.
+  assert.ok(policy.warningThreshold! <= policy.aggressiveThreshold!);
+  assert.ok(policy.aggressiveThreshold! <= policy.compactionThreshold!);
+  assert.doesNotThrow(() => new DynamicCompactingContextManager({ policy }));
+});
+
+test('a stored percentage decides when the derived budget shrinks', async () => {
+  const caps: ModelContextCapabilities = { contextWindow: 100_000, maxOutputTokens: 10_000 };
+  // Derived budget = 100_000 - 10_000 - 2_000 = 88_000. Ten turns totalling roughly
+  // 40% of it — spread across messages rather than one, since compaction summarises
+  // what is *older* than the retention window and always keeps the latest turn.
+  const messages = Array.from({ length: 10 }, (_, index) =>
+    msg(index % 2 === 0 ? 'user' : 'assistant', 'x'.repeat(88_000 * 4 * 0.04)),
+  );
+
+  const relaxed = new DynamicCompactingContextManager({
+    policy: contextPolicyFromPercent(90),
+  });
+  const eager = new DynamicCompactingContextManager({
+    policy: contextPolicyFromPercent(30),
+  });
+
+  const untouched = await relaxed.prepare({ messages, modelCapabilities: caps });
+  const shrunk = await eager.prepare({ messages, modelCapabilities: caps });
+
+  assert.equal(untouched.budget!.effectiveInputBudget, 88_000);
+  assert.equal(shrunk.budget!.effectiveInputBudget, 88_000);
+  // Same budget, same messages — only the percentage differs.
+  assert.equal(untouched.compacted, false);
+  assert.equal(shrunk.compacted, true);
+  assert.ok(shrunk.estimatedTokens < untouched.estimatedTokens);
 });
 
 // ---------------------------------------------------------------------------

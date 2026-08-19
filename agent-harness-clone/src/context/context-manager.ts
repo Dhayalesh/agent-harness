@@ -133,6 +133,35 @@ export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
   enableSummarization: true,
 };
 
+/** The threshold a stored record falls back to when it names no percentage. */
+export const DEFAULT_COMPACTION_PERCENT = 90;
+
+/**
+ * Turns an agent's single "shrink at N%" dial into a full policy.
+ *
+ * The percentage is the compaction threshold, expressed against the effective
+ * input budget the model provider's own `contextWindow` and `maxOutputTokens`
+ * imply. An agent record therefore never states a token count: the tokens belong
+ * to the model, and the percentage is the only part that is a matter of taste.
+ *
+ * The warning and aggressive thresholds are scaled to keep the spacing
+ * `DEFAULT_CONTEXT_POLICY` uses rather than being left where they were. At 90
+ * this reproduces the defaults exactly (0.7 / 0.8 / 0.9); at 50 all three move
+ * down together. Leaving them fixed would trip the
+ * `warningThreshold ≤ aggressiveThreshold ≤ compactionThreshold` invariant the
+ * constructor enforces, so any percentage below 80 would throw instead of
+ * compacting early — which is precisely what asking for 50 means.
+ */
+export function contextPolicyFromPercent(percent: number): Partial<ContextPolicy> {
+  const compactionThreshold = percent / 100;
+  const scale = compactionThreshold / DEFAULT_CONTEXT_POLICY.compactionThreshold;
+  return {
+    compactionThreshold,
+    warningThreshold: DEFAULT_CONTEXT_POLICY.warningThreshold * scale,
+    aggressiveThreshold: DEFAULT_CONTEXT_POLICY.aggressiveThreshold * scale,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // ContextManager contract
 // ---------------------------------------------------------------------------

@@ -55,16 +55,27 @@ export const agentSkillSchema = z
  * The ceilings a run is held to. Every field is honoured: they become
  * `AgentSessionConfig.limits` verbatim (`src/core/agent-session.ts`).
  *
- * The two token fields are optional because the model provider record already
- * carries `contextWindow` and `maxOutputTokens`, and resolution derives both
- * from it when they are absent. Setting them here narrows that budget; it cannot
- * widen it past what the provider record allows.
+ * `maxOutputTokens` is optional because the model provider record already carries
+ * it. Setting it here narrows that budget; it cannot widen it past what the
+ * provider record allows.
+ *
+ * There is deliberately no input token field. The input budget belongs to the
+ * model, not the agent: resolution derives it as the provider's `contextWindow`
+ * less the reserved reply. What an agent chooses is `compactionThresholdPercent`
+ * — how full that derived budget may get before older turns are summarised out.
+ * A percentage cannot be wrong in the way an absolute ceiling can, since it
+ * stays meaningful when the agent is pointed at a different model.
  */
 export const agentLimitsSchema = z
   .object({
     maxTurns: z.number().int().positive().max(1_000),
     maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
-    maxInputTokens: z.number().int().positive().max(10_000_000).optional(),
+    /**
+     * Percentage of the derived input budget at which context shrinks. Capped at
+     * 99 because a context that only compacts once it is completely full has
+     * already been rejected by the model.
+     */
+    compactionThresholdPercent: z.number().int().min(1).max(99).optional(),
   })
   .strict();
 
