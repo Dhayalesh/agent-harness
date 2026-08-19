@@ -4,9 +4,10 @@ import type { AgentEvent, EventPayload } from './events.js';
 import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
 import { textMessage, userMessage } from './messages.js';
 import {
-  CompactingContextManager,
+  DynamicCompactingContextManager,
   estimateMessagesTokens,
   type ContextManager,
+  type ModelContextCapabilities,
 } from '../context/context-manager.js';
 import { HookRegistry } from '../hooks/hooks.js';
 import type { ModelProvider, StopReason } from '../models/provider.js';
@@ -73,6 +74,21 @@ export type AgentSessionConfig = {
   rateLimiter?: SessionRateLimiter;
   projectContextProvider?: ProjectContextProvider;
   limits?: Partial<AgentLimits>;
+  /**
+   * Model context capabilities (contextWindow, maxOutputTokens) used to derive
+   * a dynamic input budget in the context manager. When supplied, the context
+   * manager adapts automatically to models of different sizes without requiring
+   * any application-level hardcoding.
+   */
+  modelCapabilities?: ModelContextCapabilities;
+  /**
+   * Compact the context on this run's first turn, whatever the thresholds say.
+   *
+   * For a client that offers "compact context" as an action. It applies once: the
+   * turns after it are governed by the policy again, so asking for compaction does
+   * not put the session into a permanently compacting mode.
+   */
+  compactContext?: boolean;
   /**
    * Where this session's `sequence` numbering starts.
    *
@@ -148,6 +164,7 @@ class AgentSessionImpl implements AgentSession {
   private readonly budget: BudgetTracker;
   private readonly rateLimiter: SessionRateLimiter | undefined;
   private readonly projectContextProvider: ProjectContextProvider | undefined;
+  private readonly modelCapabilities: ModelContextCapabilities | undefined;
   private readonly pendingPermissions = new Map<string, PermissionWaiter>();
   private activeController: AbortController | undefined;
   private running = false;
@@ -164,7 +181,7 @@ class AgentSessionImpl implements AgentSession {
     this.permissions = config.permissionHandler ?? new DefaultPermissionHandler();
     this.limits = { ...DEFAULT_LIMITS, ...config.limits };
     this.workingDirectory = config.workingDirectory ?? process.cwd();
-    this.contextManager = config.contextManager ?? new CompactingContextManager();
+    this.contextManager = config.contextManager ?? new DynamicCompactingContextManager();
     this.hooks = config.hooks ?? new HookRegistry();
     this.sessionStore = config.sessionStore;
     this.metadata = structuredClone(config.metadata ?? {});
@@ -178,6 +195,7 @@ class AgentSessionImpl implements AgentSession {
     this.budget = new BudgetTracker(config.budget);
     this.rateLimiter = config.rateLimiter;
     this.projectContextProvider = config.projectContextProvider;
+    this.modelCapabilities = config.modelCapabilities;
     this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
   }
@@ -232,6 +250,9 @@ class AgentSessionImpl implements AgentSession {
 
       let reactiveCompactionAttempts = 0;
       let reactiveMaxInputTokens = this.limits.maxInputTokens;
+      // Spent on the first turn that asks for it, so a requested compaction happens
+      // once rather than on every turn of the run.
+      let pendingForcedCompaction = this.config.compactContext === true;
       for (let turn = 1; turn <= this.limits.maxTurns; turn += 1) {
         this.throwIfAborted();
         const turnId = this.idFactory();
@@ -245,11 +266,17 @@ class AgentSessionImpl implements AgentSession {
         let modelRequestId: string | undefined;
 
         try {
+          const forceCompaction = pendingForcedCompaction;
+          pendingForcedCompaction = false;
           const prepared = await this.contextManager.prepare({
             messages: this.messages,
             ...(reactiveMaxInputTokens === undefined
               ? {}
               : { maxInputTokens: reactiveMaxInputTokens }),
+            ...(this.modelCapabilities === undefined
+              ? {}
+              : { modelCapabilities: this.modelCapabilities }),
+            ...(forceCompaction ? { forceCompaction: true } : {}),
           });
           if (prepared.compacted) {
             yield this.event({
@@ -262,6 +289,34 @@ class AgentSessionImpl implements AgentSession {
               turnId,
               tokensBefore: prepared.tokensBefore ?? prepared.estimatedTokens,
               tokensAfter: prepared.estimatedTokens,
+            });
+          }
+          // Every turn, compacted or not: a usage meter needs the number that did
+          // not trigger compaction as much as the one that did. The budget comes
+          // from the context layer when it reported one, and falls back to the
+          // session's own ceiling so the event is still meaningful with a
+          // passthrough or custom context manager.
+          const contextBudget =
+            prepared.budget?.effectiveInputBudget ??
+            reactiveMaxInputTokens ??
+            this.limits.maxInputTokens;
+          if (contextBudget !== undefined && contextBudget > 0) {
+            yield this.event({
+              type: 'context.usage',
+              turnId,
+              usedTokens: prepared.estimatedTokens,
+              budgetTokens: contextBudget,
+              ...(prepared.budget?.contextWindow === undefined
+                ? this.modelCapabilities === undefined
+                  ? {}
+                  : { contextWindow: this.modelCapabilities.contextWindow }
+                : { contextWindow: prepared.budget.contextWindow }),
+              ...(prepared.budget?.outputReserved === undefined
+                ? {}
+                : { reservedOutputTokens: prepared.budget.outputReserved }),
+              usedPercent:
+                Math.round((prepared.estimatedTokens / contextBudget) * 1_000) / 10,
+              compacted: prepared.compacted,
             });
           }
           const projectContext = await this.projectContextProvider?.collect(
@@ -1167,6 +1222,14 @@ function agentEventLogFields(event: AgentEvent): Record<string, unknown> {
       return { estimatedTokens: event.estimatedTokens };
     case 'context.compaction.completed':
       return { tokensBefore: event.tokensBefore, tokensAfter: event.tokensAfter };
+    case 'context.usage':
+      return {
+        usedTokens: event.usedTokens,
+        budgetTokens: event.budgetTokens,
+        usedPercent: event.usedPercent,
+        compacted: event.compacted,
+        ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+      };
     case 'run.preparing':
       return {
         stage: event.stage,

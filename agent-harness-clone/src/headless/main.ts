@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { FileArtifactStore } from '../artifacts/artifact-store.js';
 import { S3ArtifactStore } from '../artifacts/s3-artifact-store.js';
+import { BedrockCompactionSummarizer } from '../context/bedrock-compaction-summarizer.js';
 import { scrubbedEnvironment } from '../runtime/local-runtime-host.js';
 import { CloudWatchLogWriter } from '../services/cloudwatch-log-writer.js';
 import { emitLog, parseLogLevel, StructuredLogSink } from '../services/observability.js';
@@ -157,6 +158,28 @@ const logSink = new StructuredLogSink(
   { context: {}, minimumLevel: logLevel },
 );
 
+/**
+ * Optional LLM-backed compaction summarizer.
+ *
+ * When COMPACTION_MODEL is set, context compaction uses Bedrock Converse to
+ * generate a structured Pi-style summary of older conversation history instead
+ * of the deterministic truncation fallback. The model runs in the same AWS
+ * region as the rest of the deployment and uses the same credential chain.
+ *
+ * Any failure (throttle, timeout, model error) falls back silently to
+ * deterministic compaction — the session is never affected.
+ */
+const compactionModelId = process.env.COMPACTION_MODEL?.trim();
+const compactionSummarizer = compactionModelId
+  ? new BedrockCompactionSummarizer({
+      modelId: compactionModelId,
+      ...(region ? { region } : {}),
+      ...(process.env.COMPACTION_MODEL_ENDPOINT?.trim()
+        ? { endpoint: process.env.COMPACTION_MODEL_ENDPOINT.trim() }
+        : {}),
+    })
+  : undefined;
+
 const running = await startHeadlessServer({
   host,
   port,
@@ -170,6 +193,7 @@ const running = await startHeadlessServer({
   builtinToolOptions: { powershell: false },
   ...(sessionStore === undefined ? {} : { sessionStore }),
   artifactStore,
+  ...(compactionSummarizer === undefined ? {} : { compactionSummarizer }),
   logSink,
 });
 
@@ -253,6 +277,7 @@ const shutdown = async (): Promise<void> => {
     throw error;
   } finally {
     s3SessionStore?.destroy();
+    compactionSummarizer?.destroy();
     // In `finally` so the shutdown-failure record above is sent too: queued lines
     // live in memory, and an unflushed buffer at exit loses exactly the lines
     // explaining why the process is exiting.

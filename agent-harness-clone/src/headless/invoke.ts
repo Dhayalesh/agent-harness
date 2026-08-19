@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { DynamicCompactingContextManager } from '../context/context-manager.js';
 import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import type { ContentStore } from '../content/content-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
@@ -139,6 +140,13 @@ export type HeadlessRunOptions = {
   onSession?: (session: AgentSession) => void;
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
+  /**
+   * Optional LLM-backed compaction summarizer. When supplied, the
+   * DynamicCompactingContextManager uses it to produce Pi-style structured
+   * summaries instead of falling back to the deterministic algorithm.
+   * Configure via `COMPACTION_MODEL` pointing at a Bedrock model.
+   */
+  compactionSummarizer?: import('../context/context-manager.js').CompactionSummarizer;
 };
 
 export type HeadlessToolSummary = {
@@ -168,10 +176,31 @@ export type HeadlessResult = {
   turns: number;
   usage: ModelUsage;
   tools: readonly HeadlessToolSummary[];
+  /**
+   * How full the model context was on the last turn of this run.
+   *
+   * Reported so a buffered caller can show a usage meter without reading the event
+   * stream. Absent when the context layer reported no budget — a passthrough
+   * manager with no model capabilities supplied.
+   */
+  context?: HeadlessContextUsage;
   /** Present only when `payload.includeEvents` was set. */
   events?: readonly AgentEvent[];
   durationMs: number;
   error?: { code: string; message: string; recoverable: boolean };
+};
+
+/** The last `context.usage` of a run, plus whether anything was compacted during it. */
+export type HeadlessContextUsage = {
+  usedTokens: number;
+  budgetTokens: number;
+  contextWindow?: number;
+  reservedOutputTokens?: number;
+  usedPercent: number;
+  /** True when any turn in this run was compacted. */
+  compacted: boolean;
+  /** How many turns were compacted. */
+  compactions: number;
 };
 
 export type HeadlessResponse =
@@ -677,6 +706,28 @@ async function prepare(
       logContext,
       projectContextProvider: new LocalProjectContextProvider(runtime),
       metadata: { ...payload.metadata, agentName: agent.record.name },
+      // Pass model capabilities so the context manager derives a dynamic budget.
+      modelCapabilities: {
+        contextWindow: agent.modelProvider.capabilities.contextWindow,
+        maxOutputTokens: agent.modelProvider.capabilities.maxOutputTokens,
+      },
+      ...(payload.compactContext ? { compactContext: true } : {}),
+      // When a compaction summarizer is configured (e.g. via COMPACTION_MODEL),
+      // build a context manager that uses it. Otherwise the session default
+      // DynamicCompactingContextManager is used with deterministic fallback.
+      ...(options.compactionSummarizer === undefined
+        ? {}
+        : {
+            contextManager: new DynamicCompactingContextManager({
+              summarizer: options.compactionSummarizer,
+              ...(agent.limits.maxInputTokens === undefined
+                ? {}
+                : { maxInputTokens: agent.limits.maxInputTokens }),
+              ...(agent.limits.maxOutputTokens === undefined
+                ? {}
+                : { maxOutputTokens: agent.limits.maxOutputTokens }),
+            }),
+          }),
       // Continues the numbering the preparation events already used, so one run
       // is one sequence from the first `run.preparing` to `session.completed`.
       ...(progress === undefined ? {} : { initialSequence: progress.count() }),
@@ -997,6 +1048,8 @@ class RunTotals {
   private turns = 0;
   private stopReason: StopReason | 'closed' | undefined;
   private failure: { code: string; message: string; recoverable: boolean } | undefined;
+  private context: HeadlessContextUsage | undefined;
+  private compactions = 0;
 
   observe(event: AgentEvent): void {
     switch (event.type) {
@@ -1029,6 +1082,24 @@ class RunTotals {
       }
       case 'usage.updated':
         this.addUsage(event.usage);
+        break;
+      // Last one wins: the meter shows where the context stands now, which is what
+      // the most recent turn measured.
+      case 'context.usage':
+        this.context = {
+          usedTokens: event.usedTokens,
+          budgetTokens: event.budgetTokens,
+          ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+          ...(event.reservedOutputTokens === undefined
+            ? {}
+            : { reservedOutputTokens: event.reservedOutputTokens }),
+          usedPercent: event.usedPercent,
+          compacted: this.compactions > 0 || event.compacted,
+          compactions: this.compactions,
+        };
+        break;
+      case 'context.compaction.completed':
+        this.compactions += 1;
         break;
       case 'error':
         // First failure wins: a model error often produces a cascade, and the one
@@ -1068,6 +1139,9 @@ class RunTotals {
       turns: this.turns,
       usage: this.usage,
       tools: [...this.toolCalls.values()],
+      ...(this.context === undefined
+        ? {}
+        : { context: { ...this.context, compactions: this.compactions } }),
       durationMs,
       ...(this.failure === undefined ? {} : { error: this.failure }),
     };

@@ -312,6 +312,16 @@ export const invocationPayloadSchema = z
      */
     includeEvents: z.boolean().default(false),
     /**
+     * Compact the conversation context before this turn's first model request,
+     * whatever the threshold policy would have decided on its own.
+     *
+     * For a client that offers "compact context" as an explicit action. It applies
+     * to this run only; the turns after it are governed by the policy again. The
+     * canonical transcript is untouched either way — compaction changes what the
+     * model is shown, not what the session stores.
+     */
+    compactContext: z.boolean().default(false),
+    /**
      * The preferred response encoding when the transport did not state one, so a
      * stored agent definition can carry "this one streams" without its caller
      * restating it per request.

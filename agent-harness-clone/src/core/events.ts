@@ -105,6 +105,32 @@ export type AgentEvent = EventBase &
         tokensBefore: number;
         tokensAfter: number;
       }
+    /**
+     * How full the model's context is, as the context layer measured it for this
+     * turn. Emitted every turn rather than only when compaction happens, because a
+     * caller showing a usage meter needs the number that did *not* trigger
+     * compaction just as much as the one that did.
+     *
+     * `budgetTokens` is the effective input budget — the window minus the reserved
+     * reply and the safety margin — so `usedPercent` is the fraction of what this
+     * turn was actually allowed to spend, not of the raw window.
+     */
+    | {
+        type: 'context.usage';
+        turnId: string;
+        /** Estimated input tokens the prepared context occupies. */
+        usedTokens: number;
+        /** Effective input budget the context was prepared against. */
+        budgetTokens: number;
+        /** The model's total context window, when capabilities were supplied. */
+        contextWindow?: number;
+        /** Tokens reserved for the reply. */
+        reservedOutputTokens?: number;
+        /** `usedTokens / budgetTokens` as a percentage, 0–100+, one decimal. */
+        usedPercent: number;
+        /** Whether this turn's context was compacted to reach that number. */
+        compacted: boolean;
+      }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**
      * Work done before the first turn can start: the workspace, the model, MCP

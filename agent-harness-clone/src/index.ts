@@ -195,15 +195,27 @@ export type {
 } from './tools/web/index.js';
 export {
   CompactingContextManager,
+  DefaultTokenEstimator,
+  DynamicCompactingContextManager,
   estimateMessagesTokens,
   PassthroughContextManager,
+  DEFAULT_CONTEXT_POLICY,
 } from './context/context-manager.js';
 export type {
   CompactingContextOptions,
+  CompactionSummaryInput,
+  CompactionSummaryResult,
+  CompactionSummarizer,
   ContextManager,
+  ContextPolicy,
   ContextRequest,
+  DynamicCompactingContextOptions,
+  ModelContextCapabilities,
   PreparedContext,
+  TokenEstimator,
 } from './context/context-manager.js';
+export { BedrockCompactionSummarizer } from './context/bedrock-compaction-summarizer.js';
+export type { BedrockCompactionSummarizerOptions } from './context/bedrock-compaction-summarizer.js';
 export { composeSystemPrompt } from './context/system-prompt.js';
 export type { SystemPromptSection } from './context/system-prompt.js';
 export { HookRegistry } from './hooks/hooks.js';
@@ -440,6 +452,7 @@ export {
   streamHeadless,
 } from './headless/invoke.js';
 export type {
+  HeadlessContextUsage,
   HeadlessResult,
   HeadlessResponse,
   HeadlessRunOptions,
