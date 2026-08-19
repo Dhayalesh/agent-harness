@@ -464,6 +464,11 @@ export const chatMessageSchema = z
     attachmentIds: z.array(objectIdString).max(20).default([]),
     permissionMode: z.enum(["default", "plan", "bypass", "deny"]).optional(),
     includeEvents: z.boolean().default(false),
+    /**
+     * Compact the agent's context before this turn runs. Set by the context meter's
+     * "compact context" action; the transcript on this side is never altered.
+     */
+    compactContext: z.boolean().default(false),
   })
   .strict()
   .refine(
@@ -520,6 +525,23 @@ export const runtimeResultSchema = z
         })
         .strict(),
     ),
+    /**
+     * Context occupancy at the end of the run. Optional because a runtime older
+     * than the context layer, or one running a passthrough context manager with
+     * no model capabilities, reports none.
+     */
+    context: z
+      .object({
+        usedTokens: z.number().nonnegative(),
+        budgetTokens: z.number().nonnegative(),
+        contextWindow: z.number().nonnegative().optional(),
+        reservedOutputTokens: z.number().nonnegative().optional(),
+        usedPercent: z.number().nonnegative(),
+        compacted: z.boolean().optional(),
+        compactions: z.number().int().nonnegative().optional(),
+      })
+      .passthrough()
+      .optional(),
     events: z.array(z.unknown()).optional(),
     durationMs: z.number().nonnegative(),
     error: z

@@ -308,15 +308,31 @@ export const api = {
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
   resetChatSession: (id) =>
     request(`/chats/${id}/session/reset`, { method: "POST" }),
-  sendChatMessage: (id, content, { attachmentIds = [] } = {}) =>
+  sendChatMessage: (
+    id,
+    content,
+    { attachmentIds = [], compactContext = false } = {},
+  ) =>
     request(`/chats/${id}/messages`, {
       method: "POST",
-      body: { content, ...(attachmentIds.length ? { attachmentIds } : {}) },
+      body: {
+        content,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(compactContext ? { compactContext: true } : {}),
+      },
     }),
   /** Same call, same `{ chat, run }` result, with the events on the way there. */
-  streamChatMessage: (id, content, { onEvent, signal, attachmentIds = [] } = {}) =>
+  streamChatMessage: (
+    id,
+    content,
+    { onEvent, signal, attachmentIds = [], compactContext = false } = {},
+  ) =>
     streamRequest(`/chats/${id}/messages`, {
-      body: { content, ...(attachmentIds.length ? { attachmentIds } : {}) },
+      body: {
+        content,
+        ...(attachmentIds.length ? { attachmentIds } : {}),
+        ...(compactContext ? { compactContext: true } : {}),
+      },
       onEvent,
       ...(signal ? { signal } : {}),
     }),

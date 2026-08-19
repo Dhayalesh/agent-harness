@@ -8,6 +8,7 @@ export async function buildPayload({
   permissionMode,
   includeEvents,
   sessionHistory = [],
+  compactContext = false,
 }) {
   const resolved = await resolveAgentForInvocation(agentId);
   const agent = resolved.agent.value;
@@ -75,6 +76,10 @@ export async function buildPayload({
     permissionRules,
     permissionFallback: "deny",
     includeEvents: Boolean(includeEvents),
+    // Only present when asked for, for the same reason as `stream` below: the
+    // runtime payload schema is strict, so a console talking to a runtime built
+    // before this field existed must not send it unprompted.
+    ...(compactContext ? { compactContext: true } : {}),
     session: {
       mode: "persistent",
       history: sessionHistory,

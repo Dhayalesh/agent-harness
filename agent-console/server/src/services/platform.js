@@ -309,6 +309,16 @@ function summaryProvider(document) {
     model: safe.model,
     enabled: safe.enabled,
     hasApiKey: safe.hasApiKey,
+    // The window and the reply reservation, so a client can size a context meter
+    // against the model this agent actually resolves to rather than a constant.
+    // Carried here because it is the one place a chat already reads the resolved
+    // provider from; the credential is still never included.
+    capabilities: safe.capabilities
+      ? {
+          contextWindow: safe.capabilities.contextWindow,
+          maxOutputTokens: safe.capabilities.maxOutputTokens,
+        }
+      : null,
   };
 }
 

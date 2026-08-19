@@ -25,6 +25,7 @@ export async function invokeStoredAgent({
   includeEvents = false,
   chatId,
   sessionHistory = [],
+  compactContext = false,
 }) {
   const { payload, resolved } = await buildPayload({
     agentId,
@@ -34,6 +35,7 @@ export async function invokeStoredAgent({
     permissionMode,
     includeEvents,
     sessionHistory,
+    compactContext,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({
@@ -97,6 +99,7 @@ export async function streamStoredAgent({
   onEvent,
   signal,
   sessionHistory = [],
+  compactContext = false,
 }) {
   const { payload, resolved } = await buildPayload({
     agentId,
@@ -106,6 +109,7 @@ export async function streamStoredAgent({
     permissionMode,
     includeEvents,
     sessionHistory,
+    compactContext,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({
@@ -232,6 +236,9 @@ function applyRuntimeResult(run, result, invocation) {
     totalTokens:
       (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
   };
+  // Left unset rather than zeroed when the runtime reported none, so "no context
+  // layer" stays distinguishable from "an empty context".
+  if (result.context) run.context = result.context;
   run.tools = result.tools ?? [];
   run.artifacts = artifactMetadata(result.artifacts);
   run.harnessSessionId = result.sessionId;

@@ -27,6 +27,8 @@ export class RunTotals {
   #toolInputs = new Map();
   #toolActivity = new Map();
   #artifacts = [];
+  #context;
+  #compactions = 0;
 
   observe(event) {
     if (typeof event?.type !== "string") return;
@@ -125,6 +127,25 @@ export class RunTotals {
       }
       case "usage.updated":
         this.#addUsage(event.usage);
+        break;
+      // Last one wins: the meter shows where the context stands now, which is
+      // what the most recent turn measured.
+      case "context.usage":
+        this.#context = {
+          usedTokens: event.usedTokens ?? 0,
+          budgetTokens: event.budgetTokens ?? 0,
+          ...(typeof event.contextWindow === "number"
+            ? { contextWindow: event.contextWindow }
+            : {}),
+          ...(typeof event.reservedOutputTokens === "number"
+            ? { reservedOutputTokens: event.reservedOutputTokens }
+            : {}),
+          usedPercent: event.usedPercent ?? 0,
+          compacted: this.#compactions > 0 || event.compacted === true,
+        };
+        break;
+      case "context.compaction.completed":
+        this.#compactions += 1;
         break;
       case "error":
         this.#failure = {
@@ -257,6 +278,9 @@ export class RunTotals {
       turns: this.#turns,
       usage: this.#usage,
       tools: [...this.#tools.values()],
+      ...(this.#context
+        ? { context: { ...this.#context, compactions: this.#compactions } }
+        : {}),
       durationMs,
       ...(failure ? { error: failure } : {}),
     };

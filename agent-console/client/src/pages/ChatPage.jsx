@@ -29,13 +29,13 @@ import { api } from "../api.js";
 import {
   AgentAvatar,
   ActivityIndicator,
+  ContextMeter,
   ErrorNote,
   Loading,
   StatusPill,
   clock,
   duration,
   relative,
-  tokens,
   useConfirm,
   usePrompt,
   when,
@@ -64,6 +64,16 @@ export function ChatPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [resettingSession, setResettingSession] = useState(false);
+  /**
+   * Whether the next turn should compact before it runs.
+   *
+   * Armed rather than executed on press: compaction happens in front of a model
+   * request, so doing it the moment the button is pressed would mean spending a
+   * turn — and putting a message in the transcript — for housekeeping the user did
+   * not ask to say out loud. The flag rides along with the next real message and is
+   * cleared once it has been spent.
+   */
+  const [compactQueued, setCompactQueued] = useState(false);
   const [error, setError] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -128,6 +138,34 @@ export function ChatPage() {
   const agentReady =
     selectedAgent?.enabled !== false &&
     selectedAgent?.resolved?.ready !== false;
+
+  /**
+   * What the context meter shows, newest measurement first.
+   *
+   * The live run is preferred while one is streaming, because it falls the instant a
+   * compaction lands. The stored session measurement is what a reopened chat starts
+   * from. Failing both, the resolved model's own window is enough to show an empty
+   * meter — which is the honest reading for a conversation that has not run a turn
+   * yet, and is also what keeps the affordance discoverable before the first
+   * message rather than appearing out of nowhere after it.
+   */
+  const contextUsage = useMemo(() => {
+    if (live?.context) return live.context;
+    if (chat?.session?.context) return chat.session.context;
+    const capabilities = selectedAgent?.resolved?.modelProvider?.capabilities;
+    if (!capabilities?.contextWindow) return null;
+    const reserved = capabilities.maxOutputTokens ?? 0;
+    const budget = Math.max(1, capabilities.contextWindow - reserved);
+    return {
+      usedTokens: 0,
+      budgetTokens: budget,
+      contextWindow: capabilities.contextWindow,
+      reservedOutputTokens: reserved,
+      usedPercent: 0,
+      compacted: false,
+      compactions: 0,
+    };
+  }, [live?.context, chat?.session?.context, selectedAgent]);
 
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -304,6 +342,8 @@ export function ChatPage() {
       const result = await api.resetChatSession(chat.id);
       setChat(result.chat);
       setLastRun(null);
+      // A fresh session has nothing to compact.
+      setCompactQueued(false);
       setChats((current) => [
         result.chat,
         ...current.filter((item) => item.id !== result.chat.id),
@@ -354,14 +394,22 @@ export function ChatPage() {
       const controller = new AbortController();
       inFlight.current = controller;
       const attachmentIds = sent.map((item) => item.id);
+      // Read once and cleared on the way out, so a failed turn does not silently
+      // drop a compaction the user asked for.
+      const compactContext = compactQueued;
       const result = streaming
         ? await api.streamChatMessage(currentChat.id, content, {
             signal: controller.signal,
             attachmentIds,
+            compactContext,
             onEvent: (event) =>
               setLive((current) => applyLiveEvent(current, event)),
           })
-        : await api.sendChatMessage(currentChat.id, content, { attachmentIds });
+        : await api.sendChatMessage(currentChat.id, content, {
+            attachmentIds,
+            compactContext,
+          });
+      setCompactQueued(false);
       setChat(result.chat);
       setLastRun(result.run ?? null);
       const completedArtifact = latestArtifact(result.chat);
@@ -1006,19 +1054,40 @@ export function ChatPage() {
                     </Button>
                   </div>
                   <div className="flex min-h-6 items-center justify-between gap-3 px-0.5 pb-0.5 pt-1.5">
-                    <span className="hidden text-tiny text-default-400 sm:block">
-                      Enter to send · Shift + Enter for a new line
-                    </span>
-                    {lastRun && (
-                      <div className="ml-auto flex items-center gap-2.5 text-tiny text-default-500">
-                        <StatusPill status={lastRun.status} />
-                        <span>{tokens(lastRun.usage)}</span>
-                        <span>{duration(lastRun.durationMs)}</span>
-                        <HeroLink href={`/runs/${lastRun.id}`} size="sm">
-                          Open run
-                        </HeroLink>
-                      </div>
+                    {compactQueued ? (
+                      <span className="flex items-center gap-1.5 text-tiny text-secondary">
+                        <Icon name="compact" className="h-3.5 w-3.5" />
+                        Context will be compacted on your next message
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:no-underline"
+                          onClick={() => setCompactQueued(false)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="hidden text-tiny text-default-400 sm:block">
+                        Enter to send · Shift + Enter for a new line
+                      </span>
                     )}
+                    <div className="ml-auto flex items-center gap-2.5 text-tiny text-default-500">
+                      {lastRun && (
+                        <>
+                          <StatusPill status={lastRun.status} />
+                          <span>{duration(lastRun.durationMs)}</span>
+                          <HeroLink href={`/runs/${lastRun.id}`} size="sm">
+                            Open run
+                          </HeroLink>
+                        </>
+                      )}
+                      <ContextMeter
+                        context={contextUsage}
+                        queued={compactQueued}
+                        disabled={sending || uploading}
+                        onCompact={() => setCompactQueued(true)}
+                      />
+                    </div>
                   </div>
                 </form>
               </div>
@@ -1440,6 +1509,9 @@ const EMPTY_LIVE = {
   tools: [],
   artifacts: [],
   warnings: [],
+  /** The last `context.usage` this run reported. Null until the first turn measures. */
+  context: null,
+  compactions: 0,
 };
 
 /**
@@ -1551,6 +1623,25 @@ function applyLiveEvent(live, event) {
         ...current,
         warnings: [...current.warnings, event.message].slice(-5),
       };
+    // The meter follows the newest measurement, so it falls as soon as a
+    // compaction lands rather than at the end of the run.
+    case "context.usage":
+      return {
+        ...current,
+        context: {
+          usedTokens: event.usedTokens ?? 0,
+          budgetTokens: event.budgetTokens ?? 0,
+          contextWindow: event.contextWindow,
+          reservedOutputTokens: event.reservedOutputTokens,
+          usedPercent: event.usedPercent ?? 0,
+          compacted: event.compacted === true,
+          compactions: current.compactions,
+        },
+      };
+    case "context.compaction.started":
+      return { ...current, status: "Compacting the context" };
+    case "context.compaction.completed":
+      return { ...current, compactions: current.compactions + 1 };
     default:
       return current;
   }

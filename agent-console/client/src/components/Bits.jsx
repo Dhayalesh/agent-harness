@@ -13,7 +13,11 @@ import {
   ModalContent,
   ModalFooter,
   ModalHeader,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
   Switch,
+  Tooltip,
 } from "@heroui/react";
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -565,5 +569,248 @@ export function AgentAvatar({
     >
       {(name ?? "?").trim().slice(0, 1).toUpperCase() || "?"}
     </span>
+  );
+}
+
+/**
+ * The context budget, as a fraction rather than a count.
+ *
+ * A token total answers "how much was spent", which is a billing question. What a
+ * reader of a live conversation actually needs is "how much room is left", and that
+ * is a percentage of a budget only the runtime knows — the model's window less the
+ * reply it has to leave space for. So the number shown is the one the harness
+ * measured, and this only decides how to present it.
+ *
+ * Three bands, matching the policy thresholds the context layer applies:
+ * comfortable below 70%, warning to 90%, and danger above — the last being where
+ * compaction happens on its own. Colour is not the only carrier: the tooltip and
+ * the popover both state the percentage in words for anyone who cannot use it.
+ */
+const CONTEXT_BANDS = [
+  { limit: 70, color: "default", label: "Context" },
+  { limit: 90, color: "warning", label: "Context filling up" },
+  { limit: Infinity, color: "danger", label: "Context nearly full" },
+];
+
+export function contextBand(percent) {
+  return CONTEXT_BANDS.find((band) => (percent ?? 0) < band.limit);
+}
+
+/** Whole numbers only: a context meter reading 43.7% invites false precision. */
+export function contextPercent(context) {
+  if (!context || typeof context.usedPercent !== "number") return null;
+  return Math.min(100, Math.max(0, Math.round(context.usedPercent)));
+}
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 7;
+
+/**
+ * A 20px ring that fills clockwise, sized to sit inline beside a status pill.
+ *
+ * SVG rather than a HeroUI `CircularProgress` because that component's smallest
+ * size still carries a label slot and its own padding, which is more furniture
+ * than a composer footer has room for.
+ */
+function ContextRing({ percent, tone }) {
+  const filled = (Math.min(100, Math.max(0, percent)) / 100) * RING_CIRCUMFERENCE;
+  return (
+    <svg
+      className="h-4 w-4 shrink-0 -rotate-90"
+      viewBox="0 0 18 18"
+      aria-hidden="true"
+    >
+      <circle
+        cx="9"
+        cy="9"
+        r="7"
+        fill="none"
+        strokeWidth="2.5"
+        className="stroke-default-200 dark:stroke-default-100"
+      />
+      <circle
+        cx="9"
+        cy="9"
+        r="7"
+        fill="none"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray={`${filled} ${RING_CIRCUMFERENCE}`}
+        className={tone}
+        style={{ transition: "stroke-dasharray 300ms ease-out" }}
+      />
+    </svg>
+  );
+}
+
+const RING_TONE = {
+  default: "stroke-secondary",
+  warning: "stroke-warning",
+  danger: "stroke-danger",
+};
+
+const TEXT_TONE = {
+  default: "text-default-500",
+  warning: "text-warning-600 dark:text-warning-400",
+  danger: "text-danger-600 dark:text-danger-400",
+};
+
+/**
+ * The context meter and the action that reduces it.
+ *
+ * Hover states the percentage; pressing opens the breakdown and offers compaction.
+ * `onCompact` is optional — without one this is a read-only indicator, which is what
+ * a finished run or a chat with no agent should show.
+ *
+ * `queued` covers the gap between asking for compaction and it happening: it runs in
+ * front of the next model request, so the button reports that it is armed rather
+ * than pretending the work is already done.
+ */
+export function ContextMeter({
+  context,
+  onCompact,
+  queued = false,
+  disabled = false,
+}) {
+  const percent = contextPercent(context);
+  if (percent === null) return null;
+
+  const band = contextBand(percent);
+  const used = context.usedTokens ?? 0;
+  const budget = context.budgetTokens ?? 0;
+  const summary =
+    `${band.label} · ${percent}% used` +
+    (budget ? ` · ${used.toLocaleString()} of ${budget.toLocaleString()} tokens` : "");
+
+  const trigger = (
+    <span
+      className={`flex items-center gap-1.5 tabular-nums ${TEXT_TONE[band.color]}`}
+    >
+      <ContextRing percent={percent} tone={RING_TONE[band.color]} />
+      <span className="font-medium">{percent}%</span>
+    </span>
+  );
+
+  if (!onCompact) {
+    return (
+      <Tooltip content={summary} size="sm" placement="top">
+        <span className="flex cursor-default items-center">{trigger}</span>
+      </Tooltip>
+    );
+  }
+
+  return (
+    <Popover placement="top-end" showArrow backdrop="opaque">
+      <Tooltip content={summary} size="sm" placement="top">
+        <span className="flex items-center">
+          <PopoverTrigger>
+            <Button
+              size="sm"
+              variant="light"
+              className="h-6 min-w-0 gap-1.5 px-1.5 data-[hover=true]:bg-default-100"
+              aria-label={`${summary}. Open context options.`}
+            >
+              {trigger}
+            </Button>
+          </PopoverTrigger>
+        </span>
+      </Tooltip>
+      <PopoverContent className="w-[268px] p-0">
+        <div className="w-full">
+          <div className="flex items-center gap-2 border-b border-divider px-3 py-2.5">
+            <Icon name="gauge" className={`h-4 w-4 ${TEXT_TONE[band.color]}`} />
+            <span className="text-small font-semibold text-foreground">
+              {band.label}
+            </span>
+            <span
+              className={`ml-auto text-small font-semibold tabular-nums ${TEXT_TONE[band.color]}`}
+            >
+              {percent}%
+            </span>
+          </div>
+
+          <div className="px-3 py-2.5">
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-full bg-default-200 dark:bg-default-100"
+              role="progressbar"
+              aria-valuenow={percent}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label="Context used"
+            >
+              <div
+                className={`h-full rounded-full transition-[width] duration-300 ease-out ${
+                  { default: "bg-secondary", warning: "bg-warning", danger: "bg-danger" }[
+                    band.color
+                  ]
+                }`}
+                style={{ width: `${percent}%` }}
+              />
+            </div>
+
+            <dl className="mt-2.5 space-y-1 text-tiny">
+              <ContextRow label="Used" value={`${used.toLocaleString()} tokens`} />
+              {budget > 0 && (
+                <ContextRow
+                  label="Budget"
+                  value={`${budget.toLocaleString()} tokens`}
+                />
+              )}
+              {context.contextWindow > 0 && (
+                <ContextRow
+                  label="Model window"
+                  value={`${context.contextWindow.toLocaleString()} tokens`}
+                />
+              )}
+              {context.reservedOutputTokens > 0 && (
+                <ContextRow
+                  label="Reserved for reply"
+                  value={`${context.reservedOutputTokens.toLocaleString()} tokens`}
+                />
+              )}
+              {context.compactions > 0 && (
+                <ContextRow
+                  label="Compactions"
+                  value={`${context.compactions} this run`}
+                />
+              )}
+            </dl>
+          </div>
+
+          <div className="border-t border-divider px-3 py-2.5">
+            <Button
+              size="sm"
+              variant="flat"
+              color={band.color === "default" ? "secondary" : band.color}
+              className="w-full"
+              startContent={
+                queued ? (
+                  <Icon name="check" className="h-3.5 w-3.5" />
+                ) : (
+                  <Icon name="compact" className="h-3.5 w-3.5" />
+                )
+              }
+              isDisabled={disabled || queued}
+              onPress={onCompact}
+            >
+              {queued ? "Queued for next message" : "Compact context"}
+            </Button>
+            <p className="mt-2 text-[11px] leading-4 text-default-500">
+              {queued
+                ? "Earlier turns will be summarised before the next reply."
+                : "Summarises earlier turns so the model has room to keep going. Your messages stay in this chat."}
+            </p>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ContextRow({ label, value }) {
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <dt className="text-default-500">{label}</dt>
+      <dd className="tabular-nums text-foreground">{value}</dd>
+    </div>
   );
 }

@@ -399,6 +399,7 @@ chatsRouter.post(
       includeEvents: input.includeEvents,
       chatId: chat._id.toString(),
       sessionHistory,
+      compactContext: input.compactContext,
     };
 
     // Same rule the runtime applies one hop further on: the caller's Accept decides,
@@ -526,6 +527,7 @@ async function appendResult(chat, invocation, requestId) {
   };
   const session = invocation.result.session;
   const title = await autoTitle(chat, invocation);
+  const context = invocation.result.context;
   const updated = await Chat.findOneAndUpdate(
     { _id: chat._id, "session.activeRequestId": requestId },
     {
@@ -544,6 +546,12 @@ async function appendResult(chat, invocation, requestId) {
         "session.lastActiveAt": timestamp,
         "session.activeRequestId": null,
         "session.activeExpiresAt": null,
+        // Only written when the runtime measured it, so a runtime without the
+        // context layer leaves whatever was last known in place rather than
+        // clearing the meter to zero.
+        ...(context
+          ? { "session.context": { ...context, measuredAt: timestamp } }
+          : {}),
       },
     },
     { new: true },

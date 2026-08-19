@@ -17,6 +17,26 @@ const toolSummarySchema = new mongoose.Schema(
   { _id: false, suppressReservedKeysWarning: true },
 );
 
+/**
+ * How full the model context was when this run ended.
+ *
+ * `budgetTokens` is the effective input budget — the window less the reserved
+ * reply and the safety margin — so `usedPercent` is a fraction of what the run
+ * was allowed to spend rather than of the raw window.
+ */
+const contextUsageSchema = new mongoose.Schema(
+  {
+    usedTokens: Number,
+    budgetTokens: Number,
+    contextWindow: Number,
+    reservedOutputTokens: Number,
+    usedPercent: Number,
+    compacted: Boolean,
+    compactions: Number,
+  },
+  { _id: false, strict: false },
+);
+
 const runSchema = new mongoose.Schema(
   {
     agentId: { type: String, required: true, index: true },
@@ -33,6 +53,7 @@ const runSchema = new mongoose.Schema(
     stopReason: String,
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
+    context: { type: contextUsageSchema },
     tools: { type: [toolSummarySchema], default: [] },
     artifacts: { type: [mongoose.Schema.Types.Mixed], default: [] },
     agentRuntimeArn: String,

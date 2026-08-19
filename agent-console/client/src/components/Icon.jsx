@@ -173,6 +173,21 @@ const paths = {
       <path d="M14 3v5h5" />
     </>
   ),
+  /** An arc with a needle: how full something is, rather than how much of it there is. */
+  gauge: (
+    <>
+      <path d="M4 18a8 8 0 1 1 16 0" />
+      <path d="m12 14 4-4" />
+      <circle cx="12" cy="18" r="1" />
+    </>
+  ),
+  /** Arrows folding inward: the shape used for compaction. */
+  compact: (
+    <>
+      <path d="M4 8h6V2M20 8h-6V2M4 16h6v6M20 16h-6v6" />
+      <path d="M3 12h18" />
+    </>
+  ),
 };
 
 export function Icon({ name, className = "h-4 w-4", strokeWidth = 1.8 }) {

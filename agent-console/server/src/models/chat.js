@@ -131,6 +131,26 @@ const sessionSchema = new mongoose.Schema(
     lastActiveAt: String,
     activeRequestId: String,
     activeExpiresAt: String,
+    /**
+     * Where the model context stood at the end of the last turn, so a reopened
+     * chat shows its usage meter without having to replay a run. Written from the
+     * harness `context.usage` event; absent for chats that predate it.
+     */
+    context: {
+      type: new mongoose.Schema(
+        {
+          usedTokens: Number,
+          budgetTokens: Number,
+          contextWindow: Number,
+          reservedOutputTokens: Number,
+          usedPercent: Number,
+          compacted: Boolean,
+          compactions: Number,
+          measuredAt: String,
+        },
+        { _id: false, strict: false },
+      ),
+    },
   },
   { _id: false },
 );
