@@ -767,6 +767,16 @@ export function ContextMeter({
                   value={`${context.reservedOutputTokens.toLocaleString()} tokens`}
                 />
               )}
+              {/* Only worth a row once it differs from the current reading: on a
+                  turn that did not compact the two are the same number. */}
+              {context.peakTokens > used && (
+                <ContextRow
+                  label="Peak before compaction"
+                  value={`${context.peakTokens.toLocaleString()} tokens${
+                    context.peakPercent ? ` · ${Math.round(context.peakPercent)}%` : ""
+                  }`}
+                />
+              )}
               {context.compactions > 0 && (
                 <ContextRow
                   label="Compactions"

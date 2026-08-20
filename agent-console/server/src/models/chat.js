@@ -146,6 +146,8 @@ const sessionSchema = new mongoose.Schema(
           usedPercent: Number,
           compacted: Boolean,
           compactions: Number,
+          peakTokens: Number,
+          peakPercent: Number,
           measuredAt: String,
         },
         { _id: false, strict: false },

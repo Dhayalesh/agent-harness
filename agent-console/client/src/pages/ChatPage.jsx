@@ -41,6 +41,7 @@ import {
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
+import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
 import {
   artifactExtension,
@@ -1468,9 +1469,11 @@ function Message({ message, agentName, onOpenDocument }) {
                 segment.kind === "code" ? (
                   <CodeBlock key={index} value={segment.value} />
                 ) : (
-                  <p key={index} className="message-text [&+&]:mt-3">
-                    {segment.value}
-                  </p>
+                  <MarkdownDocument
+                    key={index}
+                    content={segment.value}
+                    className="markdown-chat [&+&]:mt-3"
+                  />
                 ),
               )
             : null}
@@ -1625,7 +1628,12 @@ function applyLiveEvent(live, event) {
       };
     // The meter follows the newest measurement, so it falls as soon as a
     // compaction lands rather than at the end of the run.
-    case "context.usage":
+    case "context.usage": {
+      // The peak is kept as a high water mark rather than replaced, so a run that
+      // compacted can show both what filled the context and what freeing it gave
+      // back. Without it the meter drops and nothing explains why.
+      const candidate = event.peakTokens ?? event.usedTokens ?? 0;
+      const peaked = candidate > (current.context?.peakTokens ?? 0);
       return {
         ...current,
         context: {
@@ -1636,8 +1644,13 @@ function applyLiveEvent(live, event) {
           usedPercent: event.usedPercent ?? 0,
           compacted: event.compacted === true,
           compactions: current.compactions,
+          peakTokens: peaked ? candidate : current.context?.peakTokens,
+          peakPercent: peaked
+            ? (event.peakPercent ?? event.usedPercent ?? 0)
+            : current.context?.peakPercent,
         },
       };
+    }
     case "context.compaction.started":
       return { ...current, status: "Compacting the context" };
     case "context.compaction.completed":
@@ -1835,13 +1848,10 @@ function LiveMessage({ live, agentName }) {
         ))}
 
         {live.text ? (
-          <p className="message-text text-small">
-            {live.text}
-            <span
-              aria-hidden="true"
-              className="ml-0.5 inline-block h-[1.05em] w-[7px] animate-caret-blink rounded-[1px] bg-secondary align-text-bottom"
-            />
-          </p>
+          <MarkdownDocument
+            content={live.text}
+            className="markdown-chat markdown-chat-live"
+          />
         ) : busy ? (
           <p className="text-small text-default-500">
             {live.status}

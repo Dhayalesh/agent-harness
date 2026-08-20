@@ -33,6 +33,8 @@ const contextUsageSchema = new mongoose.Schema(
     usedPercent: Number,
     compacted: Boolean,
     compactions: Number,
+    peakTokens: Number,
+    peakPercent: Number,
   },
   { _id: false, strict: false },
 );

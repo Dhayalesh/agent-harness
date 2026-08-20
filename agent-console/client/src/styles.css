@@ -144,6 +144,54 @@
   .markdown-document :not(pre) > code {
     @apply rounded-small bg-content2 px-1.5 py-0.5 text-[0.9em] text-[#88482f] dark:text-[#e8a185];
   }
+  /*
+   * The transcript reuses the document renderer, but a chat turn is a bubble, not
+   * a page: full width, body-sized type, and no leading/trailing block margin.
+   */
+  .markdown-chat {
+    @apply mx-0 max-w-none text-[15px] leading-7;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-chat > :first-child {
+    @apply mt-0;
+  }
+  .markdown-chat > :last-child {
+    @apply mb-0;
+  }
+  .markdown-chat h1 {
+    @apply mb-2 mt-5 border-0 pb-0 text-xl font-semibold tracking-tight;
+  }
+  .markdown-chat h2 {
+    @apply mb-2 mt-5 text-large font-semibold tracking-tight;
+  }
+  .markdown-chat h3 {
+    @apply mb-1.5 mt-4 text-medium font-semibold;
+  }
+  .markdown-chat h4 {
+    @apply mb-1.5 mt-3 text-small font-semibold;
+  }
+  .markdown-chat p {
+    @apply my-2.5;
+  }
+  .markdown-chat ul,
+  .markdown-chat ol {
+    @apply my-2.5;
+  }
+  .markdown-chat hr {
+    @apply my-4;
+  }
+  .markdown-chat .markdown-code,
+  .markdown-chat .markdown-table-wrap {
+    @apply my-3 rounded-medium;
+  }
+
+  /* The streaming caret rides the end of the last rendered block. */
+  .markdown-chat-live > :last-child::after {
+    @apply ml-0.5 inline-block h-[1.05em] w-[7px] animate-caret-blink rounded-[1px] bg-secondary align-text-bottom;
+    content: "";
+  }
+
   .markdown-code {
     @apply my-4 overflow-hidden rounded-large border border-divider bg-content2;
   }

@@ -29,6 +29,8 @@ export class RunTotals {
   #artifacts = [];
   #context;
   #compactions = 0;
+  #peakTokens;
+  #peakPercent = 0;
 
   observe(event) {
     if (typeof event?.type !== "string") return;
@@ -130,7 +132,15 @@ export class RunTotals {
         break;
       // Last one wins: the meter shows where the context stands now, which is
       // what the most recent turn measured.
-      case "context.usage":
+      case "context.usage": {
+        // Except the peak, which is a high water mark. A run that compacted mid-way
+        // ends on a low reading, and the stored record needs the number that caused
+        // the compaction as well as the one that followed it.
+        const candidate = event.peakTokens ?? event.usedTokens ?? 0;
+        if (this.#peakTokens === undefined || candidate > this.#peakTokens) {
+          this.#peakTokens = candidate;
+          this.#peakPercent = event.peakPercent ?? event.usedPercent ?? 0;
+        }
         this.#context = {
           usedTokens: event.usedTokens ?? 0,
           budgetTokens: event.budgetTokens ?? 0,
@@ -142,8 +152,12 @@ export class RunTotals {
             : {}),
           usedPercent: event.usedPercent ?? 0,
           compacted: this.#compactions > 0 || event.compacted === true,
+          ...(this.#peakTokens === undefined
+            ? {}
+            : { peakTokens: this.#peakTokens, peakPercent: this.#peakPercent }),
         };
         break;
+      }
       case "context.compaction.completed":
         this.#compactions += 1;
         break;

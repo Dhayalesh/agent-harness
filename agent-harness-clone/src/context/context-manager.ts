@@ -152,6 +152,22 @@ export const DEFAULT_COMPACTION_PERCENT = 90;
  * constructor enforces, so any percentage below 80 would throw instead of
  * compacting early — which is precisely what asking for 50 means.
  */
+/**
+ * Which of the policy's thresholds a measured utilisation has crossed.
+ *
+ * Exported because a caller that wants to warn at the same point the policy does
+ * should not have to re-derive the comparison and risk drifting from it.
+ */
+export function classifyPressure(
+  utilizationFraction: number,
+  policy: Pick<ContextPolicy, 'warningThreshold' | 'aggressiveThreshold' | 'compactionThreshold'>,
+): ContextPressure {
+  if (utilizationFraction >= policy.compactionThreshold) return 'critical';
+  if (utilizationFraction >= policy.aggressiveThreshold) return 'aggressive';
+  if (utilizationFraction >= policy.warningThreshold) return 'warning';
+  return 'nominal';
+}
+
 export function contextPolicyFromPercent(percent: number): Partial<ContextPolicy> {
   const compactionThreshold = percent / 100;
   const scale = compactionThreshold / DEFAULT_CONTEXT_POLICY.compactionThreshold;
@@ -165,6 +181,23 @@ export function contextPolicyFromPercent(percent: number): Partial<ContextPolicy
 // ---------------------------------------------------------------------------
 // ContextManager contract
 // ---------------------------------------------------------------------------
+
+/**
+ * Which threshold the measured context has crossed.
+ *
+ * Reported on every `prepare` so a caller can log or surface rising pressure
+ * without recomputing the fractions itself. The policy names three thresholds and
+ * this is how the two below `compactionThreshold` become observable: without it
+ * `warningThreshold` and `aggressiveThreshold` are settings that nothing can see.
+ */
+export type ContextPressure = 'nominal' | 'warning' | 'aggressive' | 'critical';
+
+/** Why a compaction that was asked for did not change anything. */
+export type CompactionSkipReason =
+  /** Everything already fits inside the retention window; there is no older half. */
+  | 'nothing-older'
+  /** The context is a single message, which cannot be split into summary and tail. */
+  | 'already-minimal';
 
 export type PreparedContext = {
   messages: readonly AgentMessage[];
@@ -186,6 +219,22 @@ export type PreparedContext = {
     compactionId?: string;
     strategy?: 'deterministic' | 'llm-summarization' | 'passthrough';
     fallbackUsed?: boolean;
+    /** Which threshold the pre-compaction measurement crossed. */
+    pressure?: ContextPressure;
+    /** How many oversized tool results were shortened in place. */
+    toolResultsTruncated?: number;
+    /**
+     * Set when compaction was requested or required but produced no change, with
+     * the reason. A forced compaction that silently does nothing is
+     * indistinguishable from a broken button, so it says which it was.
+     */
+    skipped?: CompactionSkipReason;
+    /**
+     * True when the prepared context still exceeds the effective input budget
+     * after everything the policy allows. The provider will very likely reject it,
+     * and the caller's reactive retry is the remaining move.
+     */
+    stillOverBudget?: boolean;
   };
 };
 
@@ -292,16 +341,115 @@ function buildDeterministicSummary(messages: readonly AgentMessage[], maxChars: 
 
   sections.push('## Prior Conversation Summary');
   if (textParts.length > 0) {
-    sections.push('### Conversation:\n' + textParts.join('\n').slice(0, Math.floor(maxChars * 0.6)));
+    sections.push(
+      '### Conversation:\n' + textParts.join('\n').slice(0, Math.floor(maxChars * 0.6)),
+    );
   }
   if (toolResults.length > 0) {
-    sections.push('### Tool Results:\n' + toolResults.join('\n').slice(0, Math.floor(maxChars * 0.2)));
+    sections.push(
+      '### Tool Results:\n' + toolResults.join('\n').slice(0, Math.floor(maxChars * 0.2)),
+    );
   }
   if (errors.length > 0) {
     sections.push('### Errors:\n' + errors.join('\n').slice(0, Math.floor(maxChars * 0.1)));
   }
 
   return sections.join('\n\n').slice(0, maxChars);
+}
+
+/**
+ * How much of the effective input budget a compaction summary may occupy.
+ *
+ * Also what lets compaction size its retention window up front: because the
+ * summary can never exceed this share, the tail that is kept verbatim can be
+ * chosen so that tail plus summary is known to fit before either is built.
+ */
+const SUMMARY_BUDGET_FRACTION = 0.25;
+
+/** Characters per token the estimator assumes, restated for the inverse direction. */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Shortens tool results that are individually larger than the policy allows.
+ *
+ * This is the cheap relief `aggressiveThreshold` and `maxToolResultTokens` were
+ * always meant to provide, and it runs before full compaction is considered: one
+ * runaway `read_file` or `execute` result is a far more common cause of a full
+ * context than a genuinely long conversation, and trimming it costs no summary,
+ * no model call, and no history. The head and tail of the output are both kept
+ * because the useful parts of a large result are usually at its edges — a command
+ * echoes its inputs first and its error last.
+ *
+ * Returns the original array when nothing needed shortening, so callers can keep
+ * relying on reference identity to mean "untouched".
+ */
+function truncateOversizedToolResults(
+  messages: readonly AgentMessage[],
+  maxToolResultTokens: number,
+): { messages: readonly AgentMessage[]; truncated: number } {
+  const maxChars = Math.max(200, maxToolResultTokens * CHARS_PER_TOKEN);
+  let truncated = 0;
+
+  const next = messages.map((message) => {
+    if (
+      !message.content.some(
+        (block) => block.type === 'tool_result' && block.content.length > maxChars,
+      )
+    ) {
+      return message;
+    }
+    return {
+      ...message,
+      content: message.content.map((block) => {
+        if (block.type !== 'tool_result' || block.content.length <= maxChars) return block;
+        truncated += 1;
+        const keep = Math.floor((maxChars - TRUNCATION_NOTICE_CHARS) / 2);
+        const dropped = block.content.length - keep * 2;
+        return {
+          ...block,
+          content:
+            `${block.content.slice(0, keep)}\n\n[... ${dropped.toLocaleString()} characters of this tool result were removed to fit the context ...]\n\n` +
+            block.content.slice(block.content.length - keep),
+        };
+      }),
+    };
+  });
+
+  return truncated === 0 ? { messages, truncated: 0 } : { messages: next, truncated };
+}
+
+/** Room set aside for the notice that replaces the removed middle of a tool result. */
+const TRUNCATION_NOTICE_CHARS = 120;
+
+/**
+ * Shortens the text of a message that is on its own too large for the budget.
+ *
+ * The last resort, and only reached when a single message — one enormous pasted
+ * document, one image-free wall of output — exceeds what the whole request may
+ * spend. The retention walk cannot drop it, because a request with no messages is
+ * not a request, so the only remaining move is to send less of it. Images are left
+ * alone: their cost is already a flat charge and half an image is not an image.
+ */
+function shrinkMessageText(message: AgentMessage, maxChars: number): AgentMessage {
+  let remaining = Math.max(200, maxChars);
+  return {
+    ...message,
+    content: message.content.map((block) => {
+      if (block.type === 'image' || block.type === 'tool_call') return block;
+      const field = block.type === 'text' ? block.text : block.content;
+      if (field.length <= remaining) {
+        remaining -= field.length;
+        return block;
+      }
+      const kept = field.slice(0, Math.max(0, remaining));
+      const dropped = field.length - kept.length;
+      remaining = 0;
+      const notice = `\n\n[... ${dropped.toLocaleString()} characters removed to fit the context ...]`;
+      return block.type === 'text'
+        ? { ...block, text: kept + notice }
+        : { ...block, content: kept + notice };
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -453,13 +601,12 @@ export class DynamicCompactingContextManager implements ContextManager {
   }
 
   async prepare(request: ContextRequest): Promise<PreparedContext> {
-    const policy = request.policy
-      ? { ...this.basePolicy, ...request.policy }
-      : this.basePolicy;
+    const policy = request.policy ? { ...this.basePolicy, ...request.policy } : this.basePolicy;
 
     const budget = this.resolveBudget(request, policy);
     const before = this.estimator.estimateMessages(request.messages);
     const utilizationFraction = before / budget.effectiveInputBudget;
+    const pressure = classifyPressure(utilizationFraction, policy);
 
     // An explicit request compacts whatever the thresholds would have said.
     //
@@ -468,38 +615,71 @@ export class DynamicCompactingContextManager implements ContextManager {
     // `retainRecentTokens` would find nothing older than the window and return
     // unchanged — technically correct, and indistinguishable from a broken button.
     if (request.forceCompaction) {
-      return this.compact(request.messages, before, budget, utilizationFraction, {
-        ...policy,
-        retainRecentTokens: Math.min(policy.retainRecentTokens, Math.floor(before / 2)),
-      });
+      return this.compact(
+        request.messages,
+        before,
+        budget,
+        utilizationFraction,
+        {
+          ...policy,
+          retainRecentTokens: Math.min(policy.retainRecentTokens, Math.floor(before / 2)),
+        },
+        pressure,
+      );
     }
 
-    // Below warning threshold: return as-is.
-    if (utilizationFraction < policy.warningThreshold) {
+    // Below the aggressive threshold nothing is done. The measurement still comes
+    // back with its `pressure`, which is what makes `warningThreshold` mean
+    // something to a caller that logs or displays it.
+    if (utilizationFraction < policy.aggressiveThreshold) {
       return {
         messages: request.messages,
         estimatedTokens: before,
         compacted: false,
         budget: { ...budget, utilizationFraction },
-        metadata: { strategy: 'passthrough' },
+        metadata: { strategy: 'passthrough', pressure },
       };
     }
 
-    // Below compaction threshold: still return as-is but include budget info
-    // so callers can observe rising utilization. Aggressive tool-result truncation
-    // may apply at aggressiveThreshold but we do not compact the full history yet.
-    if (utilizationFraction < policy.compactionThreshold) {
+    // At or above the aggressive threshold: shorten individually oversized tool
+    // results first. Done before compaction is considered because it is the
+    // cheaper fix and very often the sufficient one — a single runaway tool result
+    // fills a context far more often than a long conversation does — and because
+    // it costs no summary, no model call, and no earlier turns.
+    const trimmed = truncateOversizedToolResults(request.messages, policy.maxToolResultTokens);
+    const afterTrim =
+      trimmed.truncated === 0 ? before : this.estimator.estimateMessages(trimmed.messages);
+    const trimmedFraction = afterTrim / budget.effectiveInputBudget;
+
+    // Trimming alone brought it under the compaction line, so the conversation is
+    // kept whole. This is the case the policy always described and never reached.
+    if (trimmedFraction < policy.compactionThreshold) {
       return {
-        messages: request.messages,
-        estimatedTokens: before,
+        messages: trimmed.messages,
+        estimatedTokens: afterTrim,
         compacted: false,
-        budget: { ...budget, utilizationFraction },
-        metadata: { strategy: 'passthrough' },
+        ...(trimmed.truncated === 0 ? {} : { tokensBefore: before }),
+        budget: { ...budget, utilizationFraction: trimmedFraction },
+        metadata: {
+          strategy: 'passthrough',
+          pressure,
+          ...(trimmed.truncated === 0 ? {} : { toolResultsTruncated: trimmed.truncated }),
+        },
       };
     }
 
-    // At or above compaction threshold: compact.
-    return this.compact(request.messages, before, budget, utilizationFraction, policy);
+    // Still at or above the compaction threshold: compact. `before` rather than
+    // `afterTrim` is reported as the starting point, because what the caller wants
+    // to know is how full the context was when the turn began.
+    return this.compact(
+      trimmed.messages,
+      before,
+      budget,
+      trimmedFraction,
+      policy,
+      pressure,
+      trimmed.truncated,
+    );
   }
 
   // --------------------------------------------------------------------------
@@ -563,23 +743,61 @@ export class DynamicCompactingContextManager implements ContextManager {
     budget: ReturnType<DynamicCompactingContextManager['resolveBudget']>,
     utilizationFraction: number,
     policy: ContextPolicy,
+    pressure: ContextPressure,
+    toolResultsTruncated = 0,
   ): Promise<PreparedContext> {
     const compactionId = randomUUID();
 
-    // Find how many recent tokens to retain
-    const { recentMessages, olderMessages } = this.splitAtRetentionBoundary(
-      messages,
-      policy.retainRecentTokens,
+    // What the compacted context has to come in under. The compaction threshold
+    // rather than the whole budget, because landing exactly at the budget would put
+    // the very next turn straight back over the line and compact again.
+    const target = Math.max(
+      1,
+      Math.floor(budget.effectiveInputBudget * policy.compactionThreshold),
+    );
+    // A share of the target rather than of the whole budget. Taken from the budget
+    // it is unrelated to the threshold that was actually asked for, so an agent set
+    // to shrink at 10% got a summary sized for 25% and finished a compaction still
+    // far over its own line.
+    const summaryCeiling = Math.max(1, Math.floor(target * SUMMARY_BUDGET_FRACTION));
+
+    // The retention window is narrowed until the tail it keeps plus the summary's
+    // own ceiling is known to fit the target. Sizing it here, before either is
+    // built, is what stops compaction from returning a context that is still too
+    // big: the previous behaviour kept a fixed 8 000-token tail and simply reported
+    // whatever total came out, which for a large single tool result was still over
+    // budget and went straight back to the provider to be rejected.
+    const retainRecentTokens = Math.max(
+      1,
+      Math.min(policy.retainRecentTokens, target - summaryCeiling),
     );
 
-    // If nothing to compact (all messages fit in retained budget), just return
+    const { recentMessages, olderMessages } = this.splitAtRetentionBoundary(
+      messages,
+      retainRecentTokens,
+    );
+
+    // Nothing older than the retention window. Reported rather than passed over in
+    // silence, so a caller that asked for compaction can tell "there was nothing to
+    // do" from "the request did not arrive".
     if (olderMessages.length === 0) {
+      const enforced = this.enforceTail(recentMessages, target);
+      const estimatedTokens =
+        enforced === recentMessages ? tokensBefore : this.estimator.estimateMessages(enforced);
       return {
-        messages,
-        estimatedTokens: tokensBefore,
+        messages: enforced,
+        estimatedTokens,
         compacted: false,
+        ...(enforced === recentMessages ? {} : { tokensBefore }),
         budget: { ...budget, utilizationFraction },
-        metadata: { strategy: 'passthrough', compactionId },
+        metadata: {
+          strategy: 'passthrough',
+          compactionId,
+          pressure,
+          skipped: messages.length <= 1 ? 'already-minimal' : 'nothing-older',
+          ...(toolResultsTruncated === 0 ? {} : { toolResultsTruncated }),
+          ...(estimatedTokens > budget.effectiveInputBudget ? { stillOverBudget: true } : {}),
+        },
       };
     }
 
@@ -600,19 +818,28 @@ export class DynamicCompactingContextManager implements ContextManager {
           summaryText = result.summary;
           strategy = result.strategy;
         } else {
-          summaryText = this.buildDeterministicSummaryText(olderMessages, budget.effectiveInputBudget);
+          summaryText = this.buildDeterministicSummaryText(olderMessages, summaryCeiling);
           strategy = 'deterministic';
           fallbackUsed = true;
         }
       } catch {
         // Summarization failure must never corrupt the session
-        summaryText = this.buildDeterministicSummaryText(olderMessages, budget.effectiveInputBudget);
+        summaryText = this.buildDeterministicSummaryText(olderMessages, summaryCeiling);
         strategy = 'deterministic';
         fallbackUsed = true;
       }
     } else {
-      summaryText = this.buildDeterministicSummaryText(olderMessages, budget.effectiveInputBudget);
+      summaryText = this.buildDeterministicSummaryText(olderMessages, summaryCeiling);
       strategy = 'deterministic';
+    }
+
+    // Clamped whatever produced it. The deterministic builder respects the ceiling
+    // by construction; a summarization model only respects its own `maxTokens`,
+    // which knows nothing about this budget. Trusting it is how a compaction ends up
+    // larger than the room it was given.
+    const summaryCeilingChars = summaryCeiling * CHARS_PER_TOKEN;
+    if (summaryText.length > summaryCeilingChars) {
+      summaryText = summaryText.slice(0, summaryCeilingChars);
     }
 
     const compactedMessage: AgentMessage = {
@@ -627,8 +854,39 @@ export class DynamicCompactingContextManager implements ContextManager {
       ],
     };
 
-    const resultMessages = [compactedMessage, ...recentMessages];
+    // The retention walk always keeps the last message whole, whatever its size,
+    // because a request with no messages is not a request. That makes a single
+    // oversized message the one thing the window cannot shrink, so the tail is
+    // checked against what is left of the target and shortened in place if it does
+    // not fit. Without this a 300 000-token tool result stayed over budget through
+    // every compaction and every retry.
+    const summaryTokens = this.estimator.estimateMessage(compactedMessage);
+    const enforcedTail = this.enforceTail(recentMessages, Math.max(1, target - summaryTokens));
+
+    const resultMessages = [compactedMessage, ...enforcedTail];
     const tokensAfter = this.estimator.estimateMessages(resultMessages);
+
+    // A compaction that does not make the context smaller is not a compaction. This
+    // is reachable on a very short conversation, where the summary's own headings
+    // cost more than the two lines they describe, and it is exactly what a client's
+    // "compact context" button hits when it is pressed on a fresh chat. Saying so
+    // beats replacing a greeting with a worse-value summary of it.
+    if (tokensAfter >= tokensBefore) {
+      return {
+        messages,
+        estimatedTokens: tokensBefore,
+        compacted: false,
+        budget: { ...budget, utilizationFraction },
+        metadata: {
+          strategy: 'passthrough',
+          compactionId,
+          pressure,
+          skipped: 'already-minimal',
+          ...(toolResultsTruncated === 0 ? {} : { toolResultsTruncated }),
+          ...(tokensBefore > budget.effectiveInputBudget ? { stillOverBudget: true } : {}),
+        },
+      };
+    }
 
     return {
       messages: resultMessages,
@@ -636,8 +894,52 @@ export class DynamicCompactingContextManager implements ContextManager {
       compacted: true,
       tokensBefore,
       budget: { ...budget, utilizationFraction },
-      metadata: { compactionId, strategy, fallbackUsed },
+      metadata: {
+        compactionId,
+        strategy,
+        fallbackUsed,
+        pressure,
+        ...(toolResultsTruncated === 0 ? {} : { toolResultsTruncated }),
+        ...(tokensAfter > budget.effectiveInputBudget ? { stillOverBudget: true } : {}),
+      },
     };
+  }
+
+  /**
+   * Brings the verbatim tail under a token ceiling.
+   *
+   * Tool results are shortened first, since they are both the usual cause and the
+   * least costly thing to lose. Only if that is not enough is message text cut, and
+   * only from the oldest messages in the tail forward — the newest turn is what the
+   * model is answering, and shortening that is the last thing worth doing.
+   */
+  private enforceTail(
+    messages: readonly AgentMessage[],
+    maxTokens: number,
+  ): readonly AgentMessage[] {
+    if (this.estimator.estimateMessages(messages) <= maxTokens) return messages;
+
+    // Tool results first, at a cap derived from the ceiling rather than the policy:
+    // by this point the policy's own allowance has already proved to be too generous.
+    const perResultTokens = Math.max(200, Math.floor(maxTokens / Math.max(1, messages.length)));
+    let working = truncateOversizedToolResults(messages, perResultTokens).messages;
+    if (this.estimator.estimateMessages(working) <= maxTokens) return working;
+
+    // Still over. Cut text from the front of the tail, leaving the newest message
+    // for last so that whatever survives is the part the next reply depends on.
+    const perMessageChars = Math.max(
+      200,
+      Math.floor((maxTokens * CHARS_PER_TOKEN) / Math.max(1, working.length)),
+    );
+    const shrunk = [...working];
+    for (let i = 0; i < shrunk.length; i += 1) {
+      const message = shrunk[i];
+      if (!message) continue;
+      shrunk[i] = shrinkMessageText(message, perMessageChars);
+      working = shrunk;
+      if (this.estimator.estimateMessages(working) <= maxTokens) break;
+    }
+    return working;
   }
 
   /**
@@ -683,13 +985,17 @@ export class DynamicCompactingContextManager implements ContextManager {
     };
   }
 
+  /**
+   * @param ceilingTokens The summary's token allowance, as sized by `compact`
+   *   against the compaction target. Passing the allowance rather than the whole
+   *   budget is what keeps the tail and the summary from each being within their
+   *   own limit and still overflowing together.
+   */
   private buildDeterministicSummaryText(
     messages: readonly AgentMessage[],
-    budgetTokens: number,
+    ceilingTokens: number,
   ): string {
-    // Max chars = budgetTokens * 4 * 0.25 so the summary uses at most 25% of the budget
-    const maxChars = Math.max(1_000, Math.floor(budgetTokens * 4 * 0.25));
-    return buildDeterministicSummary(messages, maxChars);
+    return buildDeterministicSummary(messages, Math.max(400, ceilingTokens * CHARS_PER_TOKEN));
   }
 
   private validatePolicy(policy: ContextPolicy): void {

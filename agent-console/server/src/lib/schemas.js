@@ -546,6 +546,13 @@ export const runtimeResultSchema = z
         usedPercent: z.number().nonnegative(),
         compacted: z.boolean().optional(),
         compactions: z.number().int().nonnegative().optional(),
+        /**
+         * The run's high water mark, before compaction relieved it. Optional for
+         * the same reason as the block itself: a runtime that never compacted has
+         * no reading to distinguish from `usedTokens`.
+         */
+        peakTokens: z.number().nonnegative().optional(),
+        peakPercent: z.number().nonnegative().optional(),
       })
       .passthrough()
       .optional(),

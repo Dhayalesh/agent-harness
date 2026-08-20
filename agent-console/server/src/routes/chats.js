@@ -30,7 +30,12 @@ import {
   invokeStoredAgent,
   streamStoredAgent,
 } from "../services/invocation.js";
-import { loadAgent, nowIso, requireObjectId } from "../services/platform.js";
+import {
+  loadAgent,
+  loadModelProvider,
+  nowIso,
+  requireObjectId,
+} from "../services/platform.js";
 import { generateChatTitle, hasDefaultTitle } from "../services/chat-title.js";
 import { loadArtifactBody } from "../services/artifact-content.js";
 import {
@@ -385,9 +390,23 @@ chatsRouter.post(
     }
 
     const previousMessages = chat.messages.slice(0, -1);
+    const historyStartIndex = chat.session?.historyStartIndex ?? 0;
+    // Bounded against the model this agent resolves to, so the runtime's context
+    // layer is always the thing that decides a conversation has grown too long.
+    // With a fixed bound the console reached its own limit first on any wide model
+    // and dropped the opening turns silently — no summary, no compaction event, and
+    // a context meter that flattened out well below the threshold the agent had set,
+    // which is exactly what "it never auto-compacts" looks like from the outside.
+    const contextWindow = await agentContextWindow(agent);
     const sessionHistory = buildSessionHistory(
       previousMessages,
-      chat.session?.historyStartIndex ?? 0,
+      historyStartIndex,
+      historyCharacterLimit(contextWindow),
+    );
+    const droppedHistory = droppedHistoryCount(
+      previousMessages,
+      historyStartIndex,
+      sessionHistory.length,
     );
 
     const invocationInput = {
@@ -429,6 +448,17 @@ chatsRouter.post(
     response.once("close", () => {
       if (!response.writableEnded) abort.abort();
     });
+
+    // Sent before the run so it is not mistaken for something the run did. Reaching
+    // this bound means turns were dropped outright rather than summarised, which is
+    // the one context outcome the runtime cannot report because it never saw them.
+    if (droppedHistory > 0) {
+      await writeEvent(response, "warning", {
+        type: "warning",
+        code: "HISTORY_TRUNCATED",
+        message: `This chat is long enough that its ${droppedHistory} oldest turn${droppedHistory === 1 ? " was" : "s were"} left out of the model's view entirely.`,
+      });
+    }
 
     try {
       const invocation = await streamStoredAgent({
@@ -719,17 +749,70 @@ async function loadChat(id) {
   return chat;
 }
 
+/**
+ * The context window of the model an agent resolves to, or `undefined`.
+ *
+ * Read here rather than taken from the payload because the history bound is applied
+ * before the payload is built. Failure is not fatal: an unresolvable provider falls
+ * back to the hard backstop, and the invocation that follows will report the real
+ * problem far better than a history bound could.
+ */
+async function agentContextWindow(agent) {
+  try {
+    const provider = await loadModelProvider(agent.modelProviderId);
+    return provider?.capabilities?.contextWindow;
+  } catch {
+    return undefined;
+  }
+}
+
 function chatDetail(chat) {
   return chat.toJSON();
 }
 
-export function buildSessionHistory(
-  messages,
-  startIndex = 0,
-  maximum = 1_500_000,
-  maximumMessages = 200,
-) {
-  const previous = messages
+/**
+ * The absolute ceiling on a replayed transcript, whatever the model can hold.
+ *
+ * A transport backstop, not a context policy: it exists so one enormous chat cannot
+ * build an unbounded request body, and it is deliberately far above what any
+ * realistic model window makes reachable. The 4 characters per token is the same
+ * ratio the runtime's estimator uses, so the two layers reason in one unit.
+ */
+const HISTORY_HARD_CHARACTER_LIMIT = 8_000_000;
+const HISTORY_HARD_MESSAGE_LIMIT = 5_000;
+const CHARACTERS_PER_TOKEN = 4;
+
+/**
+ * How many characters of history to replay for a model of a given window.
+ *
+ * Sized *above* the window rather than below it, because the runtime's context layer
+ * is what decides when a conversation is too long — it summarises the older half and
+ * says so on a `context.compaction.completed` event. Anything this function drops is
+ * gone silently instead, with no summary and no notice, so the bound has to stay out
+ * of the runtime's way and only catch the pathological case.
+ *
+ * Twice the window is the margin: the runtime compacts at a percentage of the window
+ * less its reserved reply, so at 2x the whole window the threshold is always crossed
+ * first and compaction always gets to be the mechanism.
+ */
+export function historyCharacterLimit(contextWindow) {
+  if (!Number.isFinite(contextWindow) || contextWindow <= 0) {
+    return HISTORY_HARD_CHARACTER_LIMIT;
+  }
+  return Math.min(
+    HISTORY_HARD_CHARACTER_LIMIT,
+    Math.ceil(contextWindow * CHARACTERS_PER_TOKEN * 2),
+  );
+}
+
+/**
+ * The stored turns that are eligible for replay at all.
+ *
+ * Split out so the bound and the count of what the bound dropped are derived from
+ * one definition of "replayable" rather than two that can drift.
+ */
+function replayableHistory(messages, startIndex) {
+  return messages
     .slice(startIndex)
     .map((message) => ({ message, text: historyText(message) }))
     .filter(
@@ -737,6 +820,27 @@ export function buildSessionHistory(
         (message.role === "user" || message.role === "assistant") &&
         text.length > 0,
     );
+}
+
+/** How many replayable turns the bound left out, for the caller's warning. */
+export function droppedHistoryCount(
+  messages,
+  startIndex = 0,
+  replayedCount = 0,
+) {
+  return Math.max(
+    0,
+    replayableHistory(messages, startIndex).length - replayedCount,
+  );
+}
+
+export function buildSessionHistory(
+  messages,
+  startIndex = 0,
+  maximum = HISTORY_HARD_CHARACTER_LIMIT,
+  maximumMessages = HISTORY_HARD_MESSAGE_LIMIT,
+) {
+  const previous = replayableHistory(messages, startIndex);
   const selected = [];
   let size = 0;
   for (let index = previous.length - 1; index >= 0; index -= 1) {

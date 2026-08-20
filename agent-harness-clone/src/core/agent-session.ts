@@ -320,6 +320,40 @@ class AgentSessionImpl implements AgentSession {
               tokensBefore: prepared.tokensBefore ?? prepared.estimatedTokens,
               tokensAfter: prepared.estimatedTokens,
             });
+          } else if (forceCompaction && prepared.metadata?.skipped) {
+            // A requested compaction that found nothing to do. Reported, because a
+            // client that offered the action has to be able to tell the user why
+            // nothing changed — silence there is indistinguishable from a lost
+            // request or a broken button.
+            yield this.event({
+              type: 'warning',
+              code: 'CONTEXT_COMPACTION_SKIPPED',
+              message:
+                prepared.metadata.skipped === 'already-minimal'
+                  ? 'The context is already as small as summarising it would make it, so it was left alone.'
+                  : 'There are no earlier turns outside the retained window to summarise.',
+            });
+          }
+          // Warned at the point the policy itself names, so the threshold an agent
+          // configured is the threshold a reader hears about. Only the two tiers
+          // below compaction warn: at `critical` the compaction events above have
+          // already said everything a warning would.
+          if (
+            prepared.metadata?.pressure === 'warning' ||
+            prepared.metadata?.pressure === 'aggressive'
+          ) {
+            const percent = prepared.budget
+              ? Math.round(prepared.budget.utilizationFraction * 1_000) / 10
+              : undefined;
+            yield this.event({
+              type: 'warning',
+              code: 'CONTEXT_PRESSURE',
+              message:
+                `The context is ${percent === undefined ? 'approaching' : `at ${percent}% of`} its input budget` +
+                (prepared.metadata.toolResultsTruncated
+                  ? `; ${prepared.metadata.toolResultsTruncated} oversized tool result(s) were shortened to fit.`
+                  : '; earlier turns will be summarised if it keeps growing.'),
+            });
           }
           // Every turn, compacted or not: a usage meter needs the number that did
           // not trigger compaction as much as the one that did. The budget comes
@@ -341,9 +375,23 @@ class AgentSessionImpl implements AgentSession {
               ...(prepared.budget?.outputReserved === undefined
                 ? {}
                 : { reservedOutputTokens: prepared.budget.outputReserved }),
-              usedPercent:
-                Math.round((prepared.estimatedTokens / contextBudget) * 1_000) / 10,
+              usedPercent: Math.round((prepared.estimatedTokens / contextBudget) * 1_000) / 10,
               compacted: prepared.compacted,
+              // The reading before the layer acted, carried alongside the one after
+              // so a meter can show both the peak and the relief rather than only
+              // the number that survived.
+              ...(prepared.tokensBefore === undefined
+                ? {}
+                : {
+                    peakTokens: prepared.tokensBefore,
+                    peakPercent: Math.round((prepared.tokensBefore / contextBudget) * 1_000) / 10,
+                  }),
+              ...(prepared.metadata?.pressure === undefined
+                ? {}
+                : { pressure: prepared.metadata.pressure }),
+              ...(prepared.metadata?.toolResultsTruncated === undefined
+                ? {}
+                : { toolResultsTruncated: prepared.metadata.toolResultsTruncated }),
             });
           }
           const projectContext = await this.projectContextProvider?.collect(

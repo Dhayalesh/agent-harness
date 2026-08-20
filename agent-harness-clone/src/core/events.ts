@@ -130,6 +130,22 @@ export type AgentEvent = EventBase &
         usedPercent: number;
         /** Whether this turn's context was compacted to reach that number. */
         compacted: boolean;
+        /**
+         * What the context measured before the layer acted on it, when it acted.
+         *
+         * `usedTokens` is what the request actually costs, which is the number a
+         * budget cares about — but on a turn that compacted it is not the number
+         * that *caused* the compaction. A meter with only the post number can never
+         * show the peak it was built to warn about: it reads 96%, compaction lands,
+         * and the history says 22% with nothing to explain the gap.
+         */
+        peakTokens?: number;
+        /** `peakTokens / budgetTokens` as a percentage, one decimal. */
+        peakPercent?: number;
+        /** Which of the policy's thresholds the pre-action measurement crossed. */
+        pressure?: 'nominal' | 'warning' | 'aggressive' | 'critical';
+        /** How many oversized tool results were shortened in place this turn. */
+        toolResultsTruncated?: number;
       }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**

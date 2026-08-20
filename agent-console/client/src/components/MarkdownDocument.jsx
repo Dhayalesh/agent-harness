@@ -1,9 +1,11 @@
 import { Fragment } from "react";
 
 /** A safe, dependency-free Markdown preview for persisted response documents. */
-export function MarkdownDocument({ content }) {
+export function MarkdownDocument({ content, className = "" }) {
   return (
-    <div className="markdown-document">{blocks(String(content ?? ""))}</div>
+    <div className={`markdown-document ${className}`.trimEnd()}>
+      {blocks(String(content ?? ""))}
+    </div>
   );
 }
 

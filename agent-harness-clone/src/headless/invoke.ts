@@ -204,6 +204,10 @@ export type HeadlessContextUsage = {
   compacted: boolean;
   /** How many turns were compacted. */
   compactions: number;
+  /** The run's high water mark, before any turn's compaction relieved it. */
+  peakTokens?: number;
+  /** `peakTokens` as a percentage of the budget, one decimal. */
+  peakPercent?: number;
 };
 
 export type HeadlessResponse =
@@ -1053,6 +1057,8 @@ class RunTotals {
   private failure: { code: string; message: string; recoverable: boolean } | undefined;
   private context: HeadlessContextUsage | undefined;
   private compactions = 0;
+  private peakTokens: number | undefined;
+  private peakPercent = 0;
 
   observe(event: AgentEvent): void {
     switch (event.type) {
@@ -1089,6 +1095,16 @@ class RunTotals {
       // Last one wins: the meter shows where the context stands now, which is what
       // the most recent turn measured.
       case 'context.usage':
+        // The peak is the exception to last-one-wins. A run whose middle turn hit
+        // the threshold and compacted ends on a low reading, and without the high
+        // water mark the record cannot say that anything happened at all.
+        {
+          const candidate = event.peakTokens ?? event.usedTokens;
+          if (this.peakTokens === undefined || candidate > this.peakTokens) {
+            this.peakTokens = candidate;
+            this.peakPercent = event.peakPercent ?? event.usedPercent;
+          }
+        }
         this.context = {
           usedTokens: event.usedTokens,
           budgetTokens: event.budgetTokens,
@@ -1099,6 +1115,9 @@ class RunTotals {
           usedPercent: event.usedPercent,
           compacted: this.compactions > 0 || event.compacted,
           compactions: this.compactions,
+          ...(this.peakTokens === undefined
+            ? {}
+            : { peakTokens: this.peakTokens, peakPercent: this.peakPercent }),
         };
         break;
       case 'context.compaction.completed':
