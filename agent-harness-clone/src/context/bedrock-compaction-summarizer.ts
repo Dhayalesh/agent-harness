@@ -63,7 +63,30 @@ export class BedrockCompactionSummarizer implements CompactionSummarizer {
     try {
       const conversationText = renderMessagesForSummarization(input.messages);
       const systemPrompt = COMPACTION_SYSTEM_PROMPT;
-      const userContent = `Here is the conversation history to summarize:\n\n${conversationText}`;
+      const userContent = [
+        // The deterministic reading of the conversation's state, when the caller
+        // derived one. Given first and named as already-verified, so the model
+        // corroborates and extends it rather than rediscovering it — a summariser
+        // starting from scratch is a summariser that can lose the one constraint the
+        // whole task depended on.
+        input.stateOutline === undefined || input.stateOutline.trim() === ''
+          ? undefined
+          : `The following state has already been extracted from this conversation and is known to be accurate. Preserve every line of it, and add anything else of importance you find:\n\n${input.stateOutline}`,
+        `Here is the conversation history to summarize:\n\n${conversationText}`,
+      ]
+        .filter((part): part is string => part !== undefined)
+        .join('\n\n---\n\n');
+
+      // The caller's allowance wins when it is the smaller of the two. A summariser
+      // that writes to its own configured ceiling is spending a budget it cannot see:
+      // the room available is a share of a compaction target derived from this turn's
+      // window and threshold, and nothing about `maxSummaryTokens` knows that. The
+      // caller clamps the result regardless, so honouring it here only avoids paying
+      // for tokens that are about to be cut off mid-sentence.
+      const maxTokens = Math.max(
+        256,
+        Math.min(this.maxSummaryTokens, input.maxSummaryTokens ?? this.maxSummaryTokens),
+      );
 
       const command = new ConverseCommand({
         modelId: this.modelId,
@@ -75,7 +98,7 @@ export class BedrockCompactionSummarizer implements CompactionSummarizer {
           } satisfies Message,
         ],
         inferenceConfig: {
-          maxTokens: this.maxSummaryTokens,
+          maxTokens,
           temperature: 0,
         },
       });
@@ -161,6 +184,11 @@ Preserve all of the following that are present:
 Rules:
 - Be factual. Do not invent information that was not in the conversation.
 - Be concise. Omit pleasantries and repetition.
+- Prefer state over narrative: write what is currently true, not the story of how it
+  came to be true. "Uses Postgres, not MySQL" is useful; "the user asked about MySQL,
+  then we discussed Postgres" is not.
+- If a decision was later reversed, record only the decision that stands, and list the
+  reversed one under a SUPERSEDED heading so it is not acted on again.
 - Use markdown headers and bullet points.
 - If a section has nothing to report, omit it entirely.
 - Output only the summary. Do not wrap it in quotes or add preamble.`;

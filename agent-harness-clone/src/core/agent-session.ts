@@ -5,11 +5,15 @@ import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from '.
 import { textMessage, userMessage } from './messages.js';
 import {
   contextPolicyFromPercent,
-  DynamicCompactingContextManager,
   estimateMessagesTokens,
   type ContextManager,
   type ModelContextCapabilities,
 } from '../context/context-manager.js';
+import {
+  contextDecisionOf,
+  ContextOrchestrator,
+  type ContextDecision,
+} from '../context/context-orchestrator.js';
 import { HookRegistry } from '../hooks/hooks.js';
 import type { ModelProvider, StopReason } from '../models/provider.js';
 import {
@@ -204,11 +208,16 @@ class AgentSessionImpl implements AgentSession {
     // the context layer's own resolution, which reserves what the *model* reports
     // rather than what this session happens to cap a single response at — narrowing
     // it here would quietly widen the input budget beyond what the model can hold.
+    //
+    // A `ContextOrchestrator` rather than a bare `DynamicCompactingContextManager`:
+    // the orchestrator *contains* one and delegates every token it removes to it, so
+    // this is the same compaction mechanism with the cheaper stages — tool-output
+    // control, redundancy removal, selection — in front of it, and a verification
+    // pass behind it. A session given nothing but a threshold percentage therefore
+    // gets the whole automatic pipeline with no further wiring.
     this.contextManager =
       config.contextManager ??
-      new DynamicCompactingContextManager(
-        derivedPolicy === undefined ? {} : { policy: derivedPolicy },
-      );
+      new ContextOrchestrator(derivedPolicy === undefined ? {} : { policy: derivedPolicy });
     this.hooks = config.hooks ?? new HookRegistry();
     this.sessionStore = config.sessionStore;
     this.metadata = structuredClone(config.metadata ?? {});
@@ -308,6 +317,10 @@ class AgentSessionImpl implements AgentSession {
               : { modelCapabilities: this.modelCapabilities }),
             ...(forceCompaction ? { forceCompaction: true } : {}),
           });
+          // What the orchestration layer decided, when one prepared this turn. Absent
+          // for a caller-supplied manager, and every use of it below is guarded, so
+          // the events a custom manager produces are exactly what they were before.
+          const decision = contextDecisionOf(prepared);
           if (prepared.compacted) {
             yield this.event({
               type: 'context.compaction.started',
@@ -355,6 +368,49 @@ class AgentSessionImpl implements AgentSession {
                   : '; earlier turns will be summarised if it keeps growing.'),
             });
           }
+          // Cheap relief, reported separately from compaction because it is a
+          // different thing: material was left out or shortened, not summarised. Only
+          // emitted when something actually gave way.
+          if (
+            decision &&
+            (decision.compactedMessageCount > 0 ||
+              decision.trimmedToolResults > 0 ||
+              decision.deduplicatedToolResults > 0)
+          ) {
+            yield this.event({
+              type: 'context.selection',
+              turnId,
+              kept: decision.selectedMessageCount,
+              dropped: decision.compactedMessageCount,
+              trimmedToolResults: decision.trimmedToolResults,
+              deduplicatedToolResults: decision.deduplicatedToolResults,
+              compressed: decision.compressedCategories,
+            });
+          }
+          // Emitted whenever the layer acted, passing or failing. A verification that
+          // is only reported when it fails is a verification a reader cannot trust,
+          // because silence and success look identical.
+          if (decision && decision.action !== 'none') {
+            yield this.event({
+              type: 'context.verification',
+              turnId,
+              passed: decision.verificationPassed,
+              preserved: decision.preservedStateCategories,
+              ...(decision.verificationIssues.length === 0
+                ? {}
+                : { issues: decision.verificationIssues }),
+            });
+          }
+          if (decision?.recoveryPerformed) {
+            yield this.event({
+              type: 'context.recovery',
+              turnId,
+              restored: decision.preservedStateCategories,
+              issues: decision.verificationIssues,
+              tokensBefore: decision.tokensBefore,
+              tokensAfter: decision.tokensAfter,
+            });
+          }
           // Every turn, compacted or not: a usage meter needs the number that did
           // not trigger compaction as much as the one that did. The budget comes
           // from the context layer when it reported one, and falls back to the
@@ -392,6 +448,14 @@ class AgentSessionImpl implements AgentSession {
               ...(prepared.metadata?.toolResultsTruncated === undefined
                 ? {}
                 : { toolResultsTruncated: prepared.metadata.toolResultsTruncated }),
+              // The turn number, so a client can build a timeline without correlating
+              // `turnId`s against `turn.started` frames it may not have kept.
+              turn,
+              // Everything below describes an automatic decision, and every field is
+              // omitted when no orchestrating manager made one — which is how a
+              // caller-supplied `ContextManager` keeps emitting exactly the event it
+              // used to.
+              ...(decision === undefined ? {} : contextDecisionFields(decision)),
             });
           }
           const projectContext = await this.projectContextProvider?.collect(
@@ -1304,6 +1368,29 @@ function agentEventLogFields(event: AgentEvent): Record<string, unknown> {
         usedPercent: event.usedPercent,
         compacted: event.compacted,
         ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
+        ...(event.action === undefined ? {} : { contextAction: event.action }),
+        ...(event.verification === undefined ? {} : { contextVerification: event.verification }),
+      };
+    case 'context.selection':
+      return {
+        kept: event.kept,
+        dropped: event.dropped,
+        trimmedToolResults: event.trimmedToolResults,
+        deduplicatedToolResults: event.deduplicatedToolResults,
+        compressed: event.compressed,
+      };
+    case 'context.verification':
+      return {
+        passed: event.passed,
+        preserved: event.preserved,
+        ...(event.issues === undefined ? {} : { issues: event.issues }),
+      };
+    case 'context.recovery':
+      return {
+        restored: event.restored,
+        issues: event.issues,
+        tokensBefore: event.tokensBefore,
+        tokensAfter: event.tokensAfter,
       };
     case 'run.preparing':
       return {
@@ -1364,6 +1451,41 @@ function describePermissionRequest(tool: Tool, toolCheck: ToolPermissionCheck | 
       ? `${tool.kind} operation requested by ${tool.name}`
       : `${tool.name}: ${toolCheck.reason}`;
   return toolCheck?.warning === undefined ? base : `${base}\n${toolCheck.warning}`;
+}
+
+/**
+ * The part of a context decision that belongs on the `context.usage` event.
+ *
+ * Counts, names, and outcomes only. The decision object also holds the state items
+ * themselves and the budget allocation that produced them, and none of that belongs
+ * in a stream a client stores: telemetry that carries conversation content is a data
+ * leak with a dashboard attached.
+ */
+function contextDecisionFields(decision: ContextDecision): Record<string, unknown> {
+  return {
+    action: decision.action,
+    strategy: decision.strategy,
+    fallbackUsed: decision.fallbackUsed,
+    verification: decision.recoveryPerformed
+      ? decision.verificationPassed
+        ? ('recovered' as const)
+        : ('failed' as const)
+      : decision.verificationPassed
+        ? ('passed' as const)
+        : ('failed' as const),
+    preserved: decision.preservedStateCategories,
+    ...(decision.compressedCategories.length === 0
+      ? {}
+      : { compressed: decision.compressedCategories }),
+    selectedMessageCount: decision.selectedMessageCount,
+    ...(decision.compactedMessageCount === 0
+      ? {}
+      : { compactedMessageCount: decision.compactedMessageCount }),
+    ...(decision.deduplicatedToolResults === 0
+      ? {}
+      : { deduplicatedToolResults: decision.deduplicatedToolResults }),
+    state: decision.state,
+  };
 }
 
 function isPromptTooLong(error: unknown): boolean {

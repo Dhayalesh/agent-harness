@@ -121,6 +121,19 @@ export type ContextPolicy = {
    * back to deterministic truncation.
    */
   enableSummarization: boolean;
+  /**
+   * What share of the compaction target the summary may occupy.
+   *
+   * Internal, and absent by default — `SUMMARY_BUDGET_FRACTION` (0.25) applies when
+   * it is not set, which is what every existing caller gets. It exists so the
+   * orchestration layer can allocate adaptively per turn: a conversation with a
+   * great deal of old history and little live state needs a larger summary than one
+   * with the reverse shape, and a fixed quarter serves neither well.
+   *
+   * Not a user-facing knob. Nothing in an agent record or an invocation payload
+   * reaches this field; it is derived from the conversation.
+   */
+  summaryBudgetFraction?: number;
 };
 
 export const DEFAULT_CONTEXT_POLICY: ContextPolicy = {
@@ -235,6 +248,18 @@ export type PreparedContext = {
      * and the caller's reactive retry is the remaining move.
      */
     stillOverBudget?: boolean;
+    /**
+     * What the orchestration layer decided this turn, when one is in front of this
+     * manager.
+     *
+     * Absent for a bare `DynamicCompactingContextManager`, a `CompactingContextManager`,
+     * or any caller-supplied manager — which is what keeps every existing consumer of
+     * `metadata` working unchanged. Typed as `unknown` here rather than importing
+     * `ContextDecision` because the orchestrator depends on this module and not the
+     * other way round; `context-orchestrator.ts` exports the concrete type and a
+     * `contextDecisionOf()` reader for it.
+     */
+    orchestration?: unknown;
   };
 };
 
@@ -261,6 +286,77 @@ export interface ContextManager {
   prepare(request: ContextRequest): Promise<PreparedContext>;
 }
 
+/** The budget a turn was prepared against. */
+export type ContextBudget = {
+  contextWindow: number;
+  outputReserved: number;
+  safetyMargin: number;
+  effectiveInputBudget: number;
+  utilizationFraction: number;
+};
+
+/** Window assumed when the runtime supplied no model capabilities. */
+const FALLBACK_CONTEXT_WINDOW = 200_000;
+/** Reply reservation assumed when the runtime supplied no model capabilities. */
+const FALLBACK_MAX_OUTPUT_TOKENS = 8_192;
+
+/**
+ * Derives the effective input budget for one turn.
+ *
+ * ```
+ * effectiveInputBudget = contextWindow - outputReserved - safetyMargin
+ * ```
+ *
+ * Extracted from `DynamicCompactingContextManager` so the orchestration layer above
+ * it measures against exactly the same number. Two implementations of this
+ * arithmetic would mean the layer that decides *whether* to act and the layer that
+ * acts disagree about how full the context is — which is the one disagreement in a
+ * context system that cannot be debugged from the outside.
+ *
+ * No model-specific knowledge: everything comes from the capabilities the runtime
+ * reports, so the same code path serves a 128 K window and a 1 M one.
+ */
+export function deriveContextBudget(options: {
+  capabilities?: ModelContextCapabilities | undefined;
+  policy: Pick<ContextPolicy, 'safetyMarginTokens'> & { reserveOutputTokens?: number };
+  /** A configured ceiling that narrows the model's budget but never widens it. */
+  configuredMaxInputTokens?: number | undefined;
+  /** A configured reply ceiling, clamped to what the model can actually produce. */
+  configuredMaxOutputTokens?: number | undefined;
+  /** A per-request ceiling, such as the one the reactive retry imposes. */
+  requestMaxInputTokens?: number | undefined;
+}): ContextBudget {
+  const { capabilities } = options;
+  const modelMaxOutput = capabilities?.maxOutputTokens ?? FALLBACK_MAX_OUTPUT_TOKENS;
+  const outputReserved = Math.min(
+    options.policy.reserveOutputTokens ?? options.configuredMaxOutputTokens ?? modelMaxOutput,
+    modelMaxOutput,
+  );
+  const contextWindow = capabilities?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
+  const safetyMargin = options.policy.safetyMarginTokens;
+  const rawInputBudget = contextWindow - outputReserved - safetyMargin;
+
+  let effectiveInputBudget: number;
+  if (options.configuredMaxInputTokens !== undefined) {
+    effectiveInputBudget =
+      options.configuredMaxInputTokens + outputReserved > contextWindow
+        ? Math.max(1, rawInputBudget)
+        : Math.min(options.configuredMaxInputTokens, rawInputBudget);
+  } else if (options.requestMaxInputTokens !== undefined) {
+    effectiveInputBudget = Math.min(options.requestMaxInputTokens, rawInputBudget);
+  } else {
+    effectiveInputBudget = Math.max(1, rawInputBudget);
+  }
+
+  return {
+    contextWindow,
+    outputReserved,
+    safetyMargin,
+    effectiveInputBudget: Math.max(1, effectiveInputBudget),
+    utilizationFraction: 0,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // PassthroughContextManager
 // ---------------------------------------------------------------------------
@@ -284,6 +380,27 @@ export type CompactionSummaryInput = {
   messages: readonly AgentMessage[];
   /** Estimated token count of the messages being summarised. */
   estimatedTokens: number;
+  /**
+   * The token allowance the summary must fit, as the caller sized it against the
+   * compaction target.
+   *
+   * Optional for backward compatibility, and supplied by every manager in this
+   * repository. A summariser that sets its own output ceiling is deciding how much
+   * of someone else's budget to spend: its `maxTokens` knows nothing about the
+   * window, the reserved reply, or the threshold that triggered the compaction. The
+   * caller clamps the result regardless, so honouring this only avoids paying for
+   * tokens that are about to be cut off mid-sentence.
+   */
+  maxSummaryTokens?: number;
+  /**
+   * A structured reading of the conversation's state — goal, constraints, decisions,
+   * pending work — as the context layer derived it deterministically.
+   *
+   * Supplied so a summarisation model corroborates and extends a known-good outline
+   * instead of rediscovering it from scratch, which is where a summary loses the one
+   * constraint that mattered.
+   */
+  stateOutline?: string;
 };
 
 export type CompactionSummaryResult = {
@@ -383,7 +500,7 @@ const CHARS_PER_TOKEN = 4;
  * Returns the original array when nothing needed shortening, so callers can keep
  * relying on reference identity to mean "untouched".
  */
-function truncateOversizedToolResults(
+export function truncateOversizedToolResults(
   messages: readonly AgentMessage[],
   maxToolResultTokens: number,
 ): { messages: readonly AgentMessage[]; truncated: number } {
@@ -403,19 +520,30 @@ function truncateOversizedToolResults(
       content: message.content.map((block) => {
         if (block.type !== 'tool_result' || block.content.length <= maxChars) return block;
         truncated += 1;
-        const keep = Math.floor((maxChars - TRUNCATION_NOTICE_CHARS) / 2);
-        const dropped = block.content.length - keep * 2;
-        return {
-          ...block,
-          content:
-            `${block.content.slice(0, keep)}\n\n[... ${dropped.toLocaleString()} characters of this tool result were removed to fit the context ...]\n\n` +
-            block.content.slice(block.content.length - keep),
-        };
+        return { ...block, content: trimToolResultText(block.content, maxChars) };
       }),
     };
   });
 
   return truncated === 0 ? { messages, truncated: 0 } : { messages: next, truncated };
+}
+
+/**
+ * Keeps the head and the tail of an oversized tool result and says what went.
+ *
+ * Exported so the orchestration layer's per-class allowances produce byte-identical
+ * notices to this one: two spellings of "we removed the middle" is two things a
+ * reader has to learn, and two things a test has to assert.
+ */
+export function trimToolResultText(content: string, maxChars: number): string {
+  const ceiling = Math.max(200, Math.floor(maxChars));
+  if (content.length <= ceiling) return content;
+  const keep = Math.floor((ceiling - TRUNCATION_NOTICE_CHARS) / 2);
+  const dropped = content.length - keep * 2;
+  return (
+    `${content.slice(0, keep)}\n\n[... ${dropped.toLocaleString()} characters of this tool result were removed to fit the context ...]\n\n` +
+    content.slice(content.length - keep)
+  );
 }
 
 /** Room set aside for the notice that replaces the removed middle of a tool result. */
@@ -686,55 +814,19 @@ export class DynamicCompactingContextManager implements ContextManager {
   // Private helpers
   // --------------------------------------------------------------------------
 
-  private resolveBudget(
-    request: ContextRequest,
-    policy: ContextPolicy,
-  ): {
-    contextWindow: number;
-    outputReserved: number;
-    safetyMargin: number;
-    effectiveInputBudget: number;
-    utilizationFraction: number;
-  } {
-    const capabilities = request.modelCapabilities;
-
-    // Output reservation: policy override → configured limit → model capability → fallback
-    const modelMaxOutput = capabilities?.maxOutputTokens ?? 8_192;
-    const outputReserved = Math.min(
-      policy.reserveOutputTokens ?? this.configuredMaxOutputTokens ?? modelMaxOutput,
-      modelMaxOutput,
-    );
-
-    // Context window: model capability → large fallback
-    const contextWindow = capabilities?.contextWindow ?? 200_000;
-
-    // Safety check: outputReserved + safetyMargin must not exceed contextWindow
-    const safetyMargin = policy.safetyMarginTokens;
-    const rawInputBudget = contextWindow - outputReserved - safetyMargin;
-
-    // Configured maxInputTokens narrows but never widens the model budget
-    let effectiveInputBudget: number;
-    if (this.configuredMaxInputTokens !== undefined) {
-      if (this.configuredMaxInputTokens + outputReserved > contextWindow) {
-        // Configured limit exceeds model capacity — clamp to safe value
-        effectiveInputBudget = Math.max(1, rawInputBudget);
-      } else {
-        effectiveInputBudget = Math.min(this.configuredMaxInputTokens, rawInputBudget);
-      }
-    } else if (request.maxInputTokens !== undefined) {
-      // Per-request override (e.g. from reactive compaction)
-      effectiveInputBudget = Math.min(request.maxInputTokens, rawInputBudget);
-    } else {
-      effectiveInputBudget = Math.max(1, rawInputBudget);
-    }
-
-    return {
-      contextWindow,
-      outputReserved,
-      safetyMargin,
-      effectiveInputBudget: Math.max(1, effectiveInputBudget),
-      utilizationFraction: 0, // will be filled by caller
-    };
+  /**
+   * Delegates to `deriveContextBudget`, which is the same arithmetic this method
+   * used to hold inline. Kept as a method so the class's own call sites and its
+   * `ReturnType<>` references are unchanged.
+   */
+  private resolveBudget(request: ContextRequest, policy: ContextPolicy): ContextBudget {
+    return deriveContextBudget({
+      capabilities: request.modelCapabilities,
+      policy,
+      configuredMaxInputTokens: this.configuredMaxInputTokens,
+      configuredMaxOutputTokens: this.configuredMaxOutputTokens,
+      requestMaxInputTokens: request.maxInputTokens,
+    });
   }
 
   private async compact(
@@ -759,7 +851,15 @@ export class DynamicCompactingContextManager implements ContextManager {
     // it is unrelated to the threshold that was actually asked for, so an agent set
     // to shrink at 10% got a summary sized for 25% and finished a compaction still
     // far over its own line.
-    const summaryCeiling = Math.max(1, Math.floor(target * SUMMARY_BUDGET_FRACTION));
+    //
+    // The share itself is `SUMMARY_BUDGET_FRACTION` unless the caller sized it for
+    // this turn, which is what the orchestration layer does — clamped either way, so
+    // an adaptive allocation can never claim the whole target and leave no tail.
+    const summaryFraction = Math.min(
+      0.5,
+      Math.max(0.05, policy.summaryBudgetFraction ?? SUMMARY_BUDGET_FRACTION),
+    );
+    const summaryCeiling = Math.max(1, Math.floor(target * summaryFraction));
 
     // The retention window is narrowed until the tail it keeps plus the summary's
     // own ceiling is known to fit the target. Sizing it here, before either is
@@ -809,6 +909,10 @@ export class DynamicCompactingContextManager implements ContextManager {
     const summarizationInput: CompactionSummaryInput = {
       messages: olderMessages,
       estimatedTokens: this.estimator.estimateMessages(olderMessages),
+      // The allowance the summary is about to be clamped to. Told to the summariser
+      // as well as enforced afterwards, so it stops at a sentence boundary of its
+      // own choosing rather than being cut off mid-word by the clamp below.
+      maxSummaryTokens: summaryCeiling,
     };
 
     if (policy.enableSummarization && this.summarizer) {

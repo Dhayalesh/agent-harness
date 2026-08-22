@@ -2,6 +2,36 @@ import type { AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js
 import type { Artifact } from '../artifacts/artifact-store.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
 
+/**
+ * The automatic context action a turn took.
+ *
+ * Restated here rather than imported from the context layer so the event contract
+ * has no dependency on the implementation that fills it in — a consumer of the wire
+ * protocol should be able to read this file alone.
+ */
+export type ContextActionName =
+  | 'none'
+  | 'tool-result-trimming'
+  | 'selective-reduction'
+  | 'compaction'
+  | 'reactive-compaction'
+  | 'recovery';
+
+/** How many items of each kind the context state analysis found. Counts only. */
+export type ContextStateCounts = {
+  goal: boolean;
+  constraints: number;
+  decisions: number;
+  supersededDecisions: number;
+  pending: number;
+  completed: number;
+  questions: number;
+  errors: number;
+  files: number;
+  artifacts: number;
+  toolState: number;
+};
+
 type EventBase = {
   protocolVersion: 1;
   sequence: number;
@@ -106,6 +136,60 @@ export type AgentEvent = EventBase &
         tokensAfter: number;
       }
     /**
+     * Older material was left out of this request rather than summarised.
+     *
+     * The cheap relief that runs before compaction: redundant tool output, a
+     * superseded plan, an exchange nothing since has referred to. Emitted only when
+     * something was actually dropped or shortened, so an idle turn is silent.
+     */
+    | {
+        type: 'context.selection';
+        turnId: string;
+        /** Messages carried into the request. */
+        kept: number;
+        /** Messages left out. */
+        dropped: number;
+        /** Tool results shortened in place. */
+        trimmedToolResults: number;
+        /** Tool results replaced by a pointer to an identical later result. */
+        deduplicatedToolResults: number;
+        /** Which history tiers gave way. */
+        compressed: readonly string[];
+      }
+    /**
+     * The prepared context was checked against the state derived from the canonical
+     * history, before it was sent.
+     *
+     * Emitted on every turn the layer acted, passing or failing, because "we checked
+     * and it was fine" is the claim that makes the rest of the layer trustworthy.
+     */
+    | {
+        type: 'context.verification';
+        turnId: string;
+        passed: boolean;
+        /** State categories confirmed present. */
+        preserved: readonly string[];
+        /** Machine-readable names of what could not be confirmed. */
+        issues?: readonly string[];
+      }
+    /**
+     * Verification found something critical missing and it was put back.
+     *
+     * The one event in this family that reports a correction rather than a decision.
+     * A caller seeing these regularly is looking at a summariser or a selection
+     * heuristic that needs attention.
+     */
+    | {
+        type: 'context.recovery';
+        turnId: string;
+        /** What was restored, by category. */
+        restored: readonly string[];
+        /** What triggered the recovery. */
+        issues: readonly string[];
+        tokensBefore: number;
+        tokensAfter: number;
+      }
+    /**
      * How full the model's context is, as the context layer measured it for this
      * turn. Emitted every turn rather than only when compaction happens, because a
      * caller showing a usage meter needs the number that did *not* trigger
@@ -146,6 +230,41 @@ export type AgentEvent = EventBase &
         pressure?: 'nominal' | 'warning' | 'aggressive' | 'critical';
         /** How many oversized tool results were shortened in place this turn. */
         toolResultsTruncated?: number;
+        /** Which turn of the run this measurement belongs to, for a timeline. */
+        turn?: number;
+        /**
+         * The most expensive thing the context layer had to do this turn.
+         *
+         * Ordered, cheapest first, so `compaction` implies trimming and selection were
+         * tried first and were not enough. Present only when an orchestrating context
+         * manager prepared the turn; a bare manager reports no action, which is
+         * distinguishable from reporting `'none'`.
+         */
+        action?: ContextActionName;
+        /** How the surviving context was produced. */
+        strategy?: 'passthrough' | 'deterministic' | 'llm-summarization';
+        /** Whether a summarisation model was configured but not used. */
+        fallbackUsed?: boolean;
+        /** The post-decision check on the prepared context. */
+        verification?: 'passed' | 'recovered' | 'failed';
+        /** State categories the verifier confirmed are still represented. */
+        preserved?: readonly string[];
+        /** History tiers that lost material this turn. */
+        compressed?: readonly string[];
+        /** Messages in the prepared context. */
+        selectedMessageCount?: number;
+        /** Messages that a summary or a state block now stands in for. */
+        compactedMessageCount?: number;
+        /** Tool results replaced by a pointer to an identical later result. */
+        deduplicatedToolResults?: number;
+        /**
+         * How many items of each kind the state analysis found.
+         *
+         * Counts only. A client showing "3 constraints, 2 open errors" needs the
+         * shape of the context, and shipping the constraints themselves through
+         * telemetry would put conversation content somewhere it does not belong.
+         */
+        state?: ContextStateCounts;
       }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**

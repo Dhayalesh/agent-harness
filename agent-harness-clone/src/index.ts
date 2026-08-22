@@ -15,6 +15,8 @@ export { createAgentSession, resumeAgentSession } from './core/agent-session.js'
 export type { AgentLimits, AgentSession, AgentSessionConfig } from './core/agent-session.js';
 export type {
   AgentEvent,
+  ContextActionName,
+  ContextStateCounts,
   EventPayload,
   RunPreparationStage,
   RunProgressReporter,
@@ -197,10 +199,13 @@ export {
   CompactingContextManager,
   DefaultTokenEstimator,
   DynamicCompactingContextManager,
+  deriveContextBudget,
   estimateMessagesTokens,
   PassthroughContextManager,
   classifyPressure,
   contextPolicyFromPercent,
+  trimToolResultText,
+  truncateOversizedToolResults,
   DEFAULT_COMPACTION_PERCENT,
   DEFAULT_CONTEXT_POLICY,
 } from './context/context-manager.js';
@@ -210,6 +215,7 @@ export type {
   CompactionSkipReason,
   CompactionSummaryResult,
   CompactionSummarizer,
+  ContextBudget,
   ContextManager,
   ContextPolicy,
   ContextPressure,
@@ -219,6 +225,66 @@ export type {
   PreparedContext,
   TokenEstimator,
 } from './context/context-manager.js';
+/**
+ * The context orchestration layer.
+ *
+ * `ContextOrchestrator` is what a session uses by default. It owns a
+ * `DynamicCompactingContextManager` and delegates every token it removes to it; the
+ * stages exported alongside it are the decisions taken *before* compaction, each
+ * usable on its own and each a pure function of the conversation.
+ */
+export { ContextOrchestrator, contextDecisionOf, StateAwareSummarizer } from './context/context-orchestrator.js';
+export type {
+  ContextAction,
+  ContextDecision,
+  ContextOrchestratorOptions,
+} from './context/context-orchestrator.js';
+export {
+  CONTEXT_STATE_MARKER,
+  CONTEXT_STATE_SECTIONS,
+  COMPACTION_MARKER,
+  deriveContextState,
+  parseRenderedState,
+  RECENT_WINDOW_MESSAGES,
+  significantWords,
+  stateCounts,
+  stateItems,
+} from './context/context-state.js';
+export type {
+  ContextItemKind,
+  ContextItemStatus,
+  ContextState,
+  ContextStateItem,
+} from './context/context-state.js';
+export {
+  conversationDigest,
+  renderContextState,
+  renderStateSummary,
+} from './context/context-state-summary.js';
+export {
+  byDiscardability,
+  scoreMessageImportance,
+  toolPairs,
+} from './context/context-importance.js';
+export type {
+  ImportanceReason,
+  MessageImportance,
+  ProtectionLevel,
+} from './context/context-importance.js';
+export { assignTiers, selectContext } from './context/context-selector.js';
+export type { ContextSelection, SelectionTier } from './context/context-selector.js';
+export { manageToolResults } from './context/tool-result-manager.js';
+export type {
+  ToolResultClass,
+  ToolResultDecision,
+  ToolResultManagement,
+} from './context/tool-result-manager.js';
+export { checkToolProtocol, verifyContext } from './context/context-verifier.js';
+export type {
+  ContextVerification,
+  VerificationIssue,
+  VerifiedCategory,
+} from './context/context-verifier.js';
 export { BedrockCompactionSummarizer } from './context/bedrock-compaction-summarizer.js';
 export type { BedrockCompactionSummarizerOptions } from './context/bedrock-compaction-summarizer.js';
 export { composeSystemPrompt } from './context/system-prompt.js';
@@ -457,6 +523,7 @@ export {
   streamHeadless,
 } from './headless/invoke.js';
 export type {
+  ContextTimelineEntry,
   HeadlessContextUsage,
   HeadlessResult,
   HeadlessResponse,

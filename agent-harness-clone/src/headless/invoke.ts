@@ -3,17 +3,21 @@ import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import {
-  contextPolicyFromPercent,
-  DynamicCompactingContextManager,
-} from '../context/context-manager.js';
+import { contextPolicyFromPercent } from '../context/context-manager.js';
+import { ContextOrchestrator } from '../context/context-orchestrator.js';
 import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import type { ContentStore } from '../content/content-store.js';
 import { LocalProjectContextProvider } from '../context/project-context.js';
 import { createAgentSession, type AgentSession } from '../core/agent-session.js';
 import { AgentHarnessError } from '../core/errors.js';
 import { AsyncEventQueue } from '../core/event-queue.js';
-import type { AgentEvent, RunPreparationStage, RunProgressReporter } from '../core/events.js';
+import type {
+  AgentEvent,
+  ContextActionName,
+  ContextStateCounts,
+  RunPreparationStage,
+  RunProgressReporter,
+} from '../core/events.js';
 import { textMessage, type AgentInput, type AgentMessage } from '../core/messages.js';
 import { prepareAttachments } from '../files/attachments.js';
 import type { McpElicitationHandler } from '../mcp/client.js';
@@ -193,6 +197,22 @@ export type HeadlessResult = {
   error?: { code: string; message: string; recoverable: boolean };
 };
 
+/** How many turns of context history a result carries. Bounded; the tail is kept. */
+const CONTEXT_TIMELINE_LIMIT = 40;
+
+/**
+ * One turn's context reading and what the layer did about it.
+ *
+ * Enough to render a timeline and nothing more — no message counts to misread as
+ * content, no state items, no text.
+ */
+export type ContextTimelineEntry = {
+  turn?: number;
+  usedPercent: number;
+  action?: ContextActionName;
+  compacted?: boolean;
+};
+
 /** The last `context.usage` of a run, plus whether anything was compacted during it. */
 export type HeadlessContextUsage = {
   usedTokens: number;
@@ -208,6 +228,26 @@ export type HeadlessContextUsage = {
   peakTokens?: number;
   /** `peakTokens` as a percentage of the budget, one decimal. */
   peakPercent?: number;
+  /** Which threshold the last measurement crossed. */
+  pressure?: 'nominal' | 'warning' | 'aggressive' | 'critical';
+  /**
+   * The most expensive automatic action the last turn took.
+   *
+   * Every field from here down is present only when an orchestrating context manager
+   * prepared the run, which is the default. A caller that supplied its own manager
+   * gets the same shape it always did.
+   */
+  action?: ContextActionName;
+  strategy?: 'passthrough' | 'deterministic' | 'llm-summarization';
+  verification?: 'passed' | 'recovered' | 'failed';
+  /** State categories the verifier confirmed survived. */
+  preserved?: readonly string[];
+  /** History tiers that were compressed. */
+  compressed?: readonly string[];
+  /** Counts per state category, for a client that explains what is in the context. */
+  state?: ContextStateCounts;
+  /** Per-turn readings, bounded to the last 40. */
+  timeline?: readonly ContextTimelineEntry[];
 };
 
 export type HeadlessResponse =
@@ -723,8 +763,13 @@ async function prepare(
       // `compactionThresholdPercent` and the deployment's summarizer are two
       // independent inputs to the same policy, and only this layer sees both. A
       // summarizer is attached when one is configured (e.g. via COMPACTION_MODEL);
-      // without one the same manager compacts using its deterministic fallback.
-      contextManager: new DynamicCompactingContextManager({
+      // without one the same pipeline compacts using its deterministic fallback.
+      //
+      // The orchestrator owns a `DynamicCompactingContextManager` and delegates every
+      // token it removes to it, so this is the same compaction behaviour with the
+      // cheaper automatic stages in front and verification behind. The agent record
+      // still names exactly one context setting.
+      contextManager: new ContextOrchestrator({
         ...(options.compactionSummarizer === undefined
           ? {}
           : { summarizer: options.compactionSummarizer }),
@@ -1059,6 +1104,7 @@ class RunTotals {
   private compactions = 0;
   private peakTokens: number | undefined;
   private peakPercent = 0;
+  private readonly timeline: ContextTimelineEntry[] = [];
 
   observe(event: AgentEvent): void {
     switch (event.type) {
@@ -1105,6 +1151,19 @@ class RunTotals {
             this.peakPercent = event.peakPercent ?? event.usedPercent;
           }
         }
+        // One timeline entry per measured turn, kept as a bounded tail. A buffered
+        // caller and a reopened chat both need to be able to say *when* the context
+        // filled and what was done about it; the last reading alone cannot, because
+        // the interesting turn is by definition not the last one.
+        if (event.action !== undefined || event.turn !== undefined) {
+          this.timeline.push({
+            ...(event.turn === undefined ? {} : { turn: event.turn }),
+            usedPercent: event.usedPercent,
+            ...(event.action === undefined ? {} : { action: event.action }),
+            ...(event.compacted ? { compacted: true } : {}),
+          });
+          if (this.timeline.length > CONTEXT_TIMELINE_LIMIT) this.timeline.shift();
+        }
         this.context = {
           usedTokens: event.usedTokens,
           budgetTokens: event.budgetTokens,
@@ -1118,6 +1177,14 @@ class RunTotals {
           ...(this.peakTokens === undefined
             ? {}
             : { peakTokens: this.peakTokens, peakPercent: this.peakPercent }),
+          ...(event.pressure === undefined ? {} : { pressure: event.pressure }),
+          ...(event.action === undefined ? {} : { action: event.action }),
+          ...(event.strategy === undefined ? {} : { strategy: event.strategy }),
+          ...(event.verification === undefined ? {} : { verification: event.verification }),
+          ...(event.preserved === undefined ? {} : { preserved: event.preserved }),
+          ...(event.compressed === undefined ? {} : { compressed: event.compressed }),
+          ...(event.state === undefined ? {} : { state: event.state }),
+          ...(this.timeline.length === 0 ? {} : { timeline: [...this.timeline] }),
         };
         break;
       case 'context.compaction.completed':
