@@ -189,9 +189,7 @@ export class ContextOrchestrator implements ContextManager {
           ? {}
           : { maxOutputTokens: options.maxOutputTokens }),
         ...(options.policy === undefined ? {} : { policy: options.policy }),
-        ...(options.tokenEstimator === undefined
-          ? {}
-          : { tokenEstimator: options.tokenEstimator }),
+        ...(options.tokenEstimator === undefined ? {} : { tokenEstimator: options.tokenEstimator }),
         // Deliberately not passed through: the orchestrator wraps the summariser so
         // the summary is state-aware and bounded by this turn's allocation. The inner
         // manager receives the wrapper on each request instead.
@@ -274,7 +272,10 @@ export class ContextOrchestrator implements ContextManager {
     // The line everything below aims to come in under. The compaction threshold
     // rather than the budget, so a turn that just relieved itself is not immediately
     // over again.
-    const target = Math.max(1, Math.floor(budget.effectiveInputBudget * policy.compactionThreshold));
+    const target = Math.max(
+      1,
+      Math.floor(budget.effectiveInputBudget * policy.compactionThreshold),
+    );
     const allocation = this.allocate(request.messages, state, importance, pressure);
 
     // ── Stage 3: tool output ──────────────────────────────────────────────────
@@ -459,11 +460,7 @@ export class ContextOrchestrator implements ContextManager {
     // The summary gets what the tail does not need, bounded so it can never take the
     // whole target and leave nothing verbatim.
     const historyWeight = clamp(1 - liveShare, 0.2, 1);
-    const summaryFraction = clamp(
-      Math.min(0.4, (1 - recentFraction) * historyWeight),
-      0.1,
-      0.4,
-    );
+    const summaryFraction = clamp(Math.min(0.4, (1 - recentFraction) * historyWeight), 0.1, 0.4);
 
     return {
       recentFraction,
@@ -695,7 +692,10 @@ export class ContextOrchestrator implements ContextManager {
     allocation: ContextDecision['allocation'];
   }): Promise<{ messages: readonly AgentMessage[]; estimatedTokens: number } | undefined> {
     const { budget, policy } = options;
-    const target = Math.max(1, Math.floor(budget.effectiveInputBudget * policy.compactionThreshold));
+    const target = Math.max(
+      1,
+      Math.floor(budget.effectiveInputBudget * policy.compactionThreshold),
+    );
     const stateCeiling = Math.max(400, Math.floor(target * 0.35));
     const note = this.stateMessage(options.state, stateCeiling);
 
@@ -708,7 +708,9 @@ export class ContextOrchestrator implements ContextManager {
       return { messages: candidate, estimatedTokens: estimated };
     }
 
-    const manager = this.compactionManager(new StateAwareSummarizer(options.state, this.summarizer));
+    const manager = this.compactionManager(
+      new StateAwareSummarizer(options.state, this.summarizer),
+    );
     const enforced = await manager.prepare({
       messages: candidate,
       forceCompaction: true,

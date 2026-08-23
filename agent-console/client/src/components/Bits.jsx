@@ -22,6 +22,13 @@ import {
 import { useCallback, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Icon } from "./Icon.jsx";
+import {
+  actionDetail,
+  actionLabel,
+  compactionExplanation,
+  contextExplanation,
+  contextTimeline,
+} from "../lib/context-inspector.js";
 
 /**
  * Status words arrive from several collections — run status, resource state, a
@@ -655,9 +662,19 @@ const TEXT_TONE = {
 };
 
 /**
- * The context meter and the action that reduces it.
+ * The context inspector: what the harness decided, and why.
  *
- * Hover states the percentage; pressing opens the breakdown and offers compaction.
+ * Hover states the percentage; pressing opens the panel. The panel is a report, not a
+ * control surface — the only thing a user can do here is ask for a compaction sooner
+ * than the threshold would have triggered one. Everything else is the harness
+ * explaining itself: how full the context is, the most recent automatic action, what
+ * is being kept, and what was compressed to make room.
+ *
+ * There is deliberately no token tuning in here. The runtime derives its retention
+ * sizes, summary shares and tool-result allowances from the model and the
+ * conversation, and a slider that appeared to override one of them would be a lie
+ * about where the decision is made.
+ *
  * `onCompact` is optional — without one this is a read-only indicator, which is what
  * a finished run or a chat with no agent should show.
  *
@@ -786,6 +803,8 @@ export function ContextMeter({
             </dl>
           </div>
 
+          <ContextInspectorSections context={context} />
+
           <div className="border-t border-divider px-3 py-2.5">
             <Button
               size="sm"
@@ -807,12 +826,163 @@ export function ContextMeter({
             <p className="mt-2 text-[11px] leading-4 text-default-500">
               {queued
                 ? "Earlier turns will be summarised before the next reply."
-                : "Summarises earlier turns so the model has room to keep going. Your messages stay in this chat."}
+                : "Context is managed automatically. This only asks for it sooner. Your messages stay in this chat."}
             </p>
           </div>
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/**
+ * The explanatory half of the panel.
+ *
+ * Every section renders only when the runtime reported the data behind it, so a
+ * console talking to a runtime without the orchestration layer shows the same meter
+ * it always did rather than a column of empty headings.
+ */
+function ContextInspectorSections({ context }) {
+  const action = context?.action;
+  const explanation = contextExplanation(context);
+  const compaction = compactionExplanation({
+    context,
+    lastCompaction: context?.lastCompaction,
+  });
+  const timeline = contextTimeline(context?.timeline ?? []);
+  if (!action && explanation.length === 0 && !compaction && timeline.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {action && (
+        <section className="border-t border-divider px-3 py-2.5">
+          <ContextSectionTitle>Latest automatic action</ContextSectionTitle>
+          <p className="text-tiny font-medium text-foreground">
+            {actionLabel(action)}
+          </p>
+          <p className="mt-1 text-[11px] leading-4 text-default-500">
+            {actionDetail(action)}
+          </p>
+          {context.verification && (
+            <p
+              className={`mt-1.5 flex items-center gap-1 text-[11px] ${
+                context.verification === "failed"
+                  ? "text-warning-600 dark:text-warning-400"
+                  : "text-default-500"
+              }`}
+            >
+              <Icon
+                name={context.verification === "failed" ? "alert" : "check"}
+                className="h-3 w-3"
+              />
+              {VERIFICATION_TEXT[context.verification] ?? context.verification}
+            </p>
+          )}
+        </section>
+      )}
+
+      {explanation.length > 0 && (
+        <section className="border-t border-divider px-3 py-2.5">
+          <ContextSectionTitle>What the model is being told</ContextSectionTitle>
+          <dl className="space-y-1 text-tiny">
+            {explanation.map((entry) => (
+              <ContextRow key={entry.key} label={entry.label} value={entry.value} />
+            ))}
+          </dl>
+        </section>
+      )}
+
+      {compaction && (
+        <section className="border-t border-divider px-3 py-2.5">
+          <ContextSectionTitle>Last compression</ContextSectionTitle>
+          {compaction.tokensBefore !== null && compaction.tokensAfter !== null && (
+            <p className="text-tiny tabular-nums text-foreground">
+              {compaction.tokensBefore.toLocaleString()} →{" "}
+              {compaction.tokensAfter.toLocaleString()} tokens
+            </p>
+          )}
+          <p className="mt-1 text-[11px] leading-4 text-default-500">
+            {compaction.reason}
+          </p>
+          {compaction.preserved.length > 0 && (
+            <ContextChips label="Kept" items={compaction.preserved} tone="kept" />
+          )}
+          {compaction.compressed.length > 0 && (
+            <ContextChips
+              label="Compressed"
+              items={compaction.compressed}
+              tone="compressed"
+            />
+          )}
+        </section>
+      )}
+
+      {timeline.length > 0 && (
+        <section className="border-t border-divider px-3 py-2.5">
+          <ContextSectionTitle>This conversation</ContextSectionTitle>
+          <ol className="space-y-1">
+            {timeline.map((entry, index) => (
+              <li
+                key={`${entry.turn ?? "t"}-${index}`}
+                className="flex items-baseline gap-2 text-[11px]"
+              >
+                <span className="w-12 shrink-0 tabular-nums text-default-400">
+                  {entry.turn === null ? "—" : `Turn ${entry.turn}`}
+                </span>
+                <span
+                  className={`w-9 shrink-0 tabular-nums font-medium ${
+                    TEXT_TONE[contextBand(entry.percent).color]
+                  }`}
+                >
+                  {entry.percent}%
+                </span>
+                <span className="text-default-500">{entry.label}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+    </>
+  );
+}
+
+const VERIFICATION_TEXT = {
+  passed: "Checked: nothing important was lost.",
+  recovered: "A check found missing detail and restored it.",
+  failed: "A check could not confirm every detail survived.",
+};
+
+function ContextSectionTitle({ children }) {
+  return (
+    <h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-default-400">
+      {children}
+    </h4>
+  );
+}
+
+function ContextChips({ label, items, tone }) {
+  return (
+    <div className="mt-1.5">
+      <span className="text-[10px] uppercase tracking-wide text-default-400">
+        {label}
+      </span>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {items.map((item) => (
+          <span
+            key={item}
+            className={`rounded-small px-1.5 py-0.5 text-[10px] ${
+              tone === "kept"
+                ? "bg-success-50 text-success-700 dark:bg-success-100/20 dark:text-success-400"
+                : "bg-default-100 text-default-600 dark:text-default-400"
+            }`}
+          >
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

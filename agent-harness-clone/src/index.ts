@@ -233,7 +233,11 @@ export type {
  * stages exported alongside it are the decisions taken *before* compaction, each
  * usable on its own and each a pure function of the conversation.
  */
-export { ContextOrchestrator, contextDecisionOf, StateAwareSummarizer } from './context/context-orchestrator.js';
+export {
+  ContextOrchestrator,
+  contextDecisionOf,
+  StateAwareSummarizer,
+} from './context/context-orchestrator.js';
 export type {
   ContextAction,
   ContextDecision,

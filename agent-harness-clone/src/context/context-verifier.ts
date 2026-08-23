@@ -17,11 +17,7 @@
  * still has in hand to restore.
  */
 import type { AgentMessage } from '../core/messages.js';
-import {
-  significantWords,
-  type ContextState,
-  type ContextStateItem,
-} from './context-state.js';
+import { significantWords, type ContextState, type ContextStateItem } from './context-state.js';
 
 export type VerificationIssue =
   | 'missing-goal'

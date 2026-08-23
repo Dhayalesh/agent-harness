@@ -553,6 +553,63 @@ export const runtimeResultSchema = z
          */
         peakTokens: z.number().nonnegative().optional(),
         peakPercent: z.number().nonnegative().optional(),
+        /**
+         * What the runtime's context orchestration layer decided.
+         *
+         * All optional, and the object stays `passthrough()`: a runtime older than
+         * this layer reports none of it, and a runtime newer than this console may
+         * report more. Neither should make a run fail to be stored — the meter
+         * degrading to "used / budget" is a far better outcome than a 400.
+         */
+        pressure: z
+          .enum(["nominal", "warning", "aggressive", "critical"])
+          .optional(),
+        action: z
+          .enum([
+            "none",
+            "tool-result-trimming",
+            "selective-reduction",
+            "compaction",
+            "reactive-compaction",
+            "recovery",
+          ])
+          .optional(),
+        strategy: z
+          .enum(["passthrough", "deterministic", "llm-summarization"])
+          .optional(),
+        verification: z.enum(["passed", "recovered", "failed"]).optional(),
+        preserved: z.array(z.string()).optional(),
+        compressed: z.array(z.string()).optional(),
+        recoveries: z.number().int().nonnegative().optional(),
+        /** Counts per state category. Counts only: no conversation content. */
+        state: z
+          .object({
+            goal: z.boolean().optional(),
+            constraints: z.number().int().nonnegative().optional(),
+            decisions: z.number().int().nonnegative().optional(),
+            supersededDecisions: z.number().int().nonnegative().optional(),
+            pending: z.number().int().nonnegative().optional(),
+            completed: z.number().int().nonnegative().optional(),
+            questions: z.number().int().nonnegative().optional(),
+            errors: z.number().int().nonnegative().optional(),
+            files: z.number().int().nonnegative().optional(),
+            artifacts: z.number().int().nonnegative().optional(),
+            toolState: z.number().int().nonnegative().optional(),
+          })
+          .passthrough()
+          .optional(),
+        timeline: z
+          .array(
+            z
+              .object({
+                turn: z.number().int().nonnegative().optional(),
+                usedPercent: z.number().nonnegative(),
+                action: z.string().optional(),
+                compacted: z.boolean().optional(),
+              })
+              .passthrough(),
+          )
+          .optional(),
       })
       .passthrough()
       .optional(),

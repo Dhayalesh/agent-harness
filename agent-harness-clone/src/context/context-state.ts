@@ -227,21 +227,25 @@ export function deriveContextState(messages: readonly AgentMessage[]): ContextSt
   const failures: { item: ContextStateItem; tool: string; index: number }[] = [];
 
   let currentGoal: ContextStateItem | undefined;
+  let fallbackGoal: ContextStateItem | undefined;
   let lastUserIndex = -1;
 
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (!message) continue;
     const text = textOf(message);
-    const isRecovery =
-      text.startsWith(CONTEXT_STATE_MARKER) || text.startsWith(COMPACTION_MARKER);
+    const isRecovery = text.startsWith(CONTEXT_STATE_MARKER) || text.startsWith(COMPACTION_MARKER);
 
     // A block written by an earlier compaction. Read it back rather than treating it
     // as ordinary prose, so state that has already been distilled once is not
     // distilled again into something vaguer.
     if (isRecovery) {
       for (const item of parseRenderedState(text)) {
-        recovered.push({ ...item, messageIndex: index, ...(message.id ? { messageId: message.id } : {}) });
+        recovered.push({
+          ...item,
+          messageIndex: index,
+          ...(message.id ? { messageId: message.id } : {}),
+        });
         note(index, item.kind);
       }
       continue;
@@ -251,8 +255,13 @@ export function deriveContextState(messages: readonly AgentMessage[]): ContextSt
       if (block.type === 'tool_call') {
         callNames.set(block.id, block.name);
         const preview = previewOf(block.input);
-        recentActions.push(item('action', 'active', `${block.name}(${preview})`, index, message.id));
-        toolState.set(block.name, item('tool-state', 'active', `${block.name}: requested`, index, message.id));
+        recentActions.push(
+          item('action', 'active', `${block.name}(${preview})`, index, message.id),
+        );
+        toolState.set(
+          block.name,
+          item('tool-state', 'active', `${block.name}: requested`, index, message.id),
+        );
         if (/artifact|document|spreadsheet|markdown|html|csv|code/i.test(block.name)) {
           artifacts.push(item('artifact', 'active', `${block.name} ${preview}`, index, message.id));
           note(index, 'artifact');
@@ -267,13 +276,7 @@ export function deriveContextState(messages: readonly AgentMessage[]): ContextSt
       if (block.type === 'tool_result') {
         const tool = callNames.get(block.toolCallId) ?? 'tool';
         if (block.isError) {
-          const failure = item(
-            'error',
-            'active',
-            `${tool}: ${block.content}`,
-            index,
-            message.id,
-          );
+          const failure = item('error', 'active', `${tool}: ${block.content}`, index, message.id);
           failures.push({ item: failure, tool, index });
           toolState.set(tool, item('tool-state', 'active', `${tool}: failed`, index, message.id));
           note(index, 'error');
@@ -340,8 +343,19 @@ export function deriveContextState(messages: readonly AgentMessage[]): ContextSt
 
     if (message.role === 'user' && text.trim() !== '') {
       const goal = firstSentence(text);
-      if (goal) {
+      // A continuation is not a new goal. "Carry on", "ok", "yes please" and "go
+      // ahead" are the most common user turns in a long agent session, and reading
+      // the newest one as the current request replaces "migrate the billing service
+      // to Postgres" with "carry on" — after which every stage below is protecting
+      // the wrong thing. Two significant words is the bar: enough to exclude an
+      // acknowledgement, low enough to admit "fix the retry wrapper".
+      if (goal && significantWords(goal).length >= 3) {
         currentGoal = item('goal', 'active', goal, index, message.id);
+        note(index, 'goal');
+      } else if (goal) {
+        // Still recorded, as the fallback for a conversation that never contains a
+        // longer request than this.
+        fallbackGoal = item('goal', 'active', goal, index, message.id);
         note(index, 'goal');
       }
     }
@@ -410,9 +424,12 @@ export function deriveContextState(messages: readonly AgentMessage[]): ContextSt
     carriers,
   };
 
-  // A goal that only survives inside an earlier summary is still the goal.
+  // A goal that only survives inside an earlier summary is still the goal, and it
+  // outranks a bare "carry on" from the newest turn.
   const goal =
-    currentGoal ?? recovered.find((entry) => entry.kind === 'goal' && entry.status === 'active');
+    currentGoal ??
+    recovered.find((entry) => entry.kind === 'goal' && entry.status === 'active') ??
+    fallbackGoal;
 
   // The task in progress is the outstanding work when there is any, and the goal
   // itself otherwise. Naming it separately is what lets the selector protect "what
