@@ -7,8 +7,13 @@ import {
   InMemorySessionStore,
   resumeAgentSession,
   ScriptedModelProvider,
+  type StoredSession,
 } from '../../src/index.js';
 import { textMessage } from '../../src/core/messages.js';
+import {
+  createPreparedContextCheckpoint,
+  validateStoredSession,
+} from '../../src/sessions/session-store.js';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -127,4 +132,34 @@ test('session stores expire inactive transcripts and reject oversized data', asy
     }),
     (error: unknown) => error instanceof AgentHarnessError && error.code === 'SESSION_TOO_LARGE',
   );
+});
+
+test('prepared checkpoints are separate from canonical history and reject rewritten prefixes', () => {
+  const timestamp = new Date().toISOString();
+  const canonical = [
+    textMessage('u1', 'user', 'Original goal', timestamp),
+    textMessage('a1', 'assistant', 'Original answer', timestamp),
+  ];
+  const prepared = [textMessage('summary', 'user', 'Goal: Original goal', timestamp)];
+  const checkpoint = createPreparedContextCheckpoint(prepared, canonical);
+  assert.ok(checkpoint);
+  assert.equal(checkpoint.sourceMessageCount, canonical.length);
+  assert.equal(checkpoint.sourceLastMessageId, 'a1');
+
+  const stored: StoredSession = {
+    version: 1,
+    id: 'checkpointed',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: canonical,
+    preparedContext: checkpoint,
+    metadata: {},
+  };
+  assert.deepEqual(validateStoredSession(stored).messages, canonical);
+  assert.deepEqual(validateStoredSession(stored).preparedContext?.messages, prepared);
+
+  const rewritten = structuredClone(stored);
+  rewritten.messages[1] = textMessage('different', 'assistant', 'Rewritten', timestamp);
+  assert.equal(validateStoredSession(rewritten).preparedContext, undefined);
+  assert.deepEqual(validateStoredSession(rewritten).messages, rewritten.messages);
 });

@@ -165,8 +165,10 @@ export function AgentDetailPage() {
                 },
                 { label: "Max turns", value: agent.limits?.maxTurns ?? "—" },
                 {
-                  label: "Shrinks context at",
-                  value: `${agent.limits?.compactionThresholdPercent ?? 90}%`,
+                  label: "Context window",
+                  value:
+                    provider?.capabilities?.contextWindow?.toLocaleString?.() ??
+                    "provider capability unavailable",
                 },
                 {
                   label: "Output ceiling",

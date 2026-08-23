@@ -9,6 +9,7 @@ export async function buildPayload({
   includeEvents,
   sessionHistory = [],
   compactContext = false,
+  operation = "turn",
 }) {
   const resolved = await resolveAgentForInvocation(agentId);
   const agent = resolved.agent.value;
@@ -27,6 +28,9 @@ export async function buildPayload({
 
   const payload = {
     prompt,
+    // Omitted for normal turns so existing clients and payload snapshots retain the
+    // original strict contract. The explicit value marks a control-plane request.
+    ...(operation === "compact" ? { operation: "compact" } : {}),
     // Same rule as `stream` below: the runtime payload schema is strict, so a turn
     // with no files keeps sending the payload a runtime built before attachments
     // existed still accepts.

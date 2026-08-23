@@ -314,7 +314,11 @@ export async function invokeHeadless(
     phase = 'execution';
     const collected: AgentEvent[] = [];
     const totals = new RunTotals();
-    for await (const event of prepared.session.run(runInput(parsed))) {
+    const operationEvents =
+      parsed.operation === 'compact'
+        ? prepared.session.compactContext()
+        : prepared.session.run(runInput(parsed));
+    for await (const event of operationEvents) {
       totals.observe(event);
       if (parsed.includeEvents) collected.push(event);
     }
@@ -444,7 +448,11 @@ export async function* streamHeadless(
     prepared = settled.value;
     phase = 'execution';
     const totals = new RunTotals();
-    for await (const event of prepared.session.run(runInput(parsed))) {
+    const operationEvents =
+      parsed.operation === 'compact'
+        ? prepared.session.compactContext()
+        : prepared.session.run(runInput(parsed));
+    for await (const event of operationEvents) {
       terminalEvent = event;
       if (event.type === 'error') runError = true;
       totals.observe(event);
@@ -745,6 +753,7 @@ async function prepare(
       permissionHandler: permissionHandler(payload, options),
       ...(options.sessionStore === undefined ? {} : { sessionStore: options.sessionStore }),
       ...(initialMessages.length === 0 ? {} : { initialMessages }),
+      ...(stored?.preparedContext === undefined ? {} : { preparedContext: stored.preparedContext }),
       ...(stored === undefined ? {} : { sessionCreatedAt: stored.createdAt }),
       sessionState: sessionInfo,
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),

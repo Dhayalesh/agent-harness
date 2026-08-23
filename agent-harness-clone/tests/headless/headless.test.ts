@@ -20,6 +20,7 @@ import {
   startHeadlessServer,
   StructuredLogSink,
   streamHeadless,
+  textMessage,
   type InvocationPayloadInput,
 } from '../../src/index.js';
 
@@ -1389,4 +1390,153 @@ test('a malformed payload is a 400 from the server, not a 500', async (t) => {
   assert.equal(response.status, 400);
   const failure = (await response.json()) as { error: string };
   assert.match(failure.error, /Invalid invocation payload/);
+});
+
+test('immediate compact operation checkpoints context without a provider call or canonical mutation', async (t) => {
+  const endpoint = await scriptedEndpoint([textChunk('Continued from checkpoint.')]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-immediate-compact-'));
+  const sessionStore = new InMemorySessionStore();
+  const sessionId = 'immediate-compact-session';
+  const timestamp = new Date().toISOString();
+  const canonical = [
+    textMessage('old-u1', 'user', `Original alpha ${'a'.repeat(2_000)}`, timestamp),
+    textMessage('old-a1', 'assistant', `Original beta ${'b'.repeat(2_000)}`, timestamp),
+    textMessage('old-u2', 'user', `Original gamma ${'c'.repeat(2_000)}`, timestamp),
+    textMessage('old-a2', 'assistant', `Original delta ${'d'.repeat(2_000)}`, timestamp),
+  ];
+  await sessionStore.save({
+    version: 1,
+    id: sessionId,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: canonical,
+    metadata: { agentName: 'payload-demo' },
+  });
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const common = {
+    workspaceRoot,
+    sessionStore,
+    builtinToolOptions: { powershell: false },
+  } as const;
+  const compacted = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      operation: 'compact',
+      prompt: '',
+      sessionId,
+      includeEvents: true,
+    }),
+    common,
+  );
+
+  assert.equal(endpoint.requests.length, 0, 'control operation must not call the model');
+  assert.equal(compacted.status, 'success');
+  assert.equal(compacted.sessionId, sessionId);
+  assert.equal(compacted.output, '');
+  assert.equal(compacted.turns, 0);
+  assert.deepEqual(compacted.usage, { inputTokens: 0, outputTokens: 0 });
+  assert.deepEqual(compacted.messages, canonical);
+  assert.equal(compacted.session.historyMessageCount, canonical.length);
+  assert.equal(compacted.context?.compacted, true);
+  assert.equal(compacted.context?.compactions, 1);
+  assert.ok(
+    compacted.context?.verification === 'passed' || compacted.context?.verification === 'recovered',
+  );
+  assert.equal(
+    compacted.events?.some((event) => event.type === 'turn.started'),
+    false,
+  );
+  assert.ok(compacted.events?.some((event) => event.type === 'context.compaction.completed'));
+  assert.ok(compacted.events?.some((event) => event.type === 'context.usage'));
+
+  const checkpointed = await sessionStore.load(sessionId);
+  assert.deepEqual(checkpointed?.messages, canonical);
+  assert.equal(checkpointed?.preparedContext?.sourceMessageCount, canonical.length);
+  assert.ok(checkpointed?.preparedContext?.messages.length);
+
+  const resumed = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      prompt: 'New canonical tail prompt.',
+      sessionId,
+    }),
+    common,
+  );
+  assert.equal(resumed.sessionId, sessionId);
+  assert.equal(endpoint.requests.length, 1);
+  assert.match(JSON.stringify(endpoint.requests[0]), /New canonical tail prompt/);
+  const checkpointText = checkpointed?.preparedContext?.messages
+    .flatMap((message) => message.content)
+    .find((block) => block.type === 'text')?.text;
+  assert.ok(checkpointText);
+  const resumedRequest = endpoint.requests[0] as {
+    messages?: Array<{ content?: unknown }>;
+  };
+  const resumedText = (resumedRequest.messages ?? [])
+    .map((message) =>
+      typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
+    )
+    .join('\n');
+  assert.ok(resumedText.includes(checkpointText!));
+
+  const afterTurn = await sessionStore.load(sessionId);
+  assert.deepEqual(afterTurn?.messages.slice(0, canonical.length), canonical);
+  assert.equal(afterTurn?.preparedContext?.sourceMessageCount, canonical.length);
+  assert.equal(afterTurn?.preparedContext?.sourceLastMessageId, canonical.at(-1)?.id);
+});
+
+test('immediate compact operation reports an authoritative no-op without a turn', async (t) => {
+  const endpoint = await scriptedEndpoint([]);
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-compact-noop-'));
+  const sessionStore = new InMemorySessionStore();
+  t.after(async () => {
+    await endpoint.close();
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const result = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      operation: 'compact',
+      prompt: '',
+      sessionId: 'empty-compact-session',
+      includeEvents: true,
+    }),
+    { workspaceRoot, sessionStore, builtinToolOptions: { powershell: false } },
+  );
+
+  assert.equal(endpoint.requests.length, 0);
+  assert.equal(result.status, 'success');
+  assert.equal(result.output, '');
+  assert.equal(result.turns, 0);
+  assert.deepEqual(result.usage, { inputTokens: 0, outputTokens: 0 });
+  assert.equal(result.context?.compacted, false);
+  assert.equal(result.context?.compactions, 0);
+  assert.equal(
+    result.events?.some((event) => event.type === 'turn.started'),
+    false,
+  );
+  assert.ok(
+    result.events?.some(
+      (event) => event.type === 'warning' && event.code === 'CONTEXT_COMPACTION_SKIPPED',
+    ),
+  );
+  assert.equal((await sessionStore.load(result.sessionId))?.preparedContext, undefined);
+});
+
+test('compact is the only operation that permits an empty invocation', () => {
+  assert.equal(
+    parseInvocationPayload(payload('http://localhost', { prompt: 'hello' })).operation,
+    'turn',
+  );
+  assert.equal(
+    parseInvocationPayload(payload('http://localhost', { operation: 'compact', prompt: '' }))
+      .operation,
+    'compact',
+  );
+  assert.throws(
+    () => parseInvocationPayload(payload('http://localhost', { prompt: '' })),
+    /Provide a prompt/,
+  );
 });

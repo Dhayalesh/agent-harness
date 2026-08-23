@@ -256,9 +256,11 @@ export type InvocationAttachment = z.output<typeof invocationAttachmentSchema>;
 
 export const invocationPayloadSchema = z
   .object({
+    /** Normal conversational turn by default; `compact` is a control-plane operation. */
+    operation: z.enum(['turn', 'compact']).default('turn'),
     /**
-     * Empty only when `attachments` is not: a turn that sends files with no words
-     * is a real request, and the runtime supplies the instruction for it.
+     * Empty for an explicit `compact` operation, or when attachments are present on
+     * a normal turn. Existing payloads omit `operation` and retain turn validation.
      */
     prompt: z.string().max(2_000_000),
     /** Files sent with this turn. Not persisted as attachments; see `prepareAttachments`. */
@@ -340,11 +342,25 @@ export const invocationPayloadSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (!value.prompt.trim() && value.attachments.length === 0) {
+    if (value.operation === 'turn' && !value.prompt.trim() && value.attachments.length === 0) {
       context.addIssue({
         code: 'custom',
         path: ['prompt'],
         message: 'Provide a prompt, one or more attachments, or both',
+      });
+    }
+    if (value.operation === 'compact' && value.attachments.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['attachments'],
+        message: 'Context compaction does not accept attachments',
+      });
+    }
+    if (value.operation === 'compact' && value.session?.mode === 'stateless') {
+      context.addIssue({
+        code: 'custom',
+        path: ['session', 'mode'],
+        message: 'Context compaction requires a persistent session',
       });
     }
   });

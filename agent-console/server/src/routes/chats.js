@@ -334,6 +334,18 @@ chatsRouter.post(
 );
 
 chatsRouter.post(
+  "/:id/context/compact",
+  asyncHandler(async (request, response) => {
+    const existing = await loadChat(request.params.id);
+    const agent = await loadAgent(existing.agentId, { requireEnabled: true });
+    const result = await performChatContextCompaction(existing, agent);
+    // The full decision remains on the Run and chat records. The normal customer UI
+    // needs only the runtime-authoritative occupancy after the operation.
+    response.json({ context: result.context });
+  }),
+);
+
+chatsRouter.post(
   "/:id/messages",
   asyncHandler(async (request, response) => {
     const input = parseOrThrow(chatMessageSchema, request.body);
@@ -529,6 +541,125 @@ function writeEvent(response, name, data) {
     response.once("drain", done);
     response.once("close", done);
   });
+}
+
+export async function performChatContextCompaction(
+  existing,
+  agent,
+  {
+    chatModel = Chat,
+    invoke = invokeStoredAgent,
+    resolveContextWindow = agentContextWindow,
+    requestId = randomUUID(),
+    timestamp = nowIso(),
+  } = {},
+) {
+  const previousStatus = idleSessionStatus(existing);
+  const leased = await chatModel.findOneAndUpdate(
+    {
+      _id: existing._id,
+      $or: [
+        { "session.activeRequestId": { $exists: false } },
+        { "session.activeRequestId": null },
+        { "session.activeExpiresAt": { $lte: timestamp } },
+      ],
+    },
+    {
+      $set: {
+        updatedAt: timestamp,
+        "session.status": "running",
+        "session.activeRequestId": requestId,
+        "session.activeExpiresAt": new Date(
+          Date.parse(timestamp) + config.agentcore.timeoutMs + 60_000,
+        ).toISOString(),
+      },
+    },
+    { new: true },
+  );
+  if (!leased) {
+    throw conflict(
+      "This chat already has an operation in progress. Wait for it to finish and retry.",
+    );
+  }
+
+  const historyStartIndex = leased.session?.historyStartIndex ?? 0;
+  const contextWindow = await resolveContextWindow(agent);
+  const sessionHistory = buildSessionHistory(
+    leased.messages,
+    historyStartIndex,
+    historyCharacterLimit(contextWindow),
+  );
+
+  let invocation;
+  try {
+    invocation = await invoke({
+      operation: "compact",
+      agentId: leased.agentId,
+      prompt: "",
+      runtimeSessionId: leased.runtimeSessionId,
+      includeEvents: false,
+      chatId: leased._id.toString(),
+      sessionHistory,
+    });
+  } catch (error) {
+    await chatModel.findOneAndUpdate(
+      { _id: leased._id, "session.activeRequestId": requestId },
+      {
+        $set: {
+          updatedAt: nowIso(),
+          "session.status": previousStatus,
+          "session.activeRequestId": null,
+          "session.activeExpiresAt": null,
+        },
+      },
+    );
+    throw error;
+  }
+
+  const completedAt = nowIso();
+  const context = invocation.result.context;
+  const session = invocation.result.session;
+  const updated = await chatModel.findOneAndUpdate(
+    { _id: leased._id, "session.activeRequestId": requestId },
+    {
+      $set: {
+        updatedAt: completedAt,
+        "session.status": previousStatus,
+        "session.origin": session?.origin ?? leased.session?.origin ?? "new",
+        "session.storage": session?.storage ?? leased.session?.storage ?? "custom",
+        "session.resumed": session?.resumed === true,
+        "session.historyMessageCount":
+          session?.historyMessageCount ?? leased.messages.length,
+        "session.lastActiveAt": completedAt,
+        "session.activeRequestId": null,
+        "session.activeExpiresAt": null,
+        ...(context
+          ? { "session.context": { ...context, measuredAt: completedAt } }
+          : {}),
+      },
+    },
+    { new: true },
+  );
+  if (!updated) {
+    throw conflict(
+      "The chat session lease expired before context compaction was saved.",
+    );
+  }
+
+  return {
+    chat: updated,
+    invocation,
+    context:
+      context && Number.isFinite(context.usedPercent)
+        ? { usedPercent: context.usedPercent }
+        : null,
+  };
+}
+
+function idleSessionStatus(chat) {
+  const status = chat.session?.status;
+  if (["new", "active", "restored", "error"].includes(status)) return status;
+  return chat.messages?.length ? "active" : "new";
 }
 
 async function appendResult(chat, invocation, requestId) {

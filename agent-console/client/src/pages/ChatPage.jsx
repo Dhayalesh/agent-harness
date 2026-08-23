@@ -29,7 +29,6 @@ import { api } from "../api.js";
 import {
   AgentAvatar,
   ActivityIndicator,
-  ContextMeter,
   ErrorNote,
   Loading,
   StatusPill,
@@ -41,6 +40,7 @@ import {
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
+import { ContextIndicator } from "../components/ContextIndicator.js";
 import { applyContextEvent } from "../lib/context-inspector.js";
 import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
@@ -66,16 +66,7 @@ export function ChatPage() {
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [resettingSession, setResettingSession] = useState(false);
-  /**
-   * Whether the next turn should compact before it runs.
-   *
-   * Armed rather than executed on press: compaction happens in front of a model
-   * request, so doing it the moment the button is pressed would mean spending a
-   * turn — and putting a message in the transcript — for housekeeping the user did
-   * not ask to say out loud. The flag rides along with the next real message and is
-   * cleared once it has been spent.
-   */
-  const [compactQueued, setCompactQueued] = useState(false);
+  const [compacting, setCompacting] = useState(false);
   const [error, setError] = useState(null);
   const [lastRun, setLastRun] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -350,8 +341,6 @@ export function ChatPage() {
       const result = await api.resetChatSession(chat.id);
       setChat(result.chat);
       setLastRun(null);
-      // A fresh session has nothing to compact.
-      setCompactQueued(false);
       setChats((current) => [
         result.chat,
         ...current.filter((item) => item.id !== result.chat.id),
@@ -363,11 +352,54 @@ export function ChatPage() {
     }
   };
 
+  const compactContext = async () => {
+    if (
+      !chat ||
+      compacting ||
+      sending ||
+      uploading ||
+      resettingSession
+    )
+      return;
+    setCompacting(true);
+    setError(null);
+    try {
+      const result = await api.compactChatContext(chat.id);
+      if (result.context) {
+        setChat((current) => ({
+          ...current,
+          session: {
+            ...(current?.session ?? {}),
+            context: {
+              ...(current?.session?.context ?? {}),
+              usedPercent: result.context.usedPercent,
+            },
+          },
+        }));
+      }
+    } catch (caught) {
+      const message =
+        caught?.status === 409
+          ? "This chat is busy. Wait for the current operation to finish and try again."
+          : "Context could not be compacted. Please try again.";
+      setError(new Error(message));
+    } finally {
+      setCompacting(false);
+    }
+  };
+
   const send = async (event) => {
     event.preventDefault();
     const content = draft.trim();
     const sent = attachments;
-    if ((!content && !sent.length) || !agentId || sending || uploading) return;
+    if (
+      (!content && !sent.length) ||
+      !agentId ||
+      sending ||
+      uploading ||
+      compacting
+    )
+      return;
 
     const streaming = selectedAgent?.stream === true;
     setSending(true);
@@ -402,22 +434,16 @@ export function ChatPage() {
       const controller = new AbortController();
       inFlight.current = controller;
       const attachmentIds = sent.map((item) => item.id);
-      // Read once and cleared on the way out, so a failed turn does not silently
-      // drop a compaction the user asked for.
-      const compactContext = compactQueued;
       const result = streaming
         ? await api.streamChatMessage(currentChat.id, content, {
             signal: controller.signal,
             attachmentIds,
-            compactContext,
             onEvent: (event) =>
               setLive((current) => applyLiveEvent(current, event)),
           })
         : await api.sendChatMessage(currentChat.id, content, {
             attachmentIds,
-            compactContext,
           });
-      setCompactQueued(false);
       setChat(result.chat);
       setLastRun(result.run ?? null);
       const completedArtifact = latestArtifact(result.chat);
@@ -1032,7 +1058,9 @@ export function ChatPage() {
                       }}
                       rows={1}
                       placeholder={`Ask ${selectedAgent.name} to do something…`}
-                      disabled={sending || resettingSession || !agentReady}
+                      disabled={
+                        sending || compacting || resettingSession || !agentReady
+                      }
                       className="max-h-[208px] min-h-[30px] w-full resize-none border-0 bg-transparent py-1 text-[15px] leading-6 text-foreground outline-none placeholder:text-default-400 disabled:opacity-60"
                     />
                     <Button
@@ -1047,6 +1075,7 @@ export function ChatPage() {
                         (!draft.trim() && attachments.length === 0) ||
                         uploading ||
                         sending ||
+                        compacting ||
                         resettingSession ||
                         !agentReady
                       }
@@ -1062,23 +1091,9 @@ export function ChatPage() {
                     </Button>
                   </div>
                   <div className="flex min-h-6 items-center justify-between gap-3 px-0.5 pb-0.5 pt-1.5">
-                    {compactQueued ? (
-                      <span className="flex items-center gap-1.5 text-tiny text-secondary">
-                        <Icon name="compact" className="h-3.5 w-3.5" />
-                        Context will be compacted on your next message
-                        <button
-                          type="button"
-                          className="underline underline-offset-2 hover:no-underline"
-                          onClick={() => setCompactQueued(false)}
-                        >
-                          Cancel
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="hidden text-tiny text-default-400 sm:block">
-                        Enter to send · Shift + Enter for a new line
-                      </span>
-                    )}
+                    <span className="hidden text-tiny text-default-400 sm:block">
+                      Enter to send · Shift + Enter for a new line
+                    </span>
                     <div className="ml-auto flex items-center gap-2.5 text-tiny text-default-500">
                       {lastRun && (
                         <>
@@ -1089,11 +1104,13 @@ export function ChatPage() {
                           </HeroLink>
                         </>
                       )}
-                      <ContextMeter
+                      <ContextIndicator
                         context={contextUsage}
-                        queued={compactQueued}
-                        disabled={sending || uploading}
-                        onCompact={() => setCompactQueued(true)}
+                        compacting={compacting}
+                        disabled={
+                          !chat || sending || uploading || resettingSession
+                        }
+                        onCompact={compactContext}
                       />
                     </div>
                   </div>

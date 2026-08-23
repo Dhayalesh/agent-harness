@@ -26,6 +26,7 @@ export async function invokeStoredAgent({
   chatId,
   sessionHistory = [],
   compactContext = false,
+  operation = "turn",
 }) {
   const { payload, resolved } = await buildPayload({
     agentId,
@@ -36,13 +37,17 @@ export async function invokeStoredAgent({
     includeEvents,
     sessionHistory,
     compactContext,
+    operation,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({
     resolved,
     runtime,
     runtimeSessionId,
-    prompt: runPrompt(prompt, attachments),
+    prompt:
+      operation === "compact"
+        ? "(context compaction)"
+        : runPrompt(prompt, attachments),
     chatId,
   });
 
