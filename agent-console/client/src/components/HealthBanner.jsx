@@ -63,8 +63,9 @@ export function HealthBanner() {
           ))}
         </ul>
         <p className="mt-2 text-tiny text-default-500">
-          Agents can be listed and edited without AWS; running one needs
-          credentials and a runtime ARN. There is no local fallback.
+          Agents can be listed and edited without AWS; running one needs either
+          AgentCore credentials and a runtime ARN, or LOCAL_HARNESS_URL pointed
+          at a harness running on this machine.
         </p>
       </Alert>
     </div>

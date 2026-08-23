@@ -9,14 +9,16 @@ import { runtimeResultSchema } from "../lib/schemas.js";
 /**
  * The only place this API runs an agent.
  *
- * One call: `InvokeAgentRuntime` against a deployed runtime ARN. There is no local
- * transport and no HTTP fallback — a run either reaches AgentCore or it does not
- * happen. That is the point of the change: the thing being invoked is a cloud
- * resource identified by ARN, not a process on someone's laptop.
+ * By default: one call, `InvokeAgentRuntime` against a deployed runtime ARN — the
+ * thing being invoked is a cloud resource identified by ARN, not a process on
+ * someone's laptop. Setting `LOCAL_HARNESS_URL` switches every agent to a plain
+ * HTTP POST against a harness process on this machine instead; see
+ * `resolveRuntime` for the single place that decision is made.
  *
- * The payload is unchanged from the local contract. The harness image serves the
- * AgentCore Runtime contract on 8080, so what used to be the body of
- * `POST /invocations` is now the `payload` blob of the API call, byte for byte.
+ * The payload is unchanged between the two: the harness image serves the
+ * AgentCore Runtime contract on 8080, so what is the body of `POST /invocations`
+ * either becomes the `payload` blob of the AWS API call or is posted to that same
+ * route directly, byte for byte either way.
  */
 
 /**
@@ -59,6 +61,25 @@ function agentcoreClient(region) {
  * exists for the case where it should not.
  */
 export function resolveRuntime(agent) {
+  // An explicit local harness URL takes the whole app out of AgentCore entirely —
+  // no ARN, no AWS credentials, every agent runs against the process on this
+  // machine instead. Checked first and unconditionally so a per-agent ARN cannot
+  // silently re-enable AWS calls while an operator believes they are local.
+  if (config.localHarness.url) {
+    return {
+      local: true,
+      url: config.localHarness.url,
+      serviceKey: config.localHarness.serviceKey || undefined,
+      // Kept so every existing consumer of a runtime descriptor (Run records, the
+      // preview route, log lines) still has a stable, human-readable identifier
+      // instead of an undefined field.
+      arn: `local:${config.localHarness.url}`,
+      region: "local",
+      accountId: null,
+      qualifier: undefined,
+    };
+  }
+
   const arn = (
     agent?.agentRuntimeArn ||
     config.agentcore.runtimeArn ||
@@ -99,6 +120,8 @@ export function resolveRuntime(agent) {
  * describe would demand a second IAM permission purely so a banner could be green.
  */
 export async function checkAgentcore() {
+  if (config.localHarness.url) return checkLocalHarness();
+
   const configured = Boolean(config.agentcore.runtimeArn);
   const base = {
     runtimeArn: config.agentcore.runtimeArn || null,
@@ -156,6 +179,8 @@ export async function invokeAgentRuntime({
   runtimeSessionId,
   traceId,
 }) {
+  if (runtime.local) return invokeLocalHarness({ runtime, payload, runtimeSessionId });
+
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: runtime.arn,
     qualifier: runtime.qualifier,
@@ -220,6 +245,10 @@ export async function openAgentRuntimeStream({
   traceId,
   signal,
 }) {
+  if (runtime.local) {
+    return openLocalHarnessStream({ runtime, payload, runtimeSessionId, signal });
+  }
+
   const command = new InvokeAgentRuntimeCommand({
     agentRuntimeArn: runtime.arn,
     qualifier: runtime.qualifier,
@@ -257,6 +286,162 @@ export async function openAgentRuntimeStream({
     statusCode: response.statusCode ?? 200,
     events: readEventStream(response.response),
   };
+}
+
+/**
+ * The local-transport counterpart to `invokeAgentRuntime`.
+ *
+ * A plain POST to the harness's own `/invocations` — the same body it accepts as
+ * an AgentCore payload, byte for byte, so nothing upstream of `resolveRuntime`
+ * needed to change. Session identity travels in `payload.sessionId`, which
+ * `buildPayload` already sets; there is no AgentCore-specific header to add.
+ */
+async function invokeLocalHarness({ runtime, payload, runtimeSessionId }) {
+  let response;
+  try {
+    response = await fetch(`${runtime.url}/invocations`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        ...(runtime.serviceKey
+          ? { "x-agent-service-key": runtime.serviceKey }
+          : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(config.localHarness.timeoutMs),
+    });
+  } catch (error) {
+    throw translateLocalError(error, runtime);
+  }
+
+  const text = await response.text();
+  const body = parseLocalBody(text);
+
+  if (!response.ok) {
+    const detail =
+      typeof body === "object" && body?.error ? body.error : truncate(text);
+    throw badGateway(
+      `The local harness rejected the payload (HTTP ${response.status}): ${detail}`,
+    );
+  }
+  if (typeof body !== "object" || body === null) {
+    throw badGateway(
+      `The local harness returned a body that is not a JSON object: ${truncate(text)}`,
+    );
+  }
+
+  const result = validateRuntimeResult(body);
+  return {
+    result,
+    // The harness's own result already carries the session id it used; that is
+    // more trustworthy than echoing back what was sent, the same way the AWS
+    // path prefers `response.runtimeSessionId` over its own input.
+    runtimeSessionId: result.sessionId ?? runtimeSessionId,
+    traceId: undefined,
+    statusCode: response.status,
+  };
+}
+
+/** The local-transport counterpart to `openAgentRuntimeStream`. */
+async function openLocalHarnessStream({ runtime, payload, runtimeSessionId, signal }) {
+  const timeoutSignal = AbortSignal.timeout(config.localHarness.timeoutMs);
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
+
+  let response;
+  try {
+    response = await fetch(`${runtime.url}/invocations`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        ...(runtime.serviceKey
+          ? { "x-agent-service-key": runtime.serviceKey }
+          : {}),
+      },
+      body: JSON.stringify(payload),
+      signal: combinedSignal,
+    });
+  } catch (error) {
+    throw translateLocalError(error, runtime);
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    const body = parseLocalBody(text);
+    const detail =
+      typeof body === "object" && body?.error ? body.error : truncate(text);
+    throw badGateway(
+      `The local harness rejected the payload (HTTP ${response.status}): ${detail}`,
+    );
+  }
+
+  return {
+    runtimeSessionId,
+    traceId: undefined,
+    statusCode: response.status,
+    // `response.body` is a WHATWG ReadableStream, which is async-iterable the
+    // same way the AWS SDK's stream is, so the exact same frame reader applies.
+    events: readEventStream(response.body),
+  };
+}
+
+/** Confirms the local harness answers `/ping`, without spending a model call. */
+async function checkLocalHarness() {
+  const base = {
+    mode: "local",
+    url: config.localHarness.url,
+    runtimeArnConfigured: true,
+  };
+  try {
+    const response = await fetch(`${config.localHarness.url}/ping`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      return {
+        ...base,
+        ready: false,
+        error: `The local harness answered /ping with HTTP ${response.status}.`,
+      };
+    }
+    return { ...base, ready: true };
+  } catch (error) {
+    return {
+      ...base,
+      ready: false,
+      error: `Could not reach the local harness at ${config.localHarness.url}: ${error?.message ?? error}`,
+    };
+  }
+}
+
+/** `fetch` failures into messages that name the fix, the local-transport analog of `translate`. */
+function translateLocalError(error, runtime) {
+  const message = error?.message ?? String(error);
+  if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+    return badGateway(
+      `The local harness at ${runtime.url} did not respond within LOCAL_HARNESS_TIMEOUT_MS ` +
+        `(${config.localHarness.timeoutMs}ms).`,
+    );
+  }
+  if (/ECONNREFUSED|fetch failed/i.test(message)) {
+    return badGateway(
+      `Could not reach the local harness at ${runtime.url}. Is it running? ` +
+        "(`npm start` in agent-harness-clone)",
+    );
+  }
+  return badGateway(`Local harness invocation failed: ${message}`);
+}
+
+/** Parses a harness response body, tolerating an empty one. */
+function parseLocalBody(text) {
+  if (!text?.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 /**

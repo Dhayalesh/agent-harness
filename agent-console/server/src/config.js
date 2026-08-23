@@ -87,6 +87,18 @@ export const config = {
     requestTimeoutMs: integer("AGENT_SESSION_S3_REQUEST_TIMEOUT_MS", 10_000),
     maxBytes: integer("AGENT_ARTIFACT_MAX_BYTES", 25 * 1024 * 1024),
   },
+  /**
+   * Opt-in local transport, off unless `LOCAL_HARNESS_URL` is set.
+   *
+   * Set only this to run every agent against a harness process on this machine
+   * (`npm start` in agent-harness-clone) instead of AgentCore — no ARN, no AWS
+   * credentials. When unset every code path behaves exactly as before.
+   */
+  localHarness: {
+    url: trimmed("LOCAL_HARNESS_URL").replace(/\/+$/, ""),
+    serviceKey: trimmed("LOCAL_HARNESS_SERVICE_KEY"),
+    timeoutMs: integer("LOCAL_HARNESS_TIMEOUT_MS", 900_000),
+  },
   uploads: {
     /** Per file, enforced by the multipart parser before anything is buffered. */
     maxFileBytes: integer("CHAT_UPLOAD_MAX_FILE_BYTES", 25 * 1024 * 1024),

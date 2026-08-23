@@ -10,8 +10,10 @@ browser -> Express API -> MongoDB
                        -> bedrock-agentcore:InvokeAgentRuntime -> S3 (referenced skills)
 ```
 
-There is no local invocation transport. Every run uses the global
-`AGENTCORE_RUNTIME_ARN`; the complete resolved agent definition is sent in the payload.
+By default every run uses the global `AGENTCORE_RUNTIME_ARN`; the complete resolved
+agent definition is sent in the payload. Setting `LOCAL_HARNESS_URL` switches every
+run to a plain HTTP POST of that same payload against a harness process on this
+machine instead — no ARN, no AWS credentials — see [Configuration](#configuration).
 The runtime image is in [agent-harness-clone](../agent-harness-clone).
 
 ## Data model
@@ -144,13 +146,17 @@ components lose their styling, that glob is the thing to check.
 | `AWS_PROFILE`           | Optional shared-configuration profile for the standard AWS credential chain.       |
 | `AGENTCORE_TIMEOUT_MS`  | SDK request timeout; defaults to 900,000 ms.                                       |
 | `AGENT_RUNTIME_TOOLS`   | Comma-separated tool catalogue actually deployed in the runtime image.             |
+| `LOCAL_HARNESS_URL`     | Optional. When set, every invocation is a plain HTTP `POST /invocations` to this URL (a harness run with `npm start`) instead of AgentCore — wins over `AGENTCORE_RUNTIME_ARN` unconditionally. Unset by default, so nothing about the AgentCore path above changes unless this is set. |
+| `LOCAL_HARNESS_SERVICE_KEY` | Optional. Sent as `x-agent-service-key` when the local harness has `AGENT_SERVICE_KEY` set. |
+| `LOCAL_HARNESS_TIMEOUT_MS` | Request timeout for the local transport; defaults to 900,000 ms, same reasoning as `AGENTCORE_TIMEOUT_MS`. |
 
 An ambient environment variable wins over the value in `server/.env` because Node's
 `--env-file-if-exists` does not replace an existing value. Startup prints the resolved,
 redacted MongoDB target and database so this is visible before any write.
 
-`/api/health` reports the MongoDB connection, resolved database, AgentCore configuration,
-and AWS credential readiness.
+`/api/health` reports the MongoDB connection, resolved database, and either AgentCore
+configuration/AWS credential readiness or local-harness reachability, whichever transport
+`LOCAL_HARNESS_URL` selects.
 
 ## API
 
