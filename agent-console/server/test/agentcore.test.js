@@ -148,6 +148,13 @@ test("invokeAgentRuntime posts the same payload to a local harness's /invocation
         status: "success",
         sessionId: received.body.sessionId,
         agentName: "reviewer",
+        session: {
+          mode: "persistent",
+          storage: "s3",
+          resumed: false,
+          origin: "new",
+          historyMessageCount: 2,
+        },
         output: "done locally",
         messages: [],
         workingDirectory: "/tmp/work",
