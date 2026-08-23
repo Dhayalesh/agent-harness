@@ -81,7 +81,7 @@ export class OpenRouterModelProvider implements ModelProvider {
       );
     }
     this.apiKey = options.apiKey;
-    this.baseURL = options.baseURL ?? OPENROUTER_BASE_URL;
+    this.baseURL = normalizeOpenRouterBaseURL(options.baseURL ?? OPENROUTER_BASE_URL);
     this.defaultModel = options.defaultModel;
     this.fetchImplementation = options.fetch ?? globalThis.fetch;
     const routing = openRouterRouting(options);
@@ -151,7 +151,7 @@ export function createOpenRouterProvider(
 export async function listOpenRouterModels(
   options: ListOpenRouterModelsOptions = {},
 ): Promise<OpenRouterModel[]> {
-  const baseURL = (options.baseURL ?? OPENROUTER_BASE_URL).replace(/\/$/, '');
+  const baseURL = normalizeOpenRouterBaseURL(options.baseURL ?? OPENROUTER_BASE_URL);
   const apiKey = options.apiKey;
   const fetchImplementation = options.fetch ?? globalThis.fetch;
   const response = await fetchImplementation(`${baseURL}/models`, {
@@ -183,6 +183,11 @@ export async function listOpenRouterModels(
     return model ? [model] : [];
   });
   return options.toolCapableOnly ? models.filter((model) => model.supportsTools) : models;
+}
+
+/** Accept either the API root or the full chat-completions endpoint. */
+function normalizeOpenRouterBaseURL(value: string): string {
+  return value.replace(/\/+$/, '').replace(/\/chat\/completions$/i, '');
 }
 
 function openRouterHeaders(options: OpenRouterProviderOptions): Record<string, string> {

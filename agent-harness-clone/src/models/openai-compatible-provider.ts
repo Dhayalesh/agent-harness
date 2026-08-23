@@ -93,6 +93,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
 
   async *stream(request: ModelRequest): AsyncIterable<ModelStreamEvent> {
     if (request.signal.aborted) throw new AgentAbortError();
+    const effectiveModel = request.model ?? this.options.defaultModel;
     const response = await this.fetchImplementation(
       `${this.options.baseURL.replace(/\/$/, '')}/chat/completions`,
       {
@@ -104,7 +105,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
           ...this.options.defaultHeaders,
         },
         body: JSON.stringify({
-          model: request.model ?? this.options.defaultModel,
+          model: effectiveModel,
           messages: toCompatibleMessages(request.messages, request.systemPrompt),
           // Some upstream vendors reject an empty `tools` array.
           ...(request.tools.length
@@ -136,7 +137,7 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       const detail = (await response.text()).slice(0, 4_000);
       throw Object.assign(
         new AgentHarnessError(
-          `Model API request failed (${response.status}): ${detail || response.statusText}`,
+          `Model API request failed (${response.status}) for ${effectiveModel}: ${detail || response.statusText}`,
           'MODEL_API_ERROR',
           response.status === 408 ||
             response.status === 409 ||
