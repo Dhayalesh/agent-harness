@@ -103,7 +103,10 @@ export function renderStateSummary(
   const stateBlock = renderContextState(state, Math.floor(ceiling * 0.75));
   const remaining = ceiling - stateBlock.length - 40;
   const digest = remaining > 120 ? conversationDigest(messages, remaining) : '';
-  return [stateBlock, digest].filter((part) => part.trim() !== '').join('\n\n').slice(0, ceiling);
+  return [stateBlock, digest]
+    .filter((part) => part.trim() !== '')
+    .join('\n\n')
+    .slice(0, ceiling);
 }
 
 /**

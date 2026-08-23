@@ -41,6 +41,7 @@ import {
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
+import { applyContextEvent } from "../lib/context-inspector.js";
 import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
 import {
@@ -151,7 +152,13 @@ export function ChatPage() {
    * message rather than appearing out of nowhere after it.
    */
   const contextUsage = useMemo(() => {
-    if (live?.context) return live.context;
+    // The compaction figures arrive on their own event, so they are folded in here
+    // rather than kept in a second prop the panel would have to correlate.
+    if (live?.context) {
+      return live.lastCompaction
+        ? { ...live.context, lastCompaction: live.lastCompaction }
+        : live.context;
+    }
     if (chat?.session?.context) return chat.session.context;
     const capabilities = selectedAgent?.resolved?.modelProvider?.capabilities;
     if (!capabilities?.contextWindow) return null;
@@ -166,7 +173,7 @@ export function ChatPage() {
       compacted: false,
       compactions: 0,
     };
-  }, [live?.context, chat?.session?.context, selectedAgent]);
+  }, [live?.context, live?.lastCompaction, chat?.session?.context, selectedAgent]);
 
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -1515,6 +1522,11 @@ const EMPTY_LIVE = {
   /** The last `context.usage` this run reported. Null until the first turn measures. */
   context: null,
   compactions: 0,
+  /** Per-turn readings, so the panel can say when the context filled and what happened. */
+  timeline: [],
+  recoveries: 0,
+  /** The figures the runtime measured either side of the last compaction. */
+  lastCompaction: null,
 };
 
 /**
@@ -1627,34 +1639,24 @@ function applyLiveEvent(live, event) {
         warnings: [...current.warnings, event.message].slice(-5),
       };
     // The meter follows the newest measurement, so it falls as soon as a
-    // compaction lands rather than at the end of the run.
-    case "context.usage": {
-      // The peak is kept as a high water mark rather than replaced, so a run that
-      // compacted can show both what filled the context and what freeing it gave
-      // back. Without it the meter drops and nothing explains why.
-      const candidate = event.peakTokens ?? event.usedTokens ?? 0;
-      const peaked = candidate > (current.context?.peakTokens ?? 0);
-      return {
-        ...current,
-        context: {
-          usedTokens: event.usedTokens ?? 0,
-          budgetTokens: event.budgetTokens ?? 0,
-          contextWindow: event.contextWindow,
-          reservedOutputTokens: event.reservedOutputTokens,
-          usedPercent: event.usedPercent ?? 0,
-          compacted: event.compacted === true,
-          compactions: current.compactions,
-          peakTokens: peaked ? candidate : current.context?.peakTokens,
-          peakPercent: peaked
-            ? (event.peakPercent ?? event.usedPercent ?? 0)
-            : current.context?.peakPercent,
-        },
-      };
-    }
+    // compaction lands rather than at the end of the run. All of the accumulation —
+    // the high water mark, the timeline, the compaction figures — lives in
+    // `lib/context-inspector.js`, which is a pure module so it can be tested without
+    // rendering anything.
+    case "context.usage":
+    case "context.recovery":
+      return { ...current, ...applyContextEvent(current, event) };
+    case "context.selection":
+      return { ...current, status: "Reducing the context" };
+    case "context.verification":
+      // Nothing to show mid-turn: the outcome rides on the next `context.usage`
+      // frame, which is what the panel reads. Consumed rather than ignored so a
+      // future field here has an obvious home.
+      return current;
     case "context.compaction.started":
       return { ...current, status: "Compacting the context" };
     case "context.compaction.completed":
-      return { ...current, compactions: current.compactions + 1 };
+      return { ...current, ...applyContextEvent(current, event) };
     default:
       return current;
   }

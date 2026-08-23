@@ -218,7 +218,10 @@ export function assignTiers(
 
   for (const entry of importance) {
     // Recency is the floor. Everything else can only improve a message's tier.
-    set(entry.index, entry.reasons.includes('latest-turn') ? 'recent-conversation' : 'relevant-history');
+    set(
+      entry.index,
+      entry.reasons.includes('latest-turn') ? 'recent-conversation' : 'relevant-history',
+    );
     if (entry.reasons.includes('duplicate') || entry.reasons.includes('superseded-decision')) {
       tiers.set(entry.index, 'low-value-history');
     }

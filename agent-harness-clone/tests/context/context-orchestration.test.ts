@@ -57,8 +57,7 @@ import {
 const CAPS: ModelContextCapabilities = { contextWindow: 200_000, maxOutputTokens: 8_192 };
 
 function budgetOf(capabilities: ModelContextCapabilities = CAPS): number {
-  return deriveContextBudget({ capabilities, policy: DEFAULT_CONTEXT_POLICY })
-    .effectiveInputBudget;
+  return deriveContextBudget({ capabilities, policy: DEFAULT_CONTEXT_POLICY }).effectiveInputBudget;
 }
 
 let counter = 0;
@@ -453,7 +452,11 @@ test('an error a later run of the same tool cleared is no longer live', () => {
 // ---------------------------------------------------------------------------
 test('selection drops unreferenced history and keeps what the request depends on', () => {
   const messages = [
-    msg('user', 'The staging endpoint is at https://staging.example.test and the API version is v3.', 'fact'),
+    msg(
+      'user',
+      'The staging endpoint is at https://staging.example.test and the API version is v3.',
+      'fact',
+    ),
     msg('assistant', 'Noted the staging endpoint and version.', 'ack'),
     msg('assistant', 'The office wifi rotates on Tuesdays.', 'noise'),
     ...filler(4_000, 'chatter'),
@@ -481,7 +484,11 @@ test('selection drops unreferenced history and keeps what the request depends on
 test('a relevant historical fact is still available after the conversation is compacted', async () => {
   const orchestrator = new ContextOrchestrator({});
   const messages = [
-    msg('user', 'The staging endpoint is at https://staging.example.test and the API version is v3.', 'fact'),
+    msg(
+      'user',
+      'The staging endpoint is at https://staging.example.test and the API version is v3.',
+      'fact',
+    ),
     ...filler(Math.floor(budgetOf() * 1.2), 'chatter'),
     msg('user', 'Point the billing client at the staging endpoint.', 'ask'),
   ];
@@ -496,23 +503,25 @@ test('a relevant historical fact is still available after the conversation is co
 // ---------------------------------------------------------------------------
 test('a tool result is never separated from its call, whatever the layer decides', async () => {
   const scenarios: { name: string; messages: AgentMessage[]; force?: boolean }[] = [
-    { name: 'trimming', messages: [
-      msg('user', 'read it', 'u'),
-      toolCall('a'),
-      toolResult('a', 'q'.repeat(900_000)),
-    ] },
+    {
+      name: 'trimming',
+      messages: [msg('user', 'read it', 'u'), toolCall('a'), toolResult('a', 'q'.repeat(900_000))],
+    },
     { name: 'selection', messages: workConversation(Math.floor(budgetOf() * 1.05)) },
     { name: 'compaction', messages: workConversation(Math.floor(budgetOf() * 2)) },
     { name: 'forced', messages: workConversation(1_000), force: true },
-    { name: 'many pairs', messages: (() => {
-      const out: AgentMessage[] = [msg('user', 'do the migration', 'ask')];
-      for (let i = 0; i < 60; i += 1) {
-        out.push(toolCall(`p${i}`, 'read_file', { path: `pkg/file${i}.go` }));
-        out.push(toolResult(`p${i}`, 'w'.repeat(30_000)));
-      }
-      out.push(msg('user', 'carry on', 'last'));
-      return out;
-    })() },
+    {
+      name: 'many pairs',
+      messages: (() => {
+        const out: AgentMessage[] = [msg('user', 'do the migration', 'ask')];
+        for (let i = 0; i < 60; i += 1) {
+          out.push(toolCall(`p${i}`, 'read_file', { path: `pkg/file${i}.go` }));
+          out.push(toolResult(`p${i}`, 'w'.repeat(30_000)));
+        }
+        out.push(msg('user', 'carry on', 'last'));
+        return out;
+      })(),
+    },
   ];
 
   for (const scenario of scenarios) {
@@ -576,7 +585,7 @@ test('a summariser that throws falls back to a deterministic structured summary'
 });
 
 test('a summariser that answers is used, and its answer is led by the derived state', async () => {
-  const seen: { outline?: string; ceiling?: number } = {};
+  const seen: { outline?: string | undefined; ceiling?: number | undefined } = {};
   const summarizer: CompactionSummarizer = {
     async summarize(input) {
       seen.outline = input.stateOutline;
@@ -625,12 +634,18 @@ test('a provider that rejects the context is retried once with a smaller one', a
     },
   ]);
   const initial = workConversation(40_000);
-  const session = createAgentSession({ provider, modelCapabilities: CAPS, initialMessages: initial });
+  const session = createAgentSession({
+    provider,
+    modelCapabilities: CAPS,
+    initialMessages: initial,
+  });
 
   const events = await collect(session.run({ prompt: 'carry on' }));
 
   assert.equal(attempts, 2);
-  assert.ok(events.some((event) => event.type === 'warning' && event.code === 'REACTIVE_COMPACTION'));
+  assert.ok(
+    events.some((event) => event.type === 'warning' && event.code === 'REACTIVE_COMPACTION'),
+  );
   assert.ok(
     retriedTokens < estimateMessagesTokens(initial),
     'the retry must be smaller than what was rejected',
@@ -739,7 +754,9 @@ test('the pipeline derives its budget from whatever model it is given', async ()
 
     assert.equal(
       result.budget?.effectiveInputBudget,
-      model.caps.contextWindow - model.caps.maxOutputTokens - DEFAULT_CONTEXT_POLICY.safetyMarginTokens,
+      model.caps.contextWindow -
+        model.caps.maxOutputTokens -
+        DEFAULT_CONTEXT_POLICY.safetyMarginTokens,
       `${model.name}: budget not derived from the model`,
     );
     assert.ok(
@@ -747,7 +764,10 @@ test('the pipeline derives its budget from whatever model it is given', async ()
       `${model.name}: ${result.estimatedTokens} exceeds the ${budget}-token budget`,
     );
     assert.match(textOf(result.messages), /card numbers/i, `${model.name}: lost the constraint`);
-    assert.ok(result.budget!.effectiveInputBudget > previous, `${model.name}: budget did not scale`);
+    assert.ok(
+      result.budget!.effectiveInputBudget > previous,
+      `${model.name}: budget did not scale`,
+    );
     previous = result.budget!.effectiveInputBudget;
   }
 });

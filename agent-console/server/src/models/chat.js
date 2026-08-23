@@ -149,6 +149,18 @@ const sessionSchema = new mongoose.Schema(
           peakTokens: Number,
           peakPercent: Number,
           measuredAt: String,
+          // The context inspector's stored half: what the layer did on the last turn
+          // and what it did across the run, so reopening a chat shows the same
+          // explanation the live view showed rather than a bare percentage.
+          pressure: String,
+          action: String,
+          strategy: String,
+          verification: String,
+          preserved: [String],
+          compressed: [String],
+          recoveries: Number,
+          state: mongoose.Schema.Types.Mixed,
+          timeline: [mongoose.Schema.Types.Mixed],
         },
         { _id: false, strict: false },
       ),

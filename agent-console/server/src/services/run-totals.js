@@ -11,6 +11,16 @@ import { presentedArtifact } from "./response-artifacts.js";
 import { presentedReasoning } from "./response-reasoning.js";
 import { presentedToolCall } from "./response-tool-calls.js";
 
+/**
+ * How many turns of context history a run keeps.
+ *
+ * Bounded and tail-kept, matching the runtime's own limit. A 200-turn run does not
+ * need 200 rows in a chat document to explain itself, and an unbounded array on a
+ * hot record is how a document hits its size limit in production rather than in a
+ * test.
+ */
+const CONTEXT_TIMELINE_LIMIT = 40;
+
 export class RunTotals {
   #text = [];
   #reasoning = [];
@@ -29,8 +39,10 @@ export class RunTotals {
   #artifacts = [];
   #context;
   #compactions = 0;
+  #recoveries = 0;
   #peakTokens;
   #peakPercent = 0;
+  #timeline = [];
 
   observe(event) {
     if (typeof event?.type !== "string") return;
@@ -141,6 +153,24 @@ export class RunTotals {
           this.#peakTokens = candidate;
           this.#peakPercent = event.peakPercent ?? event.usedPercent ?? 0;
         }
+        // One entry per measured turn, so a reopened chat can show what happened and
+        // when rather than only where things ended up. The interesting turn is by
+        // definition not the last one: the meter reads 32% precisely because turn 25
+        // was at 91% and something was done about it.
+        if (
+          typeof event.turn === "number" ||
+          typeof event.action === "string"
+        ) {
+          this.#timeline.push({
+            ...(typeof event.turn === "number" ? { turn: event.turn } : {}),
+            usedPercent: event.usedPercent ?? 0,
+            ...(typeof event.action === "string" ? { action: event.action } : {}),
+            ...(event.compacted === true ? { compacted: true } : {}),
+          });
+          if (this.#timeline.length > CONTEXT_TIMELINE_LIMIT) {
+            this.#timeline.shift();
+          }
+        }
         this.#context = {
           usedTokens: event.usedTokens ?? 0,
           budgetTokens: event.budgetTokens ?? 0,
@@ -155,11 +185,42 @@ export class RunTotals {
           ...(this.#peakTokens === undefined
             ? {}
             : { peakTokens: this.#peakTokens, peakPercent: this.#peakPercent }),
+          // Everything below is present only when the runtime's orchestration layer
+          // reported it. A runtime built before it, or one running a custom context
+          // manager, stores exactly the shape it always did.
+          ...(typeof event.pressure === "string"
+            ? { pressure: event.pressure }
+            : {}),
+          ...(typeof event.action === "string" ? { action: event.action } : {}),
+          ...(typeof event.strategy === "string"
+            ? { strategy: event.strategy }
+            : {}),
+          ...(typeof event.verification === "string"
+            ? { verification: event.verification }
+            : {}),
+          ...(Array.isArray(event.preserved)
+            ? { preserved: event.preserved }
+            : {}),
+          ...(Array.isArray(event.compressed)
+            ? { compressed: event.compressed }
+            : {}),
+          ...(event.state && typeof event.state === "object"
+            ? { state: event.state }
+            : {}),
+          ...(this.#timeline.length === 0
+            ? {}
+            : { timeline: [...this.#timeline] }),
+          ...(this.#recoveries === 0 ? {} : { recoveries: this.#recoveries }),
         };
         break;
       }
       case "context.compaction.completed":
         this.#compactions += 1;
+        break;
+      // Counted, not stored in detail: what a reader needs is "the layer had to put
+      // something back", and the harness log already holds which categories.
+      case "context.recovery":
+        this.#recoveries += 1;
         break;
       case "error":
         this.#failure = {

@@ -35,6 +35,23 @@ const contextUsageSchema = new mongoose.Schema(
     compactions: Number,
     peakTokens: Number,
     peakPercent: Number,
+    /**
+     * What the runtime's context layer decided, when it reported it.
+     *
+     * Named rather than left to `strict: false` so the fields are typed on read and
+     * so this schema documents the shape a client can rely on. Still non-strict,
+     * because a newer runtime reporting a field this console has not learned about
+     * should be stored, not dropped.
+     */
+    pressure: String,
+    action: String,
+    strategy: String,
+    verification: String,
+    preserved: [String],
+    compressed: [String],
+    recoveries: Number,
+    state: mongoose.Schema.Types.Mixed,
+    timeline: [mongoose.Schema.Types.Mixed],
   },
   { _id: false, strict: false },
 );
