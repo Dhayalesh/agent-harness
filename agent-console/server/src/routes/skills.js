@@ -15,7 +15,12 @@ import {
   safeSkill,
   saveMergedRecord,
 } from "../services/platform.js";
-import { parseS3Uri } from "../services/skill-content.js";
+import {
+  deleteManagedSkillContent,
+  loadSkillContent,
+  skillContentUri,
+  storeSkillContent,
+} from "../services/skill-content.js";
 
 export const skillsRouter = express.Router();
 
@@ -32,8 +37,9 @@ skillsRouter.get("/", asyncHandler(async (request, response) => {
 
 skillsRouter.get("/:id", asyncHandler(async (request, response) => {
   const skill = await loadSkill(request.params.id);
+  const content = await loadSkillContent(skill.uri, `skill ${skill.name}`);
   response.json({
-    skill: safeSkill(skill),
+    skill: { ...safeSkill(skill), content },
     referencedByCount: await Agent.countDocuments({
       "skills.skillId": skill._id.toString(),
     }),
@@ -42,11 +48,21 @@ skillsRouter.get("/:id", asyncHandler(async (request, response) => {
 
 skillsRouter.post("/", asyncHandler(async (request, response) => {
   const input = parseOrThrow(skillCreateSchema, request.body);
-  parseS3Uri(input.uri, "skill " + input.name);
+  if (await Skill.exists({ name: input.name })) {
+    throw conflict('A skill named "' + input.name + '" already exists');
+  }
+
+  const uri = await storeSkillContent(input.name, input.content);
   let skill;
   try {
-    skill = await createRecord(Skill, { ...input, createdBy: config.createdBy });
+    skill = await createRecord(Skill, {
+      name: input.name,
+      uri,
+      enabled: input.enabled,
+      createdBy: config.createdBy,
+    });
   } catch (error) {
+    await cleanup(uri);
     if (error?.code === 11000) {
       throw conflict('A skill named "' + input.name + '" already exists');
     }
@@ -58,15 +74,40 @@ skillsRouter.post("/", asyncHandler(async (request, response) => {
 skillsRouter.patch("/:id", asyncHandler(async (request, response) => {
   const patch = parseOrThrow(skillUpdateSchema, request.body);
   const skill = await loadSkill(request.params.id);
-  if (patch.uri) parseS3Uri(patch.uri, "skill " + (patch.name ?? skill.name));
+  const { content, ...recordPatch } = patch;
+  const previousUri = skill.uri;
+  const nextName = recordPatch.name ?? skill.name;
+  const renamed = nextName !== skill.name;
+
+  if (
+    renamed &&
+    await Skill.exists({ name: nextName, _id: { $ne: skill._id } })
+  ) {
+    throw conflict('A skill named "' + nextName + '" already exists');
+  }
+
+  let nextUri;
+  if (content !== undefined || renamed) {
+    const nextContent =
+      content ?? await loadSkillContent(previousUri, `skill ${skill.name}`);
+    nextUri = skillContentUri(nextName);
+    await storeSkillContent(nextName, nextContent, {
+      overwrite: nextUri === previousUri,
+    });
+    recordPatch.uri = nextUri;
+  }
+
   try {
-    await saveMergedRecord(skill, patch, skillRecordSchema, "Skill");
+    await saveMergedRecord(skill, recordPatch, skillRecordSchema, "Skill");
   } catch (error) {
+    if (nextUri && nextUri !== previousUri) await cleanup(nextUri);
     if (error?.code === 11000) {
       throw conflict('A skill named "' + skill.name + '" already exists');
     }
     throw error;
   }
+
+  if (nextUri && previousUri !== nextUri) await cleanup(previousUri);
   response.json({ skill: safeSkill(skill) });
 }));
 
@@ -80,9 +121,21 @@ skillsRouter.delete("/:id", asyncHandler(async (request, response) => {
       "Cannot delete a skill referenced by " + referencedByCount + " agent(s).",
     );
   }
+  const uri = skill.uri;
   await skill.deleteOne();
+  await cleanup(uri);
   response.json({ deleted: true, id: request.params.id });
 }));
+
+async function cleanup(uri) {
+  try {
+    await deleteManagedSkillContent(uri);
+  } catch (error) {
+    process.stderr.write(
+      `agent-console: unable to clean up managed skill object: ${error?.message ?? error}\n`,
+    );
+  }
+}
 
 function searchFilter(query) {
   if (!query) return {};

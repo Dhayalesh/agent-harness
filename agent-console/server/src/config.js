@@ -74,6 +74,35 @@ export const config = {
     profile: trimmed("AWS_PROFILE"),
     timeoutMs: integer("AGENTCORE_TIMEOUT_MS", 900_000),
   },
+  skills: {
+    // Skill documents are authored in the console and stored beside the other
+    // runtime files. The generated S3 URI remains the harness-facing contract.
+    bucket: trimmed("AGENT_SESSION_S3_BUCKET"),
+    prefix: (
+      trimmed("AGENT_S3_SKILL_PREFIX") || "skills"
+    ).replace(/^\/+|\/+$/g, ""),
+    region:
+      trimmed("PLATFORM_CONTENT_S3_REGION") ||
+      regionOverride ||
+      parsedArn?.region,
+    requestTimeoutMs: integer("AGENT_SESSION_S3_REQUEST_TIMEOUT_MS", 10_000),
+    maxBytes: 2_000_000,
+  },
+  templates: {
+    // Templates are always injected into the system prompt, so keep each document
+    // below the runtime's aggregate prompt ceiling.
+    bucket: trimmed("AGENT_SESSION_S3_BUCKET"),
+    prefix: trimmed("AGENT_S3_TEMPLATE_PREFIX", "templates").replace(
+      /^\/+|\/+$/g,
+      "",
+    ),
+    region:
+      trimmed("PLATFORM_CONTENT_S3_REGION") ||
+      regionOverride ||
+      parsedArn?.region,
+    requestTimeoutMs: integer("AGENT_SESSION_S3_REQUEST_TIMEOUT_MS", 10_000),
+    maxBytes: 500_000,
+  },
   artifacts: {
     // Must match the private bucket configured on the harness. Keeping the
     // allowlisted bucket here prevents a runtime event from becoming arbitrary

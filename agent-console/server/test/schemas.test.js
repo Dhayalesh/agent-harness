@@ -330,16 +330,26 @@ test("enforces transport-specific MCP fields and accepts secret patch forms", ()
   }
 });
 
-test("accepts historical S3 skill records", () => {
-  const skill = {
+test("accepts authored skill content and historical S3 records", () => {
+  const authored = {
     name: "sap-documentation",
-    uri: "s3://agent-console-skills/sap/SKILL.md",
+    content: "# SAP documentation\n\nUse the approved SAP sources.",
     enabled: true,
   };
-  assert.equal(skillCreateSchema.safeParse(skill).success, true);
+  assert.equal(skillCreateSchema.safeParse(authored).success, true);
+  assert.equal(
+    skillCreateSchema.safeParse({
+      name: authored.name,
+      uri: "s3://agent-console-skills/sap/SKILL.md",
+      enabled: true,
+    }).success,
+    false,
+  );
   assert.equal(
     skillRecordSchema.safeParse({
-      ...skill,
+      name: authored.name,
+      uri: "s3://agent-console-skills/sap/SKILL.md",
+      enabled: true,
       createdAt: timestamp,
       updatedAt: timestamp,
       createdBy: "agent-console",

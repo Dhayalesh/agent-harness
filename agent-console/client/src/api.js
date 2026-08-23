@@ -258,6 +258,14 @@ export const api = {
     request(`/skills/${id}`, { method: "PATCH", body }),
   deleteSkill: (id) => request(`/skills/${id}`, { method: "DELETE" }),
 
+  listTemplates: ({ q = "" } = {}) =>
+    request(`/templates${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  getTemplate: (id) => request(`/templates/${id}`),
+  createTemplate: (body) => request("/templates", { method: "POST", body }),
+  updateTemplate: (id, body) =>
+    request(`/templates/${id}`, { method: "PATCH", body }),
+  deleteTemplate: (id) => request(`/templates/${id}`, { method: "DELETE" }),
+
   previewPayload: (id, body) =>
     request(`/agents/${id}/preview`, { method: "POST", body }),
   invokeAgent: (id, body, signal) =>

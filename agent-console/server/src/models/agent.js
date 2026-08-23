@@ -8,6 +8,11 @@ const skillReferenceSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const templateReferenceSchema = new mongoose.Schema(
+  { templateId: { type: String, required: true } },
+  { _id: false },
+);
+
 /**
  * No input token field. The input budget belongs to the model provider record,
  * which already carries `contextWindow` and `maxOutputTokens`; the runtime derives
@@ -33,6 +38,7 @@ const agentSchema = new mongoose.Schema(
     model: String,
     tools: { type: [String], default: [] },
     skills: { type: [skillReferenceSchema], default: [] },
+    templates: { type: [templateReferenceSchema], default: [] },
     mcpServerIds: { type: [String], default: [] },
     limits: { type: limitsSchema, required: true },
     // Historical records predate this field; the default fills it on hydration so

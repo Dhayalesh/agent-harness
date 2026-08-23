@@ -13,12 +13,16 @@ import type { AgentRecord } from './agent-definitions.js';
 import { assertAgentRuntimeSupport } from './agent-support.js';
 import type { SkillRecord } from './skill-definitions.js';
 import { SkillContentStores } from './skill-content.js';
+import type { TemplateRecord } from './template-definitions.js';
 import type { McpServerRecord } from './mcp-server-definitions.js';
 import type { McpServerLookup } from './mcp-server-registry.js';
 import { PlatformMcpServerRegistry } from './mcp-server-registry.js';
 import type { ModelProviderRecord } from './model-provider-definitions.js';
 import type { ModelProviderLookup } from './model-provider-registry.js';
 import { PlatformModelProviderRegistry } from './model-provider-registry.js';
+
+/** Maximum final prompt after the base prompt and all assigned templates are composed. */
+export const RESOLVED_SYSTEM_PROMPT_MAX_CHARS = 500_000;
 
 /** The read surface the registry needs; satisfied by `MongoAgentStore`. */
 export interface AgentLookup {
@@ -37,19 +41,19 @@ export interface SkillLookup {
   get(id: string): Promise<SkillRecord | undefined>;
 }
 
+export interface TemplateLookup {
+  get(id: string): Promise<TemplateRecord | undefined>;
+}
+
 /**
- * The four collections an agent is assembled from. `agents` holds the record, and the
- * other three are the master collections its `_id` references point into, so the
- * credential for the model and the credentials for MCP are read from there and never
- * from the agent record.
- *
- * There is no collection for skill content. A `skills` record carries the whole S3
- * address, and the credential to read it comes from the environment.
+ * The collections an agent is assembled from. Template and skill records carry S3
+ * addresses; the host credential reads their content during resolution.
  */
 export type AgentStores = {
   agents: AgentLookup;
   modelProviders: ModelProviderLookup;
   skills: SkillLookup;
+  templates?: TemplateLookup;
   mcpServers: McpServerLookup;
 };
 
@@ -107,8 +111,10 @@ export type ResolvedAgent = {
   provider: ModelProvider;
   /** The `model_providers` record the agent referenced. Carries the credential. */
   modelProvider: ModelProviderRecord;
-  /** Read straight off the agent record. */
+  /** Read straight off the agent record, with assigned templates appended. */
   systemPrompt: string;
+  /** Template records injected into `systemPrompt`, in agent assignment order. */
+  templateRecords: readonly TemplateRecord[];
   /**
    * The `skills` records the agent referenced, in the order it lists them. These give
    * each skill's name and where it came from; the descriptions and tool lists read out
@@ -215,6 +221,7 @@ export class PlatformAgentRegistry {
     }
     const provider = await this.modelProviders.resolveRecord(modelProvider);
     const limits = resolveLimits(record, modelProvider);
+    const materializedTemplates = await this.materializeTemplates(record);
 
     // Skill documents are downloaded before any MCP process is spawned, so a dangling
     // reference or a missing object fails while there is still least to clean up. They
@@ -276,7 +283,8 @@ export class PlatformAgentRegistry {
         record,
         provider,
         modelProvider,
-        systemPrompt: record.systemPrompt,
+        systemPrompt: materializedTemplates.systemPrompt,
+        templateRecords: materializedTemplates.records,
         skillRecords,
         skillDirectory: directory.path,
         ...(record.model === undefined ? {} : { model: record.model }),
@@ -291,6 +299,92 @@ export class PlatformAgentRegistry {
       await release();
       throw error;
     }
+  }
+
+  private async materializeTemplates(
+    record: AgentRecord,
+  ): Promise<{ records: TemplateRecord[]; systemPrompt: string }> {
+    const records: TemplateRecord[] = [];
+    const sections = [record.systemPrompt];
+    const names = new Set<string>();
+
+    for (const entry of record.templates ?? []) {
+      const template = await this.stores.templates?.get(entry.templateId);
+      if (!template) {
+        throw new AgentHarnessError(
+          `Agent '${record.name}' references template _id ${entry.templateId}, which is no longer ` +
+            'available. Remove it from the agent, or add the template back.',
+          'TEMPLATE_NOT_FOUND',
+        );
+      }
+      if (!template.enabled) {
+        throw new AgentHarnessError(
+          `Agent '${record.name}' references template '${template.name}', which is disabled.`,
+          'TEMPLATE_DISABLED',
+        );
+      }
+      if (names.has(template.name)) {
+        throw new AgentHarnessError(
+          `Agent '${record.name}' resolves more than one template named '${template.name}'.`,
+          'TEMPLATE_DUPLICATE_NAME',
+        );
+      }
+      names.add(template.name);
+
+      const started = Date.now();
+      const templateUri = safeSkillUri(template.uri);
+      this.log({
+        event: 'template.materialization.started',
+        agentName: record.name,
+        templateName: template.name,
+        templateUri,
+      });
+      try {
+        const { location, store } = this.skillContent.locate(
+          template.uri,
+          `Agent '${record.name}' template '${template.name}'`,
+        );
+        const body = (await loadTemplate(store, location.key, template, record.name)).trim();
+        if (!body) {
+          throw new AgentHarnessError(
+            `Agent '${record.name}' template '${template.name}' is empty.`,
+            'TEMPLATE_EMPTY',
+          );
+        }
+        sections.push(`<template name="${template.name}">\n${body}\n</template>`);
+        const systemPrompt = sections.join('\n\n');
+        if (systemPrompt.length > RESOLVED_SYSTEM_PROMPT_MAX_CHARS) {
+          throw new AgentHarnessError(
+            `Agent '${record.name}' system prompt and templates total ${systemPrompt.length} ` +
+              `characters, above the ${RESOLVED_SYSTEM_PROMPT_MAX_CHARS} character limit.`,
+            'TEMPLATE_PROMPT_TOO_LARGE',
+          );
+        }
+        records.push(template);
+        this.log({
+          event: 'template.materialization.completed',
+          agentName: record.name,
+          templateName: template.name,
+          templateUri,
+          contentBytes: Buffer.byteLength(body, 'utf8'),
+          contentChars: body.length,
+          durationMs: Date.now() - started,
+        });
+      } catch (error) {
+        this.log({
+          level: 'error',
+          event: 'template.materialization.failed',
+          agentName: record.name,
+          templateName: template.name,
+          templateUri,
+          durationMs: Date.now() - started,
+          error: describeLogError(error, templateUri),
+        });
+        throw error;
+      }
+    }
+
+    return { records, systemPrompt: sections.join('\n\n') };
   }
 
   /**
@@ -491,6 +585,25 @@ async function load(
     if (!(error instanceof AgentHarnessError)) throw error;
     throw new AgentHarnessError(
       `Agent '${agentName}' skill '${skill.name}': ${error.message}`,
+      error.code,
+      error.recoverable,
+      { cause: error },
+    );
+  }
+}
+
+async function loadTemplate(
+  store: ContentStore,
+  key: string,
+  template: TemplateRecord,
+  agentName: string,
+): Promise<string> {
+  try {
+    return (await store.load(key)).text;
+  } catch (error) {
+    if (!(error instanceof AgentHarnessError)) throw error;
+    throw new AgentHarnessError(
+      `Agent '${agentName}' template '${template.name}': ${error.message}`,
       error.code,
       error.recoverable,
       { cause: error },

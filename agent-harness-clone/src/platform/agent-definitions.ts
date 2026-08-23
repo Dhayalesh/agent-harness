@@ -51,6 +51,12 @@ export const agentSkillSchema = z
   })
   .strict();
 
+export const agentTemplateSchema = z
+  .object({
+    templateId: objectId,
+  })
+  .strict();
+
 /**
  * The ceilings a run is held to. Every field is honoured: they become
  * `AgentSessionConfig.limits` verbatim (`src/core/agent-session.ts`).
@@ -122,6 +128,7 @@ const agentShape = {
    */
   tools: z.array(identifier).max(200),
   skills: z.array(agentSkillSchema).max(100),
+  templates: z.array(agentTemplateSchema).max(100).optional(),
   /** `mcp_servers._id` references, connected for this agent only. */
   mcpServerIds: z.array(objectId).max(50),
   limits: agentLimitsSchema,
@@ -141,6 +148,7 @@ const agentShape = {
 type CrossFieldShape = {
   tools: string[];
   skills: Array<{ skillId: string; allowedTools?: string[] | undefined }>;
+  templates?: Array<{ templateId: string }> | undefined;
   mcpServerIds: string[];
 };
 
@@ -155,6 +163,11 @@ function refineCrossFields(value: CrossFieldShape, context: z.RefinementCtx): vo
   assertUnique(
     value.skills.map((skill) => skill.skillId),
     'skills',
+    context,
+  );
+  assertUnique(
+    (value.templates ?? []).map((template) => template.templateId),
+    'templates',
     context,
   );
 
@@ -203,6 +216,7 @@ export const agentInputSchema = agentRecordObject
     enabled: z.boolean().default(true),
     tools: z.array(identifier).max(200).default([]),
     skills: z.array(agentSkillSchema).max(100).default([]),
+    templates: z.array(agentTemplateSchema).max(100).default([]),
     mcpServerIds: z.array(objectId).max(50).default([]),
   })
   .strict()
@@ -227,6 +241,7 @@ export type AgentRecord = z.infer<typeof agentRecordSchema>;
 export type AgentRecordInput = z.input<typeof agentInputSchema>;
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 export type AgentSkill = z.infer<typeof agentSkillSchema>;
+export type AgentTemplate = z.infer<typeof agentTemplateSchema>;
 export type AgentRecordLimits = z.infer<typeof agentLimitsSchema>;
 
 export function parseAgentInput(value: unknown): z.output<typeof agentInputSchema> {

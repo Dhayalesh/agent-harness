@@ -5,21 +5,24 @@ import { acceptedExtensions } from "../services/attachment-types.js";
 import { McpServer } from "../models/mcp-server.js";
 import { ModelProvider } from "../models/model-provider.js";
 import { Skill } from "../models/skill.js";
+import { Template } from "../models/template.js";
 import {
   safeMcpServer,
   safeModelProvider,
   safeSkill,
+  safeTemplate,
 } from "../services/platform.js";
 
 export const catalogueRouter = express.Router();
 
 catalogueRouter.get("/", asyncHandler(async (_request, response) => {
-  const [providers, servers, skills] = await Promise.all([
+  const [providers, servers, skills, templates] = await Promise.all([
     ModelProvider.find({ enabled: true }).select("+apiKey +headers").sort({ name: 1 }),
     McpServer.find({ enabled: true })
       .select("+apiKey +env +headers")
       .sort({ name: 1 }),
     Skill.find({ enabled: true }).sort({ name: 1 }),
+    Template.find({ enabled: true }).sort({ name: 1 }),
   ]);
   response.json({
     tools: AVAILABLE_TOOLS.map((name) => ({
@@ -29,6 +32,7 @@ catalogueRouter.get("/", asyncHandler(async (_request, response) => {
     modelProviders: providers.map(safeModelProvider),
     mcpServers: servers.map(safeMcpServer),
     skills: skills.map(safeSkill),
+    templates: templates.map(safeTemplate),
     // Published so the file picker offers exactly what the server will accept,
     // rather than a second list in the client that can drift from this one.
     uploads: {

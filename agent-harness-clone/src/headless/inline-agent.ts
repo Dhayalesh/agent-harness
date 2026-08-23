@@ -8,6 +8,7 @@ import {
   type AgentStores,
   type ResolvedAgent,
   type SkillLookup,
+  type TemplateLookup,
 } from '../platform/agent-registry.js';
 import { parseMcpServerRecord, type McpServerRecord } from '../platform/mcp-server-definitions.js';
 import type { McpServerLookup } from '../platform/mcp-server-registry.js';
@@ -18,6 +19,7 @@ import {
 } from '../platform/model-provider-definitions.js';
 import type { ModelProviderLookup } from '../platform/model-provider-registry.js';
 import { parseSkillRecord, type SkillRecord } from '../platform/skill-definitions.js';
+import { parseTemplateRecord, type TemplateRecord } from '../platform/template-definitions.js';
 import type { LogContext, LogSink } from '../services/observability.js';
 import type { McpServerCapabilities } from '../platform/mcp-server-definitions.js';
 import type { Tool } from '../tools/tool.js';
@@ -25,6 +27,7 @@ import type {
   HeadlessMcpServerSpec,
   HeadlessModelProviderSpec,
   HeadlessSkillSpec,
+  HeadlessTemplateSpec,
   InvocationPayload,
 } from './payload.js';
 
@@ -137,15 +140,18 @@ export async function resolveInlineAgent(
   const modelProvider = completeModelProvider(payload.modelProvider, timestamp);
   const mcpServers = payload.mcpServers.map((spec) => completeMcpServer(spec, timestamp));
   const skills = payload.skills.map((spec) => completeSkill(spec, timestamp));
+  const templates = payload.templates.map((spec) => completeTemplate(spec, timestamp));
 
   const modelProviderId = syntheticId(0);
   const mcpServerIds = mcpServers.map((_, index) => syntheticId(index));
   const skillIds = skills.map((_, index) => syntheticId(index));
+  const templateIds = templates.map((_, index) => syntheticId(index));
 
   const record = completeAgent(payload, {
     modelProviderId,
     mcpServerIds,
     skillIds,
+    templateIds,
     availableTools: options.localTools,
     timestamp,
   });
@@ -153,7 +159,8 @@ export async function resolveInlineAgent(
   const stores: AgentStores = {
     agents: singleAgentLookup(record),
     modelProviders: singleRecordLookup(modelProviderId, modelProvider),
-    skills: byIdLookup(skillIds, skills),
+    skills: skillLookup(skillIds, skills),
+    templates: templateLookup(templateIds, templates),
     mcpServers: mcpServerLookup(mcpServerIds, mcpServers),
   };
 
@@ -222,6 +229,17 @@ function completeSkill(spec: HeadlessSkillSpec, timestamp: string): SkillRecord 
   });
 }
 
+function completeTemplate(spec: HeadlessTemplateSpec, timestamp: string): TemplateRecord {
+  return parseTemplateRecord({
+    name: spec.name,
+    uri: spec.uri,
+    enabled: true,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    createdBy: PAYLOAD_ORIGIN,
+  });
+}
+
 /**
  * Parsed through `parseAgentRecord` rather than assembled and trusted, so the payload
  * gets the cross-field checks a stored record gets: duplicate tool names, duplicate
@@ -233,6 +251,7 @@ function completeAgent(
     modelProviderId: string;
     mcpServerIds: readonly string[];
     skillIds: readonly string[];
+    templateIds: readonly string[];
     availableTools: readonly Tool[];
     timestamp: string;
   },
@@ -261,6 +280,9 @@ function completeAgent(
     skills: payload.skills.map((spec, index) => ({
       skillId: refs.skillIds[index] as string,
       ...(spec.allowedTools === undefined ? {} : { allowedTools: spec.allowedTools }),
+    })),
+    templates: payload.templates.map((_spec, index) => ({
+      templateId: refs.templateIds[index] as string,
     })),
     mcpServerIds: [...refs.mcpServerIds],
     limits: {
@@ -300,8 +322,16 @@ function singleRecordLookup(id: string, record: ModelProviderRecord): ModelProvi
   };
 }
 
-function byIdLookup(ids: readonly string[], records: readonly SkillRecord[]): SkillLookup {
+function skillLookup(ids: readonly string[], records: readonly SkillRecord[]): SkillLookup {
   const index = new Map(ids.map((id, position) => [id, records[position] as SkillRecord]));
+  return { get: async (id) => index.get(id) };
+}
+
+function templateLookup(
+  ids: readonly string[],
+  records: readonly TemplateRecord[],
+): TemplateLookup {
+  const index = new Map(ids.map((id, position) => [id, records[position] as TemplateRecord]));
   return { get: async (id) => index.get(id) };
 }
 

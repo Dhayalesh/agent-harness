@@ -15,6 +15,8 @@ import { RunDetailPage } from "./pages/RunDetailPage.jsx";
 import { RunsPage } from "./pages/RunsPage.jsx";
 import { SkillFormPage } from "./pages/SkillFormPage.jsx";
 import { SkillsPage } from "./pages/SkillsPage.jsx";
+import { TemplateFormPage } from "./pages/TemplateFormPage.jsx";
+import { TemplatesPage } from "./pages/TemplatesPage.jsx";
 
 export function App() {
   return (
@@ -57,6 +59,16 @@ export function App() {
         <Route
           path="/skills/:id/edit"
           element={<SkillFormPage mode="edit" />}
+        />
+
+        <Route path="/templates" element={<TemplatesPage />} />
+        <Route
+          path="/templates/new"
+          element={<TemplateFormPage mode="create" />}
+        />
+        <Route
+          path="/templates/:id/edit"
+          element={<TemplateFormPage mode="edit" />}
         />
 
         <Route path="/runs" element={<RunsPage />} />

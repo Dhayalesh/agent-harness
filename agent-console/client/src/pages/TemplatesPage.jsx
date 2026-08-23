@@ -15,8 +15,8 @@ import {
 import { Icon } from "../components/Icon.jsx";
 import { ResourceRow } from "../components/ResourceRow.jsx";
 
-export function SkillsPage() {
-  const [skills, setSkills] = useState(null);
+export function TemplatesPage() {
+  const [templates, setTemplates] = useState(null);
   const [query, setQuery] = useState("");
   const [error, setError] = useState(null);
   const [confirm, confirmDialog] = useConfirm();
@@ -24,11 +24,11 @@ export function SkillsPage() {
   const load = useCallback(async (q) => {
     setError(null);
     try {
-      const { skills: found } = await api.listSkills({ q });
-      setSkills(found);
+      const { templates: found } = await api.listTemplates({ q });
+      setTemplates(found);
     } catch (caught) {
       setError(caught);
-      setSkills([]);
+      setTemplates([]);
     }
   }, []);
 
@@ -37,26 +37,25 @@ export function SkillsPage() {
     return () => clearTimeout(timer);
   }, [query, load]);
 
-  const visibleSkills = useMemo(() => {
-    if (!skills || !query.trim()) return skills;
+  const visibleTemplates = useMemo(() => {
+    if (!templates || !query.trim()) return templates;
     const needle = query.trim().toLowerCase();
-    return skills.filter((skill) =>
-      [skill.name, skill.uri]
+    return templates.filter((template) =>
+      [template.name, template.uri]
         .filter(Boolean)
         .some((value) => value.toLowerCase().includes(needle)),
     );
-  }, [skills, query]);
-
-  const remove = async (skill) => {
+  }, [templates, query]);
+  const remove = async (template) => {
     const confirmed = await confirm({
-      title: "Delete skill",
-      body: `Delete skill "${skill.name}"? Agents that reference it must be updated first.`,
-      confirmLabel: "Delete skill",
+      title: "Delete template",
+      body: `Delete template "${template.name}"? Agents that reference it must be updated first.`,
+      confirmLabel: "Delete template",
     });
     if (!confirmed) return;
 
     try {
-      await api.deleteSkill(skill.id);
+      await api.deleteTemplate(template.id);
       await load(query);
     } catch (caught) {
       setError(caught);
@@ -67,24 +66,24 @@ export function SkillsPage() {
     <section>
       <PageHeader
         eyebrow="Build"
-        title="Skills"
-        description="Reusable skill instructions authored here and saved as Markdown in S3."
+        title="Templates"
+        description="Reusable text or Markdown documents stored in S3 and injected into assigned agents."
         actions={
           <>
             <SearchInput
               value={query}
               onValueChange={setQuery}
-              label="Search skills"
-              placeholder="Search skills"
+              label="Search templates"
+              placeholder="Search templates"
             />
             <Button
               as={Link}
-              to="/skills/new"
+              to="/templates/new"
               color="primary"
               radius="md"
               startContent={<Icon name="plus" className="h-4 w-4" />}
             >
-              New skill
+              New template
             </Button>
           </>
         }
@@ -92,20 +91,20 @@ export function SkillsPage() {
 
       <ErrorNote error={error} />
 
-      {skills === null ? (
-        <Loading what="skills" />
-      ) : visibleSkills.length === 0 ? (
+      {templates === null ? (
+        <Loading what="templates" />
+      ) : visibleTemplates.length === 0 ? (
         <EmptyState
           icon="skills"
-          title={query ? "No skills match this search." : "No skills found."}
+          title={query ? "No templates match this search." : "No templates found."}
           description={
             query
               ? "Try a different search."
-              : "Create reusable instructions as plain text or Markdown."
+              : "Upload a reusable text or Markdown template."
           }
           action={
             !query && (
-              <Button as={Link} to="/skills/new" color="primary" radius="md">
+              <Button as={Link} to="/templates/new" color="primary" radius="md">
                 Create one
               </Button>
             )
@@ -113,13 +112,13 @@ export function SkillsPage() {
         />
       ) : (
         <ul className="flex flex-col gap-3">
-          {visibleSkills.map((skill) => (
-            <li key={skill.id}>
+          {visibleTemplates.map((template) => (
+            <li key={template.id}>
               <ResourceRow
-                title={skill.name}
-                editHref={`/skills/${skill.id}/edit`}
-                deleteLabel={`Delete ${skill.name}`}
-                onDelete={() => remove(skill)}
+                title={template.name}
+                editHref={`/templates/${template.id}/edit`}
+                deleteLabel={`Delete ${template.name}`}
+                onDelete={() => remove(template)}
                 badges={
                   <>
                     <Chip
@@ -132,17 +131,17 @@ export function SkillsPage() {
                           "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
                       }}
                     >
-                      {skill.uri?.startsWith("s3://") ? "S3" : "HTTPS"}
+                      {template.uri?.startsWith("s3://") ? "S3" : "HTTPS"}
                     </Chip>
-                    <StatusPill status={skill.enabled ? "enabled" : "disabled"} />
+                    <StatusPill status={template.enabled ? "enabled" : "disabled"} />
                   </>
                 }
                 summary={
                   <Code size="sm" className="max-w-full truncate text-tiny">
-                    {skill.uri}
+                    {template.uri}
                   </Code>
                 }
-                meta={[{ label: "Updated", value: when(skill.updatedAt) }]}
+                meta={[{ label: "Updated", value: when(template.updatedAt) }]}
               />
             </li>
           ))}

@@ -124,6 +124,17 @@ export const headlessSkillSchema = z
   })
   .strict();
 
+/**
+ * One always-on template. Its UTF-8 text is fetched from S3 during preparation and
+ * appended to the resolved system prompt in payload order.
+ */
+export const headlessTemplateSchema = z
+  .object({
+    name: skillName,
+    uri: z.string().min(1).max(2_048).regex(S3_URI_PATTERN),
+  })
+  .strict();
+
 export const headlessLimitsSchema = z
   .object({
     maxTurns: z.number().int().positive().max(1_000).optional(),
@@ -269,6 +280,7 @@ export const invocationPayloadSchema = z
     modelProvider: headlessModelProviderSchema,
     mcpServers: z.array(headlessMcpServerSchema).max(50).default([]),
     skills: z.array(headlessSkillSchema).max(100).default([]),
+    templates: z.array(headlessTemplateSchema).max(100).default([]),
     /**
      * Reuses an id in the session store, so a second payload continues the first
      * conversation. Absent starts a new one.
@@ -371,6 +383,7 @@ export type HeadlessAgentSpec = z.output<typeof headlessAgentSchema>;
 export type HeadlessModelProviderSpec = z.output<typeof headlessModelProviderSchema>;
 export type HeadlessMcpServerSpec = z.output<typeof headlessMcpServerSchema>;
 export type HeadlessSkillSpec = z.output<typeof headlessSkillSchema>;
+export type HeadlessTemplateSpec = z.output<typeof headlessTemplateSchema>;
 export type HeadlessPermissionRule = z.output<typeof headlessPermissionRuleSchema>;
 export type HeadlessSessionSpec = z.output<typeof headlessSessionSchema>;
 
