@@ -308,6 +308,8 @@ export const api = {
   deleteChat: (id) => request(`/chats/${id}`, { method: "DELETE" }),
   resetChatSession: (id) =>
     request(`/chats/${id}/session/reset`, { method: "POST" }),
+  compactChatContext: (id) =>
+    request(`/chats/${id}/context/compact`, { method: "POST" }),
   sendChatMessage: (
     id,
     content,

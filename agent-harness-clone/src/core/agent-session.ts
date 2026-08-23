@@ -8,6 +8,7 @@ import {
   estimateMessagesTokens,
   type ContextManager,
   type ModelContextCapabilities,
+  type PreparedContext,
 } from '../context/context-manager.js';
 import {
   contextDecisionOf,
@@ -29,7 +30,12 @@ import type {
   ToolPermissionCheck,
 } from '../tools/tool.js';
 import { AsyncEventQueue } from './event-queue.js';
-import type { SessionStore, StoredSession } from '../sessions/session-store.js';
+import {
+  createPreparedContextCheckpoint,
+  type PreparedContextCheckpoint,
+  type SessionStore,
+  type StoredSession,
+} from '../sessions/session-store.js';
 import type { CommandRegistry } from '../commands/commands.js';
 import type { Artifact, ArtifactStore } from '../artifacts/artifact-store.js';
 import {
@@ -69,6 +75,8 @@ export type AgentSessionConfig = {
   sessionStore?: SessionStore;
   sessionId?: string;
   initialMessages?: readonly AgentMessage[];
+  /** A validated prepared prefix restored independently of canonical history. */
+  preparedContext?: PreparedContextCheckpoint;
   sessionCreatedAt?: string;
   sessionState?: {
     mode: 'persistent' | 'stateless';
@@ -121,6 +129,8 @@ export type AgentSession = {
   readonly id: string;
   readonly messages: readonly AgentMessage[];
   run(input: AgentInput): AsyncIterable<AgentEvent>;
+  /** Immediately prepares and checkpoints context without creating a model turn. */
+  compactContext(): AsyncIterable<AgentEvent>;
   interrupt(reason?: string): void;
   respondToPermission(requestId: string, decision: Exclude<PermissionDecision, 'ask'>): boolean;
   close(): Promise<void>;
@@ -150,6 +160,7 @@ export async function resumeAgentSession(
     ...config,
     sessionId: stored.id,
     initialMessages: stored.messages,
+    ...(stored.preparedContext === undefined ? {} : { preparedContext: stored.preparedContext }),
     sessionCreatedAt: stored.createdAt,
     sessionState: { mode: 'persistent', resumed: true, origin: 'store' },
     metadata: stored.metadata,
@@ -186,6 +197,7 @@ class AgentSessionImpl implements AgentSession {
   private started = false;
   private closed = false;
   private sequence = 0;
+  private preparedContext: PreparedContextCheckpoint | undefined;
 
   constructor(private readonly config: AgentSessionConfig) {
     this.idFactory = config.idFactory ?? randomUUID;
@@ -234,6 +246,8 @@ class AgentSessionImpl implements AgentSession {
     this.modelCapabilities = config.modelCapabilities;
     this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
+    this.preparedContext =
+      config.preparedContext === undefined ? undefined : structuredClone(config.preparedContext);
   }
 
   get messages(): readonly AgentMessage[] {
@@ -307,157 +321,14 @@ class AgentSessionImpl implements AgentSession {
         try {
           const forceCompaction = pendingForcedCompaction;
           pendingForcedCompaction = false;
-          const prepared = await this.contextManager.prepare({
-            messages: this.messages,
-            ...(reactiveMaxInputTokens === undefined
-              ? {}
-              : { maxInputTokens: reactiveMaxInputTokens }),
-            ...(this.modelCapabilities === undefined
-              ? {}
-              : { modelCapabilities: this.modelCapabilities }),
-            ...(forceCompaction ? { forceCompaction: true } : {}),
-          });
-          // What the orchestration layer decided, when one prepared this turn. Absent
-          // for a caller-supplied manager, and every use of it below is guarded, so
-          // the events a custom manager produces are exactly what they were before.
-          const decision = contextDecisionOf(prepared);
-          if (prepared.compacted) {
-            yield this.event({
-              type: 'context.compaction.started',
-              turnId,
-              estimatedTokens: prepared.tokensBefore ?? prepared.estimatedTokens,
-            });
-            yield this.event({
-              type: 'context.compaction.completed',
-              turnId,
-              tokensBefore: prepared.tokensBefore ?? prepared.estimatedTokens,
-              tokensAfter: prepared.estimatedTokens,
-            });
-          } else if (forceCompaction && prepared.metadata?.skipped) {
-            // A requested compaction that found nothing to do. Reported, because a
-            // client that offered the action has to be able to tell the user why
-            // nothing changed — silence there is indistinguishable from a lost
-            // request or a broken button.
-            yield this.event({
-              type: 'warning',
-              code: 'CONTEXT_COMPACTION_SKIPPED',
-              message:
-                prepared.metadata.skipped === 'already-minimal'
-                  ? 'The context is already as small as summarising it would make it, so it was left alone.'
-                  : 'There are no earlier turns outside the retained window to summarise.',
-            });
-          }
-          // Warned at the point the policy itself names, so the threshold an agent
-          // configured is the threshold a reader hears about. Only the two tiers
-          // below compaction warn: at `critical` the compaction events above have
-          // already said everything a warning would.
-          if (
-            prepared.metadata?.pressure === 'warning' ||
-            prepared.metadata?.pressure === 'aggressive'
-          ) {
-            const percent = prepared.budget
-              ? Math.round(prepared.budget.utilizationFraction * 1_000) / 10
-              : undefined;
-            yield this.event({
-              type: 'warning',
-              code: 'CONTEXT_PRESSURE',
-              message:
-                `The context is ${percent === undefined ? 'approaching' : `at ${percent}% of`} its input budget` +
-                (prepared.metadata.toolResultsTruncated
-                  ? `; ${prepared.metadata.toolResultsTruncated} oversized tool result(s) were shortened to fit.`
-                  : '; earlier turns will be summarised if it keeps growing.'),
-            });
-          }
-          // Cheap relief, reported separately from compaction because it is a
-          // different thing: material was left out or shortened, not summarised. Only
-          // emitted when something actually gave way.
-          if (
-            decision &&
-            (decision.compactedMessageCount > 0 ||
-              decision.trimmedToolResults > 0 ||
-              decision.deduplicatedToolResults > 0)
-          ) {
-            yield this.event({
-              type: 'context.selection',
-              turnId,
-              kept: decision.selectedMessageCount,
-              dropped: decision.compactedMessageCount,
-              trimmedToolResults: decision.trimmedToolResults,
-              deduplicatedToolResults: decision.deduplicatedToolResults,
-              compressed: decision.compressedCategories,
-            });
-          }
-          // Emitted whenever the layer acted, passing or failing. A verification that
-          // is only reported when it fails is a verification a reader cannot trust,
-          // because silence and success look identical.
-          if (decision && decision.action !== 'none') {
-            yield this.event({
-              type: 'context.verification',
-              turnId,
-              passed: decision.verificationPassed,
-              preserved: decision.preservedStateCategories,
-              ...(decision.verificationIssues.length === 0
-                ? {}
-                : { issues: decision.verificationIssues }),
-            });
-          }
-          if (decision?.recoveryPerformed) {
-            yield this.event({
-              type: 'context.recovery',
-              turnId,
-              restored: decision.preservedStateCategories,
-              issues: decision.verificationIssues,
-              tokensBefore: decision.tokensBefore,
-              tokensAfter: decision.tokensAfter,
-            });
-          }
-          // Every turn, compacted or not: a usage meter needs the number that did
-          // not trigger compaction as much as the one that did. The budget comes
-          // from the context layer when it reported one, and falls back to the
-          // session's own ceiling so the event is still meaningful with a
-          // passthrough or custom context manager.
-          const contextBudget = prepared.budget?.effectiveInputBudget ?? reactiveMaxInputTokens;
-          if (contextBudget !== undefined && contextBudget > 0) {
-            yield this.event({
-              type: 'context.usage',
-              turnId,
-              usedTokens: prepared.estimatedTokens,
-              budgetTokens: contextBudget,
-              ...(prepared.budget?.contextWindow === undefined
-                ? this.modelCapabilities === undefined
-                  ? {}
-                  : { contextWindow: this.modelCapabilities.contextWindow }
-                : { contextWindow: prepared.budget.contextWindow }),
-              ...(prepared.budget?.outputReserved === undefined
-                ? {}
-                : { reservedOutputTokens: prepared.budget.outputReserved }),
-              usedPercent: Math.round((prepared.estimatedTokens / contextBudget) * 1_000) / 10,
-              compacted: prepared.compacted,
-              // The reading before the layer acted, carried alongside the one after
-              // so a meter can show both the peak and the relief rather than only
-              // the number that survived.
-              ...(prepared.tokensBefore === undefined
-                ? {}
-                : {
-                    peakTokens: prepared.tokensBefore,
-                    peakPercent: Math.round((prepared.tokensBefore / contextBudget) * 1_000) / 10,
-                  }),
-              ...(prepared.metadata?.pressure === undefined
-                ? {}
-                : { pressure: prepared.metadata.pressure }),
-              ...(prepared.metadata?.toolResultsTruncated === undefined
-                ? {}
-                : { toolResultsTruncated: prepared.metadata.toolResultsTruncated }),
-              // The turn number, so a client can build a timeline without correlating
-              // `turnId`s against `turn.started` frames it may not have kept.
-              turn,
-              // Everything below describes an automatic decision, and every field is
-              // omitted when no orchestrating manager made one — which is how a
-              // caller-supplied `ContextManager` keeps emitting exactly the event it
-              // used to.
-              ...(decision === undefined ? {} : contextDecisionFields(decision)),
-            });
-          }
+          const { prepared, events } = await this.prepareContext(
+            this.contextMessages(),
+            turnId,
+            turn,
+            reactiveMaxInputTokens,
+            forceCompaction,
+          );
+          for (const event of events) yield this.event(event);
           const projectContext = await this.projectContextProvider?.collect(
             this.activeController.signal,
           );
@@ -800,6 +671,83 @@ class AgentSessionImpl implements AgentSession {
       this.running = false;
       this.activeController = undefined;
     }
+  }
+
+  async *compactContext(): AsyncIterable<AgentEvent> {
+    if (this.closed) throw new AgentHarnessError('Session is closed', 'SESSION_CLOSED');
+    if (this.running)
+      throw new AgentHarnessError('Session already has an active operation', 'SESSION_BUSY');
+
+    this.running = true;
+    this.activeController = new AbortController();
+    try {
+      const operationId = this.idFactory();
+      const { prepared, events } = await this.prepareContext(
+        this.contextMessages(),
+        operationId,
+        undefined,
+        undefined,
+        true,
+      );
+      for (const event of events) yield this.event(event);
+
+      if (prepared.compacted) {
+        const checkpoint = createPreparedContextCheckpoint(prepared.messages, this.history);
+        if (checkpoint) {
+          this.preparedContext = checkpoint;
+        } else {
+          yield this.event({
+            type: 'warning',
+            code: 'CONTEXT_CHECKPOINT_SKIPPED',
+            message: 'The prepared context exceeded the persisted checkpoint bounds.',
+          });
+        }
+      }
+      // A no-op leaves an existing checkpoint in place. Clearing it here would make
+      // clicking Compact a second time expand the next model request back to the
+      // full canonical transcript, even though the operation reported no change.
+      await this.persist();
+    } finally {
+      this.running = false;
+      this.activeController = undefined;
+    }
+  }
+
+  private contextMessages(): readonly AgentMessage[] {
+    const checkpoint = this.preparedContext;
+    if (!checkpoint || checkpoint.sourceMessageCount > this.history.length) return this.messages;
+    return [
+      ...structuredClone(checkpoint.messages),
+      ...structuredClone(this.history.slice(checkpoint.sourceMessageCount)),
+    ];
+  }
+
+  private async prepareContext(
+    messages: readonly AgentMessage[],
+    turnId: string,
+    turn: number | undefined,
+    maxInputTokens: number | undefined,
+    forceCompaction: boolean,
+  ): Promise<{ prepared: PreparedContext; events: EventPayload[] }> {
+    const prepared = await this.contextManager.prepare({
+      messages,
+      ...(maxInputTokens === undefined ? {} : { maxInputTokens }),
+      ...(this.modelCapabilities === undefined
+        ? {}
+        : { modelCapabilities: this.modelCapabilities }),
+      ...(forceCompaction ? { forceCompaction: true } : {}),
+    });
+    return {
+      prepared,
+      events: contextEventPayloads({
+        prepared,
+        turnId,
+        turn,
+        forceCompaction,
+        maxInputTokens,
+        modelCapabilities: this.modelCapabilities,
+      }),
+    };
   }
 
   interrupt(reason = 'interrupted'): void {
@@ -1254,6 +1202,9 @@ class AgentSessionImpl implements AgentSession {
       createdAt: this.createdAt,
       updatedAt: this.now(),
       messages: structuredClone(this.history),
+      ...(this.preparedContext === undefined
+        ? {}
+        : { preparedContext: structuredClone(this.preparedContext) }),
       metadata: structuredClone(this.metadata),
     };
     try {
@@ -1279,6 +1230,131 @@ class AgentSessionImpl implements AgentSession {
       throw error;
     }
   }
+}
+
+type ContextEventOptions = {
+  prepared: PreparedContext;
+  turnId: string;
+  turn: number | undefined;
+  forceCompaction: boolean;
+  maxInputTokens: number | undefined;
+  modelCapabilities: ModelContextCapabilities | undefined;
+};
+
+/** One authoritative translation from a prepared context to public telemetry. */
+function contextEventPayloads(options: ContextEventOptions): EventPayload[] {
+  const { prepared, turnId, turn, forceCompaction, maxInputTokens, modelCapabilities } = options;
+  const decision = contextDecisionOf(prepared);
+  const events: EventPayload[] = [];
+
+  if (prepared.compacted) {
+    events.push({
+      type: 'context.compaction.started',
+      turnId,
+      estimatedTokens: prepared.tokensBefore ?? prepared.estimatedTokens,
+    });
+    events.push({
+      type: 'context.compaction.completed',
+      turnId,
+      tokensBefore: prepared.tokensBefore ?? prepared.estimatedTokens,
+      tokensAfter: prepared.estimatedTokens,
+    });
+  } else if (forceCompaction && prepared.metadata?.skipped) {
+    events.push({
+      type: 'warning',
+      code: 'CONTEXT_COMPACTION_SKIPPED',
+      message:
+        prepared.metadata.skipped === 'already-minimal'
+          ? 'The context is already as small as summarising it would make it, so it was left alone.'
+          : 'There are no earlier turns outside the retained window to summarise.',
+    });
+  }
+
+  if (prepared.metadata?.pressure === 'warning' || prepared.metadata?.pressure === 'aggressive') {
+    const percent = prepared.budget
+      ? Math.round(prepared.budget.utilizationFraction * 1_000) / 10
+      : undefined;
+    events.push({
+      type: 'warning',
+      code: 'CONTEXT_PRESSURE',
+      message:
+        `The context is ${percent === undefined ? 'approaching' : `at ${percent}% of`} its input budget` +
+        (prepared.metadata.toolResultsTruncated
+          ? `; ${prepared.metadata.toolResultsTruncated} oversized tool result(s) were shortened to fit.`
+          : '; earlier turns will be summarised if it keeps growing.'),
+    });
+  }
+
+  if (
+    decision &&
+    (decision.compactedMessageCount > 0 ||
+      decision.trimmedToolResults > 0 ||
+      decision.deduplicatedToolResults > 0)
+  ) {
+    events.push({
+      type: 'context.selection',
+      turnId,
+      kept: decision.selectedMessageCount,
+      dropped: decision.compactedMessageCount,
+      trimmedToolResults: decision.trimmedToolResults,
+      deduplicatedToolResults: decision.deduplicatedToolResults,
+      compressed: decision.compressedCategories,
+    });
+  }
+  if (decision && decision.action !== 'none') {
+    events.push({
+      type: 'context.verification',
+      turnId,
+      passed: decision.verificationPassed,
+      preserved: decision.preservedStateCategories,
+      ...(decision.verificationIssues.length === 0 ? {} : { issues: decision.verificationIssues }),
+    });
+  }
+  if (decision?.recoveryPerformed) {
+    events.push({
+      type: 'context.recovery',
+      turnId,
+      restored: decision.preservedStateCategories,
+      issues: decision.verificationIssues,
+      tokensBefore: decision.tokensBefore,
+      tokensAfter: decision.tokensAfter,
+    });
+  }
+
+  const contextBudget = prepared.budget?.effectiveInputBudget ?? maxInputTokens;
+  if (contextBudget !== undefined && contextBudget > 0) {
+    events.push({
+      type: 'context.usage',
+      turnId,
+      usedTokens: prepared.estimatedTokens,
+      budgetTokens: contextBudget,
+      ...(prepared.budget?.contextWindow === undefined
+        ? modelCapabilities === undefined
+          ? {}
+          : { contextWindow: modelCapabilities.contextWindow }
+        : { contextWindow: prepared.budget.contextWindow }),
+      ...(prepared.budget?.outputReserved === undefined
+        ? {}
+        : { reservedOutputTokens: prepared.budget.outputReserved }),
+      usedPercent: Math.round((prepared.estimatedTokens / contextBudget) * 1_000) / 10,
+      compacted: prepared.compacted,
+      ...(prepared.tokensBefore === undefined
+        ? {}
+        : {
+            peakTokens: prepared.tokensBefore,
+            peakPercent: Math.round((prepared.tokensBefore / contextBudget) * 1_000) / 10,
+          }),
+      ...(prepared.metadata?.pressure === undefined
+        ? {}
+        : { pressure: prepared.metadata.pressure }),
+      ...(prepared.metadata?.toolResultsTruncated === undefined
+        ? {}
+        : { toolResultsTruncated: prepared.metadata.toolResultsTruncated }),
+      ...(turn === undefined ? {} : { turn }),
+      ...(decision === undefined ? {} : contextDecisionFields(decision)),
+    } as EventPayload);
+  }
+  return events;
 }
 
 function responseArtifact(value: unknown): Artifact | undefined {

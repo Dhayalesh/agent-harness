@@ -611,20 +611,15 @@ export function AgentFormPage({ mode }) {
             />
             <Input
               type="number"
-              min={1}
-              max={99}
-              label="Shrink context at"
+              label="Context window"
               labelPlacement="outside"
-              placeholder="90"
               variant="bordered"
-              endContent={<span className="text-small text-default-400">%</span>}
-              value={String(form.compactionThresholdPercent)}
-              onValueChange={setNumber("compactionThresholdPercent")}
-              description="Percentage of the provider's input budget. Blank uses 90%."
-              isInvalid={Boolean(
-                fieldErrors["limits.compactionThresholdPercent"],
+              value={String(
+                selectedProvider?.capabilities?.contextWindow ?? "",
               )}
-              errorMessage={fieldErrors["limits.compactionThresholdPercent"]}
+              placeholder="provider capability"
+              description="Defined by the selected model provider."
+              isReadOnly
             />
             <Input
               type="number"

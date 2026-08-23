@@ -112,6 +112,17 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
       },
     ],
   });
+  assert.equal("operation" in payload, false);
+
+  const { payload: compactPayload } = await buildPayload({
+    agentId,
+    prompt: "",
+    sessionId: "a".repeat(36),
+    operation: "compact",
+  });
+  assert.equal(compactPayload.operation, "compact");
+  assert.equal(compactPayload.prompt, "");
+  assert.equal(compactPayload.sessionId, payload.sessionId);
 
   assert.deepEqual(payload.skills, [
     {

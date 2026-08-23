@@ -300,7 +300,12 @@ export { S3SessionStore } from './sessions/s3-session-store.js';
 export type { S3SessionStoreOptions } from './sessions/s3-session-store.js';
 export { TieredSessionStore } from './sessions/tiered-session-store.js';
 export { InMemorySessionStore } from './sessions/session-store.js';
-export type { SessionStore, SessionStoreOptions, StoredSession } from './sessions/session-store.js';
+export type {
+  PreparedContextCheckpoint,
+  SessionStore,
+  SessionStoreOptions,
+  StoredSession,
+} from './sessions/session-store.js';
 export { CommandRegistry } from './commands/commands.js';
 export type {
   AgentCommand,
