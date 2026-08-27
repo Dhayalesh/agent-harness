@@ -16,16 +16,22 @@ async function main() {
     process.stdout.write(
       `agent-console: API on http://${config.host}:${config.port}\n`,
     );
-    if (config.agentcore.runtimeArn) {
+    if (config.localHarness.url) {
+      // Matches resolveRuntime's own precedence: local wins unconditionally when
+      // set, so the startup banner should not claim AgentCore is what runs.
+      process.stdout.write(
+        `agent-console: local harness ${config.localHarness.url} (LOCAL_HARNESS_URL ` +
+          "overrides AGENTCORE_RUNTIME_ARN when both are set)\n",
+      );
+    } else if (config.agentcore.runtimeArn) {
       process.stdout.write(
         `agent-console: AgentCore runtime ${config.agentcore.runtimeArn} ` +
           `(${config.agentcore.qualifier || "DEFAULT"} endpoint, region ${config.agentcore.region})\n`,
       );
     } else {
       process.stderr.write(
-        "agent-console: AGENTCORE_RUNTIME_ARN is unset. Records can be managed, but " +
-          "invoking an agent fails until the runtime ARN is configured. There is no local " +
-          "fallback.\n",
+        "agent-console: AGENTCORE_RUNTIME_ARN is unset and LOCAL_HARNESS_URL is unset. Records " +
+          "can be managed, but invoking an agent fails until one of them is configured.\n",
       );
     }
     process.stderr.write(
