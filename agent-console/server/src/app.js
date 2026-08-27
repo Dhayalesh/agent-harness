@@ -14,6 +14,7 @@ import { mcpServersRouter } from "./routes/mcp-servers.js";
 import { modelProvidersRouter } from "./routes/model-providers.js";
 import { runsRouter } from "./routes/runs.js";
 import { skillsRouter } from "./routes/skills.js";
+import { templatesRouter } from "./routes/templates.js";
 
 export function createApp() {
   const app = express();
@@ -30,6 +31,7 @@ export function createApp() {
   app.use("/api/model-providers", modelProvidersRouter);
   app.use("/api/mcp-servers", mcpServersRouter);
   app.use("/api/skills", skillsRouter);
+  app.use("/api/templates", templatesRouter);
   app.use("/api/chats", chatsRouter);
   app.use("/api/runs", runsRouter);
 

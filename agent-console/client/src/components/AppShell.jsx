@@ -20,6 +20,7 @@ const navigation = [
       { to: "/model-providers", label: "Models", icon: "models" },
       { to: "/mcp-servers", label: "MCP Servers", icon: "plug" },
       { to: "/skills", label: "Skills", icon: "skills" },
+      { to: "/templates", label: "Templates", icon: "skills" },
     ],
   },
   {

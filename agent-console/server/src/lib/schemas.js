@@ -61,6 +61,12 @@ const agentSkillSchema = z
   })
   .strict();
 
+const agentTemplateSchema = z
+  .object({
+    templateId: objectIdString,
+  })
+  .strict();
+
 const agentShape = {
   name: identifier,
   description: z.string().trim().max(1_000).optional(),
@@ -69,6 +75,7 @@ const agentShape = {
   model: z.string().trim().min(1).max(300).optional(),
   tools: z.array(identifier).max(200).default([]),
   skills: z.array(agentSkillSchema).max(100).default([]),
+  templates: z.array(agentTemplateSchema).max(100).default([]),
   mcpServerIds: z.array(objectIdString).max(50).default([]),
   limits: limitsSchema.default({ maxTurns: 24 }),
   /**
@@ -87,6 +94,11 @@ const refineAgent = (value, context) => {
   unique(
     value.skills.map((skill) => skill.skillId),
     ["skills"],
+    context,
+  );
+  unique(
+    value.templates.map((template) => template.templateId),
+    ["templates"],
     context,
   );
   const offered = new Set(value.tools);
@@ -402,7 +414,22 @@ export const mcpServerRecordSchema = z
   .strict()
   .superRefine(refineMcpServer);
 
-const skillShape = {
+const skillContent = z
+  .string()
+  .min(1, "Skill content is required")
+  .refine((value) => value.trim().length > 0, "Skill content is required")
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 2_000_000,
+    "Skill content must be at most 2,000,000 UTF-8 bytes",
+  );
+
+const skillRequestShape = {
+  name: skillName,
+  content: skillContent,
+  enabled: z.boolean().default(true),
+};
+
+const skillRecordShape = {
   name: skillName,
   uri: z
     .string()
@@ -413,9 +440,9 @@ const skillShape = {
   enabled: z.boolean().default(true),
 };
 
-export const skillCreateSchema = z.object(skillShape).strict();
+export const skillCreateSchema = z.object(skillRequestShape).strict();
 export const skillUpdateSchema = z
-  .object(skillShape)
+  .object(skillRequestShape)
   .partial()
   .strict()
   .refine((value) => Object.keys(value).length > 0, {
@@ -423,7 +450,39 @@ export const skillUpdateSchema = z
   });
 export const skillRecordSchema = z
   .object({
-    ...skillShape,
+    ...skillRecordShape,
+    createdAt: isoTimestamp,
+    updatedAt: isoTimestamp,
+    createdBy: identifier,
+  })
+  .strict();
+
+const templateContent = z
+  .string()
+  .min(1, "Template content is required")
+  .refine((value) => value.trim().length > 0, "Template content is required")
+  .refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 500_000,
+    "Template content must be at most 500,000 UTF-8 bytes",
+  );
+
+const templateRequestShape = {
+  name: skillName,
+  content: templateContent,
+  enabled: z.boolean().default(true),
+};
+
+export const templateCreateSchema = z.object(templateRequestShape).strict();
+export const templateUpdateSchema = z
+  .object(templateRequestShape)
+  .partial()
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, {
+    message: "No fields to update",
+  });
+export const templateRecordSchema = z
+  .object({
+    ...skillRecordShape,
     createdAt: isoTimestamp,
     updatedAt: isoTimestamp,
     createdBy: identifier,

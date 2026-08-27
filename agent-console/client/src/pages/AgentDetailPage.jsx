@@ -66,6 +66,7 @@ export function AgentDetailPage() {
   const provider = resolved.modelProvider;
   const mcpServers = resolved.mcpServers ?? [];
   const skills = resolved.skills ?? [];
+  const templates = resolved.templates ?? [];
   const issues = resolved.issues ?? [];
 
   return (
@@ -213,7 +214,7 @@ export function AgentDetailPage() {
 
           <SectionCard
             title="Integrations"
-            description="MCP servers and reusable skills."
+            description="MCP servers, reusable skills, and prompt templates."
           >
             <div className="flex flex-col gap-4">
               <IntegrationList
@@ -236,6 +237,18 @@ export function AgentDetailPage() {
                   title: skill.missing ? skill.id : skill.name,
                   href: skill.missing ? null : `/skills/${skill.id}/edit`,
                   detail: skill.uri,
+                }))}
+              />
+              <IntegrationList
+                heading="Templates"
+                empty="No templates."
+                items={templates.map((template) => ({
+                  id: template.id,
+                  title: template.missing ? template.id : template.name,
+                  href: template.missing
+                    ? null
+                    : `/templates/${template.id}/edit`,
+                  detail: template.uri,
                 }))}
               />
             </div>

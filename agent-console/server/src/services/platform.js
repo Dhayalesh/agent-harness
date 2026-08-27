@@ -7,11 +7,13 @@ import {
   modelProviderRecordSchema,
   parseRecordOrThrow,
   skillRecordSchema,
+  templateRecordSchema,
 } from "../lib/schemas.js";
 import { Agent } from "../models/agent.js";
 import { McpServer } from "../models/mcp-server.js";
 import { ModelProvider } from "../models/model-provider.js";
 import { Skill } from "../models/skill.js";
+import { Template } from "../models/template.js";
 import { parseS3Uri } from "./skill-content.js";
 
 export const nowIso = () => new Date().toISOString();
@@ -54,6 +56,12 @@ export async function loadSkill(id) {
   return skill;
 }
 
+export async function loadTemplate(id) {
+  const template = await Template.findById(requireObjectId(id, "template"));
+  if (!template) throw notFound("No template with id " + id);
+  return template;
+}
+
 export function safeModelProvider(document) {
   const value = plain(document);
   const endpoint = safeEndpoint(value.baseURL);
@@ -88,6 +96,10 @@ export function safeSkill(document) {
   return { ...plain(document), id: document._id.toString() };
 }
 
+export function safeTemplate(document) {
+  return { ...plain(document), id: document._id.toString() };
+}
+
 export function safeAgent(document, { includeSystemPrompt = false } = {}) {
   const value = plain(document);
   if (!includeSystemPrompt) delete value.systemPrompt;
@@ -107,7 +119,12 @@ export async function resolveAgentSummaries(
   const skillIds = new Set(
     documents.flatMap((agent) => (agent.skills ?? []).map((entry) => entry.skillId)),
   );
-  const [providers, servers, skills] = await Promise.all([
+  const templateIds = new Set(
+    documents.flatMap((agent) =>
+      (agent.templates ?? []).map((entry) => entry.templateId),
+    ),
+  );
+  const [providers, servers, skills, templates] = await Promise.all([
     ModelProvider.find({ _id: { $in: objectIds(providerIds) } }).select(
       "+apiKey +headers",
     ),
@@ -115,13 +132,24 @@ export async function resolveAgentSummaries(
       "+apiKey +env +headers",
     ),
     Skill.find({ _id: { $in: objectIds(skillIds) } }),
+    templateIds.size
+      ? Template.find({ _id: { $in: objectIds(templateIds) } })
+      : Promise.resolve([]),
   ]);
   const providerMap = byId(providers);
   const serverMap = byId(servers);
   const skillMap = byId(skills);
+  const templateMap = byId(templates);
 
   return documents.map((agent) =>
-    resolvedSummary(agent, providerMap, serverMap, skillMap, includeSystemPrompt),
+    resolvedSummary(
+      agent,
+      providerMap,
+      serverMap,
+      skillMap,
+      templateMap,
+      includeSystemPrompt,
+    ),
   );
 }
 
@@ -170,12 +198,24 @@ export async function resolveAgentForInvocation(id) {
     });
   }
 
+  const templates = [];
+  for (const entry of storedAgent.templates) {
+    const template = await loadTemplate(entry.templateId);
+    if (!template.enabled) {
+      throw badRequest("Template " + template.name + " is disabled.");
+    }
+    const value = validateDocument(templateRecordSchema, template, "Template");
+    parseS3Uri(value.uri, "template " + value.name);
+    templates.push({ document: template, value });
+  }
+
   assertAgentProviderCompatibility(storedAgent, storedProvider);
   return {
     agent: { document: agent, value: storedAgent },
     modelProvider: { document: provider, value: storedProvider },
     mcpServers,
     skills,
+    templates,
   };
 }
 
@@ -184,6 +224,7 @@ export async function assertAgentReferences(value) {
   assertAgentProviderCompatibility(value, provider);
   for (const id of value.mcpServerIds ?? []) await loadMcpServer(id);
   for (const entry of value.skills ?? []) await loadSkill(entry.skillId);
+  for (const entry of value.templates ?? []) await loadTemplate(entry.templateId);
 }
 
 export function createRecord(Model, input) {
@@ -234,6 +275,7 @@ function resolvedSummary(
   providerMap,
   serverMap,
   skillMap,
+  templateMap,
   includeSystemPrompt,
 ) {
   const issues = [];
@@ -275,6 +317,20 @@ function resolvedSummary(
     return { ...summarySkill(skill), allowedTools: entry.allowedTools };
   });
 
+  const resolvedTemplates = (agent.templates ?? []).map((entry) => {
+    const template = templateMap.get(entry.templateId);
+    if (!template) {
+      issues.push(issueValue("TEMPLATE_MISSING", "A referenced template is missing."));
+      return { id: entry.templateId, missing: true };
+    }
+    if (!template.enabled) {
+      issues.push(
+        issueValue("TEMPLATE_DISABLED", "A referenced template is disabled."),
+      );
+    }
+    return summaryTemplate(template);
+  });
+
   const unavailable = (agent.tools ?? []).filter(
     (tool) => !AVAILABLE_TOOLS.includes(tool),
   );
@@ -296,6 +352,7 @@ function resolvedSummary(
       modelProvider: provider ? summaryProvider(provider) : null,
       mcpServers: servers,
       skills: resolvedSkills,
+      templates: resolvedTemplates,
     },
   };
 }
@@ -336,6 +393,11 @@ function summaryMcp(document) {
 
 function summarySkill(document) {
   const safe = safeSkill(document);
+  return { id: safe.id, name: safe.name, uri: safe.uri, enabled: safe.enabled };
+}
+
+function summaryTemplate(document) {
+  const safe = safeTemplate(document);
   return { id: safe.id, name: safe.name, uri: safe.uri, enabled: safe.enabled };
 }
 

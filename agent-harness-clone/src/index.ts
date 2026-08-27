@@ -450,6 +450,7 @@ export {
   agentLimitsSchema,
   agentRecordSchema,
   agentSkillSchema,
+  agentTemplateSchema,
   agentUpdateSchema,
   parseAgentInput,
   parseAgentRecord,
@@ -460,6 +461,7 @@ export type {
   AgentRecordInput,
   AgentRecordLimits,
   AgentSkill,
+  AgentTemplate,
   AgentUpdate,
 } from './platform/agent-definitions.js';
 export { assertMatches, InMemoryContentStore, locate, sha256Hex } from './content/content-store.js';
@@ -477,6 +479,19 @@ export {
   skillUpdateSchema,
 } from './platform/skill-definitions.js';
 export type { SkillRecord, SkillRecordInput, SkillUpdate } from './platform/skill-definitions.js';
+export {
+  parseTemplateInput,
+  parseTemplateRecord,
+  parseTemplateUpdate,
+  templateInputSchema,
+  templateRecordSchema,
+  templateUpdateSchema,
+} from './platform/template-definitions.js';
+export type {
+  TemplateRecord,
+  TemplateRecordInput,
+  TemplateUpdate,
+} from './platform/template-definitions.js';
 export { TempSkillDirectory } from './skills/temp-skill-directory.js';
 export {
   SKILL_MAX_OBJECT_BYTES,
@@ -484,13 +499,17 @@ export {
   SkillContentStores,
 } from './platform/skill-content.js';
 export type { SkillContentOptions } from './platform/skill-content.js';
-export { PlatformAgentRegistry } from './platform/agent-registry.js';
+export {
+  PlatformAgentRegistry,
+  RESOLVED_SYSTEM_PROMPT_MAX_CHARS,
+} from './platform/agent-registry.js';
 export type {
   AgentLookup,
   AgentStores,
   PlatformAgentRegistryOptions,
   ResolvedAgent,
   SkillLookup,
+  TemplateLookup,
 } from './platform/agent-registry.js';
 export {
   AGENT_RUNTIME_SUPPORT,
@@ -510,6 +529,7 @@ export {
   headlessModelProviderSchema,
   headlessPermissionRuleSchema,
   headlessSkillSchema,
+  headlessTemplateSchema,
   invocationAttachmentSchema,
   invocationPayloadSchema,
   parseInvocationPayload,
@@ -520,6 +540,7 @@ export type {
   HeadlessModelProviderSpec,
   HeadlessPermissionRule,
   HeadlessSkillSpec,
+  HeadlessTemplateSpec,
   InvocationPayload,
   InvocationPayloadInput,
 } from './headless/payload.js';

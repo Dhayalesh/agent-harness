@@ -76,6 +76,14 @@ export async function buildPayload({
         allowedTools: skill.allowedTools,
       }),
     ),
+    ...(resolved.templates.length
+      ? {
+          templates: resolved.templates.map((template) => ({
+            name: template.value.name,
+            uri: template.value.uri,
+          })),
+        }
+      : {}),
     permissionMode: permissionMode ?? "default",
     permissionRules,
     permissionFallback: "deny",

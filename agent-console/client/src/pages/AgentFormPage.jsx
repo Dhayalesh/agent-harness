@@ -34,6 +34,7 @@ const EMPTY = {
   model: "",
   tools: ["read_file", "glob", "grep"],
   skills: [],
+  templates: [],
   mcpServerIds: [],
   maxTurns: 12,
   compactionThresholdPercent: "",
@@ -48,6 +49,7 @@ const EMPTY_CATALOGUE = {
   modelProviders: [],
   mcpServers: [],
   skills: [],
+  templates: [],
 };
 
 export function AgentFormPage({ mode }) {
@@ -73,6 +75,7 @@ export function AgentFormPage({ mode }) {
           modelProviders: catalogueResult.modelProviders ?? [],
           mcpServers: catalogueResult.mcpServers ?? [],
           skills: catalogueResult.skills ?? [],
+          templates: catalogueResult.templates ?? [],
         });
 
         if (agentResult) {
@@ -87,6 +90,9 @@ export function AgentFormPage({ mode }) {
               ...(skill.allowedTools
                 ? { allowedTools: [...skill.allowedTools] }
                 : {}),
+            })),
+            templates: (agent.templates ?? []).map((template) => ({
+              templateId: template.templateId,
             })),
             mcpServerIds: [...(agent.mcpServerIds ?? [])],
             maxTurns: agent.limits?.maxTurns ?? 12,
@@ -208,6 +214,9 @@ export function AgentFormPage({ mode }) {
           ? {}
           : { allowedTools: [...skill.allowedTools] }),
       })),
+      templates: form.templates.map((template) => ({
+        templateId: template.templateId,
+      })),
       mcpServerIds: [...form.mcpServerIds],
       limits,
       stream: form.stream,
@@ -234,7 +243,7 @@ export function AgentFormPage({ mode }) {
       <PageHeader
         eyebrow="Agent definition"
         title={editing ? `Edit ${form.name}` : "New agent"}
-        description="Compose a model, local tools, MCP servers, and skills into one runnable agent."
+        description="Compose a model, local tools, MCP servers, skills, and templates into one runnable agent."
         actions={
           <Button as={Link} variant="light" radius="md" to={cancelHref}>
             Cancel
@@ -447,7 +456,7 @@ export function AgentFormPage({ mode }) {
 
         <SectionCard
           title="Integrations"
-          description="MCP servers and reusable skills."
+          description="MCP servers, reusable skills, and prompt templates."
           bodyClassName="gap-6 px-5 py-4"
         >
           <Field
@@ -581,6 +590,53 @@ export function AgentFormPage({ mode }) {
               <p className="text-tiny text-default-500">
                 No skills configured.{" "}
                 <HeroLink href="/skills/new" size="sm">
+                  Add one
+                </HeroLink>
+                .
+              </p>
+            )}
+          </Field>
+
+          <Field
+            label="Templates"
+            hint="Template files are loaded from S3 and injected into the system prompt in selection order."
+          >
+            {catalogue.templates.length ? (
+              <CheckboxGroup
+                aria-label="Templates"
+                value={form.templates.map((entry) => entry.templateId)}
+                onValueChange={(ids) =>
+                  setForm((current) => ({
+                    ...current,
+                    templates: ids.map((templateId) => ({ templateId })),
+                  }))
+                }
+                classNames={{
+                  wrapper: "grid grid-cols-1 gap-2 sm:grid-cols-2 w-full mt-1",
+                }}
+              >
+                {catalogue.templates.map((template) => (
+                  <Checkbox
+                    key={template.id}
+                    value={template.id}
+                    classNames={{
+                      base: "m-0 inline-flex max-w-full w-full items-center rounded-medium border border-divider bg-content2 px-3 py-2 data-[selected=true]:border-secondary/50",
+                      label: "w-full min-w-0",
+                    }}
+                  >
+                    <span className="block truncate text-small font-medium">
+                      {template.name}
+                    </span>
+                    <span className="block truncate text-tiny text-default-500">
+                      {template.uri}
+                    </span>
+                  </Checkbox>
+                ))}
+              </CheckboxGroup>
+            ) : (
+              <p className="text-tiny text-default-500">
+                No templates configured.{" "}
+                <HeroLink href="/templates/new" size="sm">
                   Add one
                 </HeroLink>
                 .
