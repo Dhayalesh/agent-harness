@@ -81,48 +81,295 @@ phases:
         IMAGE_DIGEST="$(aws ecr describe-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=$IMAGE_TAG" --query "imageDetails[0].imageDigest" --output text)"
         [[ "$IMAGE_DIGEST" == sha256:* ]] || { echo "ERROR: Invalid ECR digest" >&2; exit 1; }
         echo "ECR digest: $IMAGE_DIGEST"
-        DEPLOY_TMP="$(mktemp -d)"
-        trap "rm -rf \"$DEPLOY_TMP\"" EXIT
-        CURRENT_RUNTIME="$DEPLOY_TMP/current-runtime.json"
-        UPDATE_INPUT="$DEPLOY_TMP/update-runtime.json"
-        aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" > "$CURRENT_RUNTIME"
-        python3 - "$CURRENT_RUNTIME" "$UPDATE_INPUT" "$AGENTCORE_RUNTIME_ID" "$IMAGE_URI" <<'PY'
-        import json, hashlib, sys
+                DEPLOY_TMP="$(mktemp -d)"
+                trap 'rm -rf "$DEPLOY_TMP"' EXIT
+        
+                CURRENT_RUNTIME="$DEPLOY_TMP/current-runtime.json"
+                UPDATE_INPUT="$DEPLOY_TMP/update-runtime.json"
+        
+                echo "Getting current AgentCore Runtime configuration..."
+        
+                if ! aws bedrock-agentcore-control get-agent-runtime \
+                  --region "$AWS_REGION" \
+                  --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                  > "$CURRENT_RUNTIME"; then
+                  echo "ERROR: Failed to get AgentCore Runtime." >&2
+                  exit 1
+                fi
+        
+                echo "Current runtime retrieved."
+        
+                # UpdateAgentRuntime is a full PUT. AWS requires:
+                #   agentRuntimeId
+                #   agentRuntimeArtifact
+                #   networkConfiguration
+                #   roleArn
+                #
+                # Do not blindly copy every field returned by GetAgentRuntime.
+                # Some response-only fields are not valid request fields.
+                python3 - "$CURRENT_RUNTIME" "$UPDATE_INPUT" "$AGENTCORE_RUNTIME_ID" "$IMAGE_URI" <<'PY'
+        import hashlib
+        import json
+        import sys
+        
         source_path, output_path, runtime_id, image_uri = sys.argv[1:5]
-        with open(source_path, encoding="utf-8") as f: current = json.load(f)
+        
+        with open(source_path, encoding="utf-8") as f:
+            current = json.load(f)
+        
         role_arn = current.get("roleArn")
-        if not role_arn: raise SystemExit("ERROR: Existing runtime has no roleArn")
-        update = {"agentRuntimeId": runtime_id, "agentRuntimeArtifact": {"containerConfiguration": {"containerUri": image_uri}}, "roleArn": role_arn, "clientToken": "codebuild-" + hashlib.sha256(f"{runtime_id}:{image_uri}".encode()).hexdigest()}
-        for field in ("networkConfiguration","description","authorizerConfiguration","requestHeaderConfiguration","protocolConfiguration","lifecycleConfiguration","metadataConfiguration","environmentVariables","filesystemConfigurations","capacityProviderConfiguration"):
-            if field in current: update[field] = current[field]
-        with open(output_path, "w", encoding="utf-8") as f: json.dump(update, f)
-        print("AgentCore update input generated")
+        network = current.get("networkConfiguration")
+        
+        if not role_arn:
+            raise SystemExit("ERROR: GetAgentRuntime returned no roleArn")
+        
+        if not network:
+            raise SystemExit("ERROR: GetAgentRuntime returned no networkConfiguration")
+        
+        if not network.get("networkMode"):
+            raise SystemExit("ERROR: networkConfiguration.networkMode is missing")
+        
+        # Only send fields that UpdateAgentRuntime accepts.
+        update = {
+            "agentRuntimeId": runtime_id,
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {
+                    "containerUri": image_uri
+                }
+            },
+            "networkConfiguration": network,
+            "roleArn": role_arn,
+            "clientToken": (
+                "cb"
+                + hashlib.sha256(
+                    f"{runtime_id}:{image_uri}".encode("utf-8")
+                ).hexdigest()
+            )
+        }
+        
+        # Preserve optional settings only when they are present in the existing
+        # runtime response and are valid UpdateAgentRuntime request fields.
+        optional_fields = [
+            "authorizerConfiguration",
+            "capacityProviderConfiguration",
+            "description",
+            "environmentVariables",
+            "filesystemConfigurations",
+            "lifecycleConfiguration",
+            "metadataConfiguration",
+            "protocolConfiguration",
+            "requestHeaderConfiguration"
+        ]
+        
+        for field in optional_fields:
+            if field in current and current[field] is not None:
+                update[field] = current[field]
+        
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(update, f, separators=(",", ":"))
+        
+        print("Generated valid AgentCore UpdateAgentRuntime payload.")
+        print(f"Runtime ID: {runtime_id}")
+        print(f"Role ARN: {role_arn}")
+        print(f"Network mode: {network.get('networkMode')}")
+        print(f"Image: {image_uri}")
         PY
-        echo "Creating AgentCore Runtime version..."
-        NEW_RUNTIME_VERSION="$(aws bedrock-agentcore-control update-agent-runtime --region "$AWS_REGION" --cli-input-json "file://$UPDATE_INPUT" --query agentRuntimeVersion --output text)"
-        [[ "$NEW_RUNTIME_VERSION" =~ ^[1-9][0-9]{0,4}$ ]] || { echo "ERROR: Invalid runtime version: $NEW_RUNTIME_VERSION" >&2; exit 1; }
-        echo "Runtime version: $NEW_RUNTIME_VERSION"
-        RUNTIME_STATUS=""
-        for attempt in $(seq 1 120); do
-          RUNTIME_STATUS="$(aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --agent-runtime-version "$NEW_RUNTIME_VERSION" --query status --output text)"
-          echo "Attempt $attempt/120 - Runtime: $RUNTIME_STATUS"
-          [[ "$RUNTIME_STATUS" == "READY" ]] && break
-          case "$RUNTIME_STATUS" in CREATE_FAILED|UPDATE_FAILED|DELETING) echo "ERROR: Runtime deployment failed: $RUNTIME_STATUS" >&2; exit 1;; esac
-          sleep 5
-        done
-        [[ "$RUNTIME_STATUS" == "READY" ]] || { echo "ERROR: Runtime did not become READY" >&2; exit 1; }
-        DEPLOYED_URI="$(aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --agent-runtime-version "$NEW_RUNTIME_VERSION" --query "agentRuntimeArtifact.containerConfiguration.containerUri" --output text)"
-        [[ "$DEPLOYED_URI" == "$IMAGE_URI" ]] || { echo "ERROR: Deployed image mismatch" >&2; echo "Expected: $IMAGE_URI" >&2; echo "Actual: $DEPLOYED_URI" >&2; exit 1; }
-        ENDPOINT_STATUS=""
-        LIVE_VERSION=""
-        for attempt in $(seq 1 120); do
-          read -r ENDPOINT_STATUS LIVE_VERSION < <(aws bedrock-agentcore-control get-agent-runtime-endpoint --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --endpoint-name DEFAULT --query "[status,liveVersion]" --output text)
-          echo "Endpoint attempt $attempt/120 - Status: $ENDPOINT_STATUS - Live version: $LIVE_VERSION"
-          [[ "$ENDPOINT_STATUS" == "READY" && "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]] && break
-          case "$ENDPOINT_STATUS" in CREATE_FAILED|UPDATE_FAILED|DELETING) echo "ERROR: DEFAULT endpoint failed: $ENDPOINT_STATUS" >&2; exit 1;; esac
-          sleep 5
-        done
-        [[ "$ENDPOINT_STATUS" == "READY" && "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]] || { echo "ERROR: DEFAULT endpoint did not become ready on expected version" >&2; exit 1; }
+        
+                echo "Validating AgentCore update payload..."
+        
+                python3 - "$UPDATE_INPUT" <<'PY'
+        import json
+        import sys
+        
+        with open(sys.argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+        
+        required = [
+            "agentRuntimeId",
+            "agentRuntimeArtifact",
+            "networkConfiguration",
+            "roleArn"
+        ]
+        
+        missing = [x for x in required if not data.get(x)]
+        if missing:
+            raise SystemExit(
+                "ERROR: AgentCore update payload is missing: "
+                + ", ".join(missing)
+            )
+        
+        container_uri = (
+            data["agentRuntimeArtifact"]
+            .get("containerConfiguration", {})
+            .get("containerUri")
+        )
+        
+        if container_uri != sys.argv[2] if len(sys.argv) > 2 else False:
+            pass
+        
+        if not container_uri:
+            raise SystemExit("ERROR: containerUri is missing")
+        
+        print("AgentCore update payload validation passed.")
+        PY
+        
+                echo "AgentCore update payload:"
+                python3 -m json.tool "$UPDATE_INPUT"
+        
+                echo "Creating AgentCore Runtime version..."
+        
+                UPDATE_OUTPUT="$DEPLOY_TMP/update-output.json"
+        
+                if ! aws bedrock-agentcore-control update-agent-runtime \
+                  --region "$AWS_REGION" \
+                  --cli-input-json "file://$UPDATE_INPUT" \
+                  --output json \
+                  > "$UPDATE_OUTPUT"; then
+                  echo "ERROR: UpdateAgentRuntime failed." >&2
+                  echo "AWS request payload:" >&2
+                  python3 -m json.tool "$UPDATE_INPUT" >&2
+                  echo "Current runtime:" >&2
+                  python3 -m json.tool "$CURRENT_RUNTIME" >&2
+                  exit 1
+                fi
+        
+                cat "$UPDATE_OUTPUT"
+        
+                NEW_RUNTIME_VERSION="$(
+                  python3 - "$UPDATE_OUTPUT" <<'PY'
+        import json
+        import sys
+        
+        with open(sys.argv[1], encoding="utf-8") as f:
+            data = json.load(f)
+        
+        version = data.get("agentRuntimeVersion")
+        
+        if not version:
+            raise SystemExit("ERROR: AWS response did not contain agentRuntimeVersion")
+        
+        print(version)
+        PY
+                )"
+        
+                if [[ ! "$NEW_RUNTIME_VERSION" =~ ^[1-9][0-9]{0,4}$ ]]; then
+                  echo "ERROR: Invalid runtime version: $NEW_RUNTIME_VERSION" >&2
+                  exit 1
+                fi
+        
+                echo "Runtime version: $NEW_RUNTIME_VERSION"
+        
+                RUNTIME_STATUS=""
+        
+                for attempt in $(seq 1 120); do
+                  RUNTIME_STATUS="$(
+                    aws bedrock-agentcore-control get-agent-runtime \
+                      --region "$AWS_REGION" \
+                      --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                      --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+                      --query status \
+                      --output text
+                  )"
+        
+                  echo "Attempt $attempt/120 - Runtime: $RUNTIME_STATUS"
+        
+                  if [[ "$RUNTIME_STATUS" == "READY" ]]; then
+                    break
+                  fi
+        
+                  case "$RUNTIME_STATUS" in
+                    CREATE_FAILED|UPDATE_FAILED)
+                      echo "ERROR: AgentCore Runtime deployment failed: $RUNTIME_STATUS" >&2
+                      aws bedrock-agentcore-control get-agent-runtime \
+                        --region "$AWS_REGION" \
+                        --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                        --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+                        --output json >&2 || true
+                      exit 1
+                      ;;
+                    DELETING)
+                      echo "ERROR: AgentCore Runtime entered DELETING." >&2
+                      exit 1
+                      ;;
+                  esac
+        
+                  sleep 5
+                done
+        
+                if [[ "$RUNTIME_STATUS" != "READY" ]]; then
+                  echo "ERROR: Runtime did not become READY within timeout." >&2
+                  exit 1
+                fi
+        
+                echo "Runtime version $NEW_RUNTIME_VERSION is READY."
+        
+                DEPLOYED_URI="$(
+                  aws bedrock-agentcore-control get-agent-runtime \
+                    --region "$AWS_REGION" \
+                    --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                    --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+                    --query 'agentRuntimeArtifact.containerConfiguration.containerUri' \
+                    --output text
+                )"
+        
+                echo "Expected image: $IMAGE_URI"
+                echo "Deployed image: $DEPLOYED_URI"
+        
+                if [[ "$DEPLOYED_URI" != "$IMAGE_URI" ]]; then
+                  echo "ERROR: Deployed image does not match expected image." >&2
+                  exit 1
+                fi
+        
+                ENDPOINT_STATUS=""
+                LIVE_VERSION=""
+        
+                echo "Waiting for DEFAULT endpoint..."
+        
+                for attempt in $(seq 1 120); do
+                  ENDPOINT_JSON="$(
+                    aws bedrock-agentcore-control get-agent-runtime-endpoint \
+                      --region "$AWS_REGION" \
+                      --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+                      --endpoint-name DEFAULT \
+                      --output json
+                  )"
+        
+                  ENDPOINT_STATUS="$(
+                    printf '%s' "$ENDPOINT_JSON" |
+                      python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))'
+                  )"
+        
+                  LIVE_VERSION="$(
+                    printf '%s' "$ENDPOINT_JSON" |
+                      python3 -c 'import json,sys; print(json.load(sys.stdin).get("liveVersion",""))'
+                  )"
+        
+                  echo "Attempt $attempt/120"
+                  echo "Endpoint status: $ENDPOINT_STATUS"
+                  echo "Live version: $LIVE_VERSION"
+        
+                  if [[ "$ENDPOINT_STATUS" == "READY" &&
+                        "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]]; then
+                    break
+                  fi
+        
+                  case "$ENDPOINT_STATUS" in
+                    CREATE_FAILED|UPDATE_FAILED|DELETING)
+                      echo "ERROR: DEFAULT endpoint failed." >&2
+                      echo "$ENDPOINT_JSON" >&2
+                      exit 1
+                      ;;
+                  esac
+        
+                  sleep 5
+                done
+        
+                if [[ "$ENDPOINT_STATUS" != "READY" ||
+                      "$LIVE_VERSION" != "$NEW_RUNTIME_VERSION" ]]; then
+                  echo "ERROR: DEFAULT endpoint did not become READY on expected version." >&2
+                  exit 1
+                fi
+        
         echo "=========================================="
         echo "DEPLOYMENT SUCCESSFUL"
         echo "Image: $IMAGE_URI"
