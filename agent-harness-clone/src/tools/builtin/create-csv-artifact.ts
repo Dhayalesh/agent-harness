@@ -26,8 +26,9 @@ export function createCsvArtifactTool(store: ArtifactStore): Tool<z.infer<typeof
   return {
     name: 'create_csv_artifact',
     description:
-      'Create a downloadable UTF-8 CSV file from columns and rows. Use for portable tabular data ' +
-      'or when the user explicitly asks for CSV rather than an Excel workbook.',
+      'Create a downloadable UTF-8 CSV file from columns and rows. Use when the requested format is ' +
+      'CSV or .csv, including portable tabular datasets and reusable CSV templates, rather than an ' +
+      'Excel workbook.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',

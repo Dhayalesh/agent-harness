@@ -27,8 +27,8 @@ export function createCodeArtifactTool(store: ArtifactStore): Tool<z.infer<typeo
     name: 'create_code_artifact',
     description:
       'Present a complete source file to the user as a downloadable code file. Use this when the ' +
-      'requested deliverable is code the user will keep — a script, module, class, config, query, ' +
-      'or manifest. Supported languages: ' +
+      'requested format is source code the user will keep — a script, module, class, config, query, ' +
+      'manifest, or reusable code template. Supported languages: ' +
       CODE_LANGUAGE_NAMES.join(', ') +
       '. Use write_file instead when the file only needs to exist in the workspace for a later ' +
       'build or test step, and do not use this for short snippets inside a conversational answer.',

@@ -15,7 +15,8 @@ export function createDocumentArtifactTool(store: ArtifactStore): Tool<z.infer<t
     name: 'create_document_artifact',
     description:
       'Create a downloadable Microsoft Word .docx document from complete Markdown-like source. ' +
-      'Use when the user asks for a Word document, editable office document, formal report, or specification.',
+      'Use when the requested format is Word or .docx, including editable office documents, formal ' +
+      'reports, specifications, or reusable Word templates.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',

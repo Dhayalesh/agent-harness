@@ -14,7 +14,9 @@ export function createHtmlArtifactTool(store: ArtifactStore): Tool<z.infer<typeo
     name: 'create_html_artifact',
     description:
       'Present a completed HTML deliverable as a downloadable .html file with a sandboxed preview. ' +
-      'Use for requested web pages, HTML reports, templates, or reusable HTML documents, not ordinary answers.',
+      'Use only when the requested format is HTML, such as a web page, HTML report, HTML template, ' +
+      'or reusable HTML document. The word “template” alone does not imply HTML; honor the requested ' +
+      'format or filename extension. Do not use it for ordinary conversational answers.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',

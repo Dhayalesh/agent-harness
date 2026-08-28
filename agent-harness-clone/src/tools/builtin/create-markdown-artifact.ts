@@ -22,8 +22,8 @@ export function createMarkdownArtifactTool(store: ArtifactStore): Tool<z.infer<t
     name: 'create_markdown_artifact',
     description:
       'Present a completed Markdown document to the user as a downloadable .md file. Use this ' +
-      'when the requested deliverable is a document, report, proposal, specification, guide, ' +
-      'README, or other reusable Markdown file. Do not use it for ordinary conversational answers.',
+      'when the requested format is Markdown, including documents, reports, proposals, specifications, ' +
+      'guides, READMEs, or reusable Markdown templates. Do not use it for ordinary conversational answers.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',

@@ -35,7 +35,8 @@ export function createSpreadsheetArtifactTool(store: ArtifactStore): Tool<z.infe
     name: 'create_spreadsheet_artifact',
     description:
       'Create a downloadable Microsoft Excel .xlsx workbook from structured sheets, columns, and rows. ' +
-      'Use for multi-sheet workbooks, calculations presented as data, or reusable Excel deliverables.',
+      'Use when the requested format is Excel or .xlsx, including multi-sheet workbooks, calculations ' +
+      'presented as data, or reusable Excel templates.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',

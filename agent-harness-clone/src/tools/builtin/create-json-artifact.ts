@@ -23,9 +23,9 @@ export function createJsonArtifactTool(store: ArtifactStore): Tool<z.infer<typeo
     name: 'create_json_artifact',
     description:
       'Present structured data to the user as a downloadable .json or .ndjson file. Use this when ' +
-      'the requested deliverable is JSON — a config file, an API payload, an export, a schema, or ' +
-      'a newline-delimited JSON dataset. The content is validated before it is saved. Do not use ' +
-      'it to show a short JSON snippet inside a conversational answer.',
+      'the requested format is JSON or NDJSON — including a config file, API payload, export, schema, ' +
+      'data template, or newline-delimited dataset. The content is validated before it is saved. Do ' +
+      'not use it to show a short JSON snippet inside a conversational answer.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',
