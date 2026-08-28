@@ -32,6 +32,7 @@ phases:
         [[ -f package-lock.json ]] || { echo "ERROR: package-lock.json missing"; exit 1; }
 
         npm ci --no-audit --no-fund
+
         echo "INSTALL SUCCESS"
 
   pre_build:
@@ -67,7 +68,7 @@ phases:
         echo "===== AWS IDENTITY ====="
         aws sts get-caller-identity --region "$AWS_REGION"
 
-        echo "===== ECR CHECK ====="
+        echo "===== ECR REPOSITORY ====="
         aws ecr describe-repositories \
           --region "$AWS_REGION" \
           --repository-names "$ECR_REPOSITORY" \
@@ -82,12 +83,11 @@ phases:
           tonistiigi/binfmt:latest \
           --install arm64
 
-        echo "===== ARM64 TEST ====="
         ARCH="$(docker run --rm --platform linux/arm64 arm64v8/alpine:latest uname -m)"
-        echo "ARCH=$ARCH"
+        echo "ARM64 architecture: $ARCH"
 
         [[ "$ARCH" == "aarch64" ]] || {
-          echo "FAILED AT: ARM64 EMULATION"
+          echo "ERROR: ARM64 emulation failed"
           exit 1
         }
 
@@ -97,7 +97,7 @@ phases:
     commands:
       - |
         set -euo pipefail
-        echo "========== [1/4] DOCKER BUILD =========="
+        echo "========== BUILD / ECR =========="
 
         APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
         cd "$APP_DIR"
@@ -105,10 +105,9 @@ phases:
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 
-        if ! docker build \
-          --platform linux/arm64 \
-          --tag "$IMAGE_URI" \
-          .; then
+        echo "===== DOCKER BUILD ====="
+
+        if ! docker build --platform linux/arm64 --tag "$IMAGE_URI" .; then
           echo "FAILED AT: DOCKER BUILD"
           exit 1
         fi
@@ -117,13 +116,11 @@ phases:
         echo "IMAGE_PLATFORM=$IMAGE_PLATFORM"
 
         [[ "$IMAGE_PLATFORM" == "linux/arm64" ]] || {
-          echo "FAILED AT: IMAGE PLATFORM"
+          echo "ERROR: Expected linux/arm64, got $IMAGE_PLATFORM"
           exit 1
         }
 
-        echo "DOCKER BUILD SUCCESS"
-
-        echo "========== [2/4] ECR PUSH =========="
+        echo "===== ECR PUSH ====="
 
         if ! docker push "$IMAGE_URI"; then
           echo "FAILED AT: ECR PUSH"
@@ -140,18 +137,19 @@ phases:
         )"
 
         echo "IMAGE_DIGEST=$IMAGE_DIGEST"
+
         [[ "$IMAGE_DIGEST" == sha256:* ]] || {
-          echo "FAILED AT: ECR DIGEST"
+          echo "ERROR: Invalid ECR digest"
           exit 1
         }
 
-        echo "ECR SUCCESS"
+        echo "BUILD / ECR SUCCESS"
 
   post_build:
     commands:
       - |
         set -euo pipefail
-        echo "========== [3/4] AGENTCORE UPDATE =========="
+        echo "========== AGENTCORE DEPLOYMENT =========="
 
         APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
         cd "$APP_DIR"
@@ -178,31 +176,68 @@ phases:
           exit 1
         fi
 
-        echo "GET AGENTCORE RUNTIME SUCCESS"
-
         ROLE_ARN="$(jq -r '.roleArn // empty' "$CURRENT")"
         NETWORK_MODE="$(jq -r '.networkConfiguration.networkMode // empty' "$CURRENT")"
 
-        echo "ROLE_ARN=$ROLE_ARN"
-        echo "NETWORK_MODE=$NETWORK_MODE"
+        [[ -n "$ROLE_ARN" ]] || { echo "FAILED AT: ROLE ARN"; exit 1; }
+        [[ -n "$NETWORK_MODE" ]] || { echo "FAILED AT: NETWORK MODE"; exit 1; }
 
-        [[ -n "$ROLE_ARN" ]] || {
-          echo "FAILED AT: ROLE ARN"
-          exit 1
-        }
+        echo "GET RUNTIME SUCCESS"
+        echo "ROLE ARN: $ROLE_ARN"
+        echo "NETWORK MODE: $NETWORK_MODE"
 
-        [[ -n "$NETWORK_MODE" ]] || {
-          echo "FAILED AT: NETWORK MODE"
-          exit 1
-        }
+        echo "===== VALIDATE CODEBUILD ENVIRONMENT ====="
 
-        echo "===== BUILD UPDATE REQUEST ====="
+        REQUIRED_RUNTIME_VARS=(
+          PLATFORM_MONGODB_URI
+          PLATFORM_CONTENT_S3_REGION
+          AGENT_LOG_GROUP
+          AWS_REGION
+          AGENT_LOG_LEVEL
+          AGENT_SESSION_MAX_BYTES
+          AGENT_SESSION_TTL_SECONDS
+          AGENT_SESSION_STORE
+          AGENT_SESSION_DIR
+          AGENT_SESSION_S3_BUCKET
+          AGENT_SESSION_S3_PREFIX
+          AGENT_S3_ARTIFACT_PREFIX
+          AGENT_SESSION_S3_REQUEST_TIMEOUT_MS
+          COMPACTION_MODEL
+          COMPACTION_MODEL_ENDPOINT
+        )
+
+        for VAR_NAME in "${REQUIRED_RUNTIME_VARS[@]}"; do
+          if [[ -z "${!VAR_NAME:-}" ]]; then
+            echo "ERROR: Missing CodeBuild environment variable: $VAR_NAME"
+            exit 1
+          fi
+        done
+
+        echo "All required runtime variables are present."
+
+        echo "===== BUILD AGENTCORE REQUEST ====="
 
         jq -n \
           --arg runtimeId "$AGENTCORE_RUNTIME_ID" \
           --arg image "$IMAGE_URI" \
           --arg networkMode "$NETWORK_MODE" \
           --arg roleArn "$ROLE_ARN" \
+          --arg mongodbUri "$PLATFORM_MONGODB_URI" \
+          --arg contentS3Region "$PLATFORM_CONTENT_S3_REGION" \
+          --arg logGroup "$AGENT_LOG_GROUP" \
+          --arg awsRegion "$AWS_REGION" \
+          --arg logLevel "$AGENT_LOG_LEVEL" \
+          --arg maxBytes "$AGENT_SESSION_MAX_BYTES" \
+          --arg ttl "$AGENT_SESSION_TTL_SECONDS" \
+          --arg sessionStore "$AGENT_SESSION_STORE" \
+          --arg sessionDir "$AGENT_SESSION_DIR" \
+          --arg sessionBucket "$AGENT_SESSION_S3_BUCKET" \
+          --arg sessionPrefix "$AGENT_SESSION_S3_PREFIX" \
+          --arg artifactPrefix "$AGENT_S3_ARTIFACT_PREFIX" \
+          --arg requestTimeout "$AGENT_SESSION_S3_REQUEST_TIMEOUT_MS" \
+          --arg compactionModel "$COMPACTION_MODEL" \
+          --arg compactionEndpoint "$COMPACTION_MODEL_ENDPOINT" \
+          --arg tavilyApiKey "${TAVILY_API_KEY:-}" \
           '{
             agentRuntimeId: $runtimeId,
             agentRuntimeArtifact: {
@@ -213,39 +248,68 @@ phases:
             networkConfiguration: {
               networkMode: $networkMode
             },
-            roleArn: $roleArn
-          }' > "$REQUEST"
+            roleArn: $roleArn,
+            environmentVariables: {
+              PLATFORM_MONGODB_URI: $mongodbUri,
+              PLATFORM_CONTENT_S3_REGION: $contentS3Region,
+              AGENT_LOG_GROUP: $logGroup,
+              AWS_REGION: $awsRegion,
+              AGENT_LOG_LEVEL: $logLevel,
+              AGENT_SESSION_MAX_BYTES: $maxBytes,
+              AGENT_SESSION_TTL_SECONDS: $ttl,
+              AGENT_SESSION_STORE: $sessionStore,
+              AGENT_SESSION_DIR: $sessionDir,
+              AGENT_SESSION_S3_BUCKET: $sessionBucket,
+              AGENT_SESSION_S3_PREFIX: $sessionPrefix,
+              AGENT_S3_ARTIFACT_PREFIX: $artifactPrefix,
+              AGENT_SESSION_S3_REQUEST_TIMEOUT_MS: $requestTimeout,
+              COMPACTION_MODEL: $compactionModel,
+              COMPACTION_MODEL_ENDPOINT: $compactionEndpoint
+            }
+          }
+          + if $tavilyApiKey != "" then
+              {environmentVariables: {TAVILY_API_KEY: $tavilyApiKey}}
+            else
+              {}
+            end
+          ' > "$REQUEST"
 
-        echo "REQUEST:"
-        jq . "$REQUEST"
+        REQUEST_ENV_COUNT="$(jq '.environmentVariables | length' "$REQUEST")"
+        echo "AgentCore environment variable count: $REQUEST_ENV_COUNT"
 
-        echo "===== [4/4] UPDATE AGENTCORE RUNTIME ====="
+        jq -e \
+          '.agentRuntimeId and
+           .agentRuntimeArtifact.containerConfiguration.containerUri and
+           .networkConfiguration.networkMode and
+           .roleArn and
+           .environmentVariables.PLATFORM_MONGODB_URI and
+           .environmentVariables.COMPACTION_MODEL' \
+          "$REQUEST" >/dev/null || {
+          echo "ERROR: AgentCore request validation failed"
+          exit 1
+        }
+
+        # Never print REQUEST: it can contain TAVILY_API_KEY.
+        echo "Request structure validated."
+
+        echo "===== UPDATE AGENTCORE RUNTIME ====="
 
         if ! aws bedrock-agentcore-control update-agent-runtime \
           --region "$AWS_REGION" \
           --cli-input-json "file://$REQUEST" \
           --output json > "$RESPONSE" 2> "$ERROR_FILE"; then
-
-          echo "=========================================="
           echo "FAILED AT: UPDATE AGENTCORE RUNTIME"
-          echo "=========================================="
           echo "AWS ERROR:"
           cat "$ERROR_FILE"
-
-          echo "REQUEST:"
-          jq . "$REQUEST"
-
           exit 1
         fi
 
         echo "UPDATE AGENTCORE RUNTIME SUCCESS"
-        echo "RESPONSE:"
-        jq . "$RESPONSE"
 
         NEW_RUNTIME_VERSION="$(jq -r '.agentRuntimeVersion // empty' "$RESPONSE")"
 
         [[ -n "$NEW_RUNTIME_VERSION" ]] || {
-          echo "FAILED AT: RUNTIME VERSION RESPONSE"
+          echo "ERROR: No agentRuntimeVersion returned"
           exit 1
         }
 
@@ -266,16 +330,16 @@ phases:
 
           RUNTIME_STATUS="$(printf '%s' "$RUNTIME_JSON" | jq -r '.status // empty')"
 
-          echo "Attempt $attempt/120: $RUNTIME_STATUS"
+          echo "Runtime attempt $attempt/120: $RUNTIME_STATUS"
 
           if [[ "$RUNTIME_STATUS" == "READY" ]]; then
             break
           fi
 
           case "$RUNTIME_STATUS" in
-            CREATE_FAILED|UPDATE_FAILED|DELETING)
+            CREATE_FAILED|UPDATE_FAILED)
               echo "FAILED AT: AGENTCORE RUNTIME"
-              echo "$RUNTIME_JSON"
+              echo "$RUNTIME_JSON" | jq .
               exit 1
               ;;
           esac
@@ -288,6 +352,10 @@ phases:
           exit 1
         }
 
+        echo "RUNTIME READY"
+
+        echo "===== VERIFY IMAGE ====="
+
         DEPLOYED_URI="$(
           aws bedrock-agentcore-control get-agent-runtime \
             --region "$AWS_REGION" \
@@ -297,13 +365,36 @@ phases:
             --output text
         )"
 
-        echo "Expected image: $IMAGE_URI"
-        echo "Deployed image: $DEPLOYED_URI"
+        echo "Expected: $IMAGE_URI"
+        echo "Deployed: $DEPLOYED_URI"
 
         [[ "$DEPLOYED_URI" == "$IMAGE_URI" ]] || {
           echo "FAILED AT: DEPLOYED IMAGE VERIFICATION"
           exit 1
         }
+
+        echo "IMAGE VERIFIED"
+
+        echo "===== VERIFY AGENTCORE ENVIRONMENT ====="
+
+        DEPLOYED_ENV_COUNT="$(
+          aws bedrock-agentcore-control get-agent-runtime \
+            --region "$AWS_REGION" \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+            --query 'length(environmentVariables)' \
+            --output text
+        )"
+
+        echo "Requested environment variables: $REQUEST_ENV_COUNT"
+        echo "Deployed environment variables: $DEPLOYED_ENV_COUNT"
+
+        [[ "$DEPLOYED_ENV_COUNT" -ge "$REQUEST_ENV_COUNT" ]] || {
+          echo "ERROR: AgentCore environment variable count is lower than requested"
+          exit 1
+        }
+
+        echo "AGENTCORE ENVIRONMENT VERIFIED"
 
         echo "===== WAIT FOR DEFAULT ENDPOINT ====="
 
@@ -322,7 +413,7 @@ phases:
           ENDPOINT_STATUS="$(printf '%s' "$ENDPOINT_JSON" | jq -r '.status // empty')"
           LIVE_VERSION="$(printf '%s' "$ENDPOINT_JSON" | jq -r '.liveVersion // empty')"
 
-          echo "Attempt $attempt/120: status=$ENDPOINT_STATUS liveVersion=$LIVE_VERSION"
+          echo "Endpoint attempt $attempt/120: status=$ENDPOINT_STATUS liveVersion=$LIVE_VERSION"
 
           if [[ "$ENDPOINT_STATUS" == "READY" &&
                 "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]]; then
@@ -332,7 +423,7 @@ phases:
           case "$ENDPOINT_STATUS" in
             CREATE_FAILED|UPDATE_FAILED|DELETING)
               echo "FAILED AT: DEFAULT ENDPOINT"
-              echo "$ENDPOINT_JSON"
+              echo "$ENDPOINT_JSON" | jq .
               exit 1
               ;;
           esac
@@ -349,11 +440,14 @@ phases:
         fi
 
         echo "=========================================="
-        echo "DEPLOYMENT SUCCESSFUL"
+        echo "AGENTCORE DEPLOYMENT SUCCESSFUL"
         echo "=========================================="
         echo "Image: $IMAGE_URI"
         echo "Runtime: $AGENTCORE_RUNTIME_ID"
         echo "Version: $NEW_RUNTIME_VERSION"
+        echo "Runtime status: $RUNTIME_STATUS"
+        echo "Environment variables: $DEPLOYED_ENV_COUNT"
         echo "Endpoint: DEFAULT"
+        echo "Endpoint status: $ENDPOINT_STATUS"
         echo "Live version: $LIVE_VERSION"
         echo "=========================================="
