@@ -16,6 +16,15 @@ phases:
       nodejs: 22
     commands:
       - |
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        if [[ ! -d "$APP_DIR" ]]; then
+          echo "ERROR: Application directory not found: $APP_DIR" >&2
+          echo "Repository contents:" >&2
+          ls -la "$CODEBUILD_SRC_DIR" >&2
+          exit 1
+        fi
+        cd "$APP_DIR"
+        echo "Application directory: $(pwd)"
         set -euo pipefail
         echo "Installing dependencies"
         command -v aws >/dev/null || {
@@ -59,6 +68,15 @@ phases:
   pre_build:
     commands:
       - |
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        if [[ ! -d "$APP_DIR" ]]; then
+          echo "ERROR: Application directory not found: $APP_DIR" >&2
+          echo "Repository contents:" >&2
+          ls -la "$CODEBUILD_SRC_DIR" >&2
+          exit 1
+        fi
+        cd "$APP_DIR"
+        echo "Application directory: $(pwd)"
         set -euo pipefail
         echo "Validating build configuration"
         : "${AWS_REGION:?AWS_REGION must be set}"
@@ -96,6 +114,15 @@ phases:
   build:
     commands:
       - |
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        if [[ ! -d "$APP_DIR" ]]; then
+          echo "ERROR: Application directory not found: $APP_DIR" >&2
+          echo "Repository contents:" >&2
+          ls -la "$CODEBUILD_SRC_DIR" >&2
+          exit 1
+        fi
+        cd "$APP_DIR"
+        echo "Application directory: $(pwd)"
         set -euo pipefail
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
@@ -116,6 +143,15 @@ phases:
   post_build:
     commands:
       - |
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        if [[ ! -d "$APP_DIR" ]]; then
+          echo "ERROR: Application directory not found: $APP_DIR" >&2
+          echo "Repository contents:" >&2
+          ls -la "$CODEBUILD_SRC_DIR" >&2
+          exit 1
+        fi
+        cd "$APP_DIR"
+        echo "Application directory: $(pwd)"
         set -euo pipefail
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
