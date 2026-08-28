@@ -16,6 +16,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
+import { ARTIFACT_FORMATS } from "../components/artifacts/artifact-utils.js";
 import {
   ErrorNote,
   Field,
@@ -628,6 +629,8 @@ export function AgentFormPage({ mode }) {
                       {template.name}
                     </span>
                     <span className="block truncate text-tiny text-default-500">
+                      {ARTIFACT_FORMATS[template.format]?.label ?? template.format}
+                      {" · "}
                       {template.uri}
                     </span>
                   </Checkbox>

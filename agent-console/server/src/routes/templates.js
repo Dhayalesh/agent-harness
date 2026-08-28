@@ -9,6 +9,7 @@ import {
 } from "../lib/schemas.js";
 import { Agent } from "../models/agent.js";
 import { Template } from "../models/template.js";
+import { ARTIFACT_FORMATS } from "../services/artifact-formats.js";
 import {
   createRecord,
   loadTemplate,
@@ -60,6 +61,7 @@ templatesRouter.post("/", asyncHandler(async (request, response) => {
     template = await createRecord(Template, {
       name: input.name,
       uri,
+      format: input.format,
       enabled: input.enabled,
       createdBy: config.createdBy,
     });
@@ -146,5 +148,21 @@ async function cleanup(uri) {
 function searchFilter(query) {
   if (!query) return {};
   const safe = String(query).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return { name: { $regex: safe, $options: "i" } };
+  const pattern = new RegExp(safe, "i");
+  const matchingFormats = Object.entries(ARTIFACT_FORMATS)
+    .filter(([format, definition]) =>
+      pattern.test(format) || pattern.test(definition.label),
+    )
+    .map(([format]) => format);
+  const filters = [
+    { name: { $regex: safe, $options: "i" } },
+    { format: { $regex: safe, $options: "i" } },
+  ];
+
+  if (matchingFormats.length) filters.push({ format: { $in: matchingFormats } });
+  if (matchingFormats.includes("html")) {
+    filters.push({ format: { $exists: false } });
+  }
+
+  return { $or: filters };
 }

@@ -14,6 +14,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api.js";
+import { ARTIFACT_FORMATS } from "../components/artifacts/artifact-utils.js";
 import {
   AgentAvatar,
   ErrorNote,
@@ -248,7 +249,9 @@ export function AgentDetailPage() {
                   href: template.missing
                     ? null
                     : `/templates/${template.id}/edit`,
-                  detail: template.uri,
+                  detail: template.missing
+                    ? undefined
+                    : `${ARTIFACT_FORMATS[template.format ?? "html"]?.label ?? template.format ?? "HTML"} · ${template.uri}`,
                 }))}
               />
             </div>

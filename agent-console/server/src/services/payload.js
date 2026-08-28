@@ -81,6 +81,7 @@ export async function buildPayload({
           templates: resolved.templates.map((template) => ({
             name: template.value.name,
             uri: template.value.uri,
+            format: template.value.format,
           })),
         }
       : {}),

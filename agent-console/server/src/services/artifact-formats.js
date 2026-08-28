@@ -117,20 +117,52 @@ export const ARTIFACT_TOOL_NAMES = new Set(
   Object.values(ARTIFACT_FORMATS).map((format) => format.tool),
 );
 
-export function artifactKind({ kind, contentType, toolName } = {}) {
+export function artifactKind({
+  kind,
+  contentType,
+  toolName,
+  filename,
+  language,
+} = {}) {
   if (typeof kind === "string" && ARTIFACT_FORMATS[kind]) return kind;
+
+  const formats = Object.entries(ARTIFACT_FORMATS);
+  const toolKinds = formats.filter(([, format]) => format.tool === toolName);
+  // Every tool except create_json_artifact identifies exactly one format. JSON
+  // and NDJSON share a tool, so only those two may break that tie.
+  if (toolKinds.length === 1) return toolKinds[0][0];
+  const candidates = toolKinds.length ? toolKinds : formats;
+  if (!toolKinds.length && codeLanguage(language)) return "code";
+
+  const leaf = String(filename ?? "").toLowerCase();
+  if (
+    !toolKinds.length &&
+    Object.values(CODE_LANGUAGES).some(
+      ({ extension }) => extension !== ".txt" && leaf.endsWith(extension),
+    )
+  ) {
+    return "code";
+  }
+  const filenameKind = candidates.find(
+    ([candidate, format]) =>
+      candidate !== "code" && leaf.endsWith(format.extension),
+  )?.[0];
+  if (filenameKind) return filenameKind;
+
   const mediaType = String(contentType ?? "")
     .split(";", 1)[0]
     .trim()
     .toLowerCase();
-  for (const [candidate, format] of Object.entries(ARTIFACT_FORMATS)) {
-    // `code` is skipped: every language shares text/plain, so a content type
-    // cannot identify one. It is still reachable through `kind` and `toolName`.
-    if (candidate !== "code" && format.contentType.split(";", 1)[0] === mediaType)
-      return candidate;
-    if (format.tool === toolName) return candidate;
-  }
-  return null;
+  const contentKind = candidates.find(
+    ([candidate, format]) =>
+      candidate !== "code" &&
+      format.contentType.split(";", 1)[0] === mediaType,
+  )?.[0];
+  if (contentKind) return contentKind;
+
+  // create_json_artifact defaults to JSON when legacy data carries neither its
+  // requested extension nor a usable JSON/NDJSON content type.
+  return toolKinds[0]?.[0] ?? null;
 }
 
 /** A language name the harness recognises, or null. */

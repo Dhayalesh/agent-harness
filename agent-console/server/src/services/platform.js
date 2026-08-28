@@ -97,7 +97,12 @@ export function safeSkill(document) {
 }
 
 export function safeTemplate(document) {
-  return { ...plain(document), id: document._id.toString() };
+  const value = plain(document);
+  return {
+    ...value,
+    format: value.format ?? "html",
+    id: document._id.toString(),
+  };
 }
 
 export function safeAgent(document, { includeSystemPrompt = false } = {}) {
@@ -398,7 +403,13 @@ function summarySkill(document) {
 
 function summaryTemplate(document) {
   const safe = safeTemplate(document);
-  return { id: safe.id, name: safe.name, uri: safe.uri, enabled: safe.enabled };
+  return {
+    id: safe.id,
+    name: safe.name,
+    uri: safe.uri,
+    format: safe.format,
+    enabled: safe.enabled,
+  };
 }
 
 function validateDocument(schema, document, label) {

@@ -4,6 +4,12 @@ const templateSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     uri: { type: String, required: true },
+    format: {
+      type: String,
+      enum: ["markdown", "html", "docx", "xlsx", "csv", "json", "ndjson", "code"],
+      required: true,
+      default: "html",
+    },
     enabled: { type: Boolean, required: true, default: true, index: true },
     createdAt: { type: String, required: true },
     updatedAt: { type: String, required: true },

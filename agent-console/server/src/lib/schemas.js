@@ -466,9 +466,22 @@ const templateContent = z
     "Template content must be at most 500,000 UTF-8 bytes",
   );
 
+export const TEMPLATE_FORMATS = [
+  "markdown",
+  "html",
+  "docx",
+  "xlsx",
+  "csv",
+  "json",
+  "ndjson",
+  "code",
+];
+const templateFormat = z.enum(TEMPLATE_FORMATS);
+
 const templateRequestShape = {
   name: skillName,
   content: templateContent,
+  format: templateFormat.default("markdown"),
   enabled: z.boolean().default(true),
 };
 
@@ -483,6 +496,7 @@ export const templateUpdateSchema = z
 export const templateRecordSchema = z
   .object({
     ...skillRecordShape,
+    format: templateFormat.default("html"),
     createdAt: isoTimestamp,
     updatedAt: isoTimestamp,
     createdBy: identifier,

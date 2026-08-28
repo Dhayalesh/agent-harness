@@ -233,6 +233,7 @@ function completeTemplate(spec: HeadlessTemplateSpec, timestamp: string): Templa
   return parseTemplateRecord({
     name: spec.name,
     uri: spec.uri,
+    format: spec.format,
     enabled: true,
     createdAt: timestamp,
     updatedAt: timestamp,

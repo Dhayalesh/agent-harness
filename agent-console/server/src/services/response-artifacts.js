@@ -35,9 +35,15 @@ export function presentedArtifact(artifact, input, toolName) {
   const parsed = parseInput(input);
   const metadata = artifact.metadata ?? {};
   const kind = artifactKind({
-    kind: metadata.kind,
+    kind:
+      metadata.kind ??
+      (toolName === "create_json_artifact" && parsed?.format === "ndjson"
+        ? "ndjson"
+        : undefined),
     contentType: artifact.contentType,
     toolName,
+    filename: metadata.filename ?? parsed?.filename,
+    language: metadata.language ?? parsed?.language,
   });
   if (!kind) return null;
   const format = ARTIFACT_FORMATS[kind];

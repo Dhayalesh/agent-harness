@@ -10,6 +10,7 @@ import {
   modelProviderWireSchema,
 } from '../platform/model-provider-definitions.js';
 import { S3_URI_PATTERN } from '../content/s3-uri.js';
+import { templateFormatSchema } from '../platform/template-definitions.js';
 
 /**
  * The headless invocation contract: one JSON object that carries everything a run
@@ -132,6 +133,7 @@ export const headlessTemplateSchema = z
   .object({
     name: skillName,
     uri: z.string().min(1).max(2_048).regex(S3_URI_PATTERN),
+    format: templateFormatSchema.default('html'),
   })
   .strict();
 

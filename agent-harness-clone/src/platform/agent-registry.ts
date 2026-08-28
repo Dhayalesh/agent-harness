@@ -24,6 +24,17 @@ import { PlatformModelProviderRegistry } from './model-provider-registry.js';
 /** Maximum final prompt after the base prompt and all assigned templates are composed. */
 export const RESOLVED_SYSTEM_PROMPT_MAX_CHARS = 500_000;
 
+const TEMPLATE_ARTIFACT_TOOLS: Record<TemplateRecord['format'], string> = {
+  markdown: 'create_markdown_artifact',
+  html: 'create_html_artifact',
+  docx: 'create_document_artifact',
+  xlsx: 'create_spreadsheet_artifact',
+  csv: 'create_csv_artifact',
+  json: 'create_json_artifact',
+  ndjson: 'create_json_artifact',
+  code: 'create_code_artifact',
+};
+
 /** The read surface the registry needs; satisfied by `MongoAgentStore`. */
 export interface AgentLookup {
   get(id: string): Promise<AgentRecord | undefined>;
@@ -351,7 +362,21 @@ export class PlatformAgentRegistry {
             'TEMPLATE_EMPTY',
           );
         }
-        sections.push(`<template name="${template.name}">\n${body}\n</template>`);
+        const artifactTool = TEMPLATE_ARTIFACT_TOOLS[template.format];
+        const toolOptions =
+          template.format === 'json' || template.format === 'ndjson'
+            ? ` with format "${template.format}"`
+            : '';
+        sections.push(
+          `<template name="${template.name}" format="${template.format}">\n` +
+            '<output-format>' +
+            `When producing a generated file from this template, create ${template.format} ` +
+            `output with ${artifactTool}${toolOptions}. Do not substitute HTML unless this ` +
+            'template format is html.' +
+            '</output-format>\n' +
+            `${body}\n` +
+            '</template>',
+        );
         const systemPrompt = sections.join('\n\n');
         if (systemPrompt.length > RESOLVED_SYSTEM_PROMPT_MAX_CHARS) {
           throw new AgentHarnessError(

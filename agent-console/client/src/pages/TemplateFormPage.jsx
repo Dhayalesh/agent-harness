@@ -1,7 +1,8 @@
-import { Button, Input, Textarea } from "@heroui/react";
+import { Button, Input, Select, SelectItem, Textarea } from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
+import { ARTIFACT_FORMATS } from "../components/artifacts/artifact-utils.js";
 import {
   ErrorNote,
   FormActions,
@@ -14,8 +15,11 @@ import {
 const EMPTY = {
   name: "",
   content: "",
+  format: "markdown",
   enabled: true,
 };
+
+const FORMAT_OPTIONS = Object.entries(ARTIFACT_FORMATS);
 
 export function TemplateFormPage({ mode }) {
   const { id } = useParams();
@@ -70,6 +74,7 @@ export function TemplateFormPage({ mode }) {
     const body = {
       name: form.name.trim(),
       content: form.content,
+      format: form.format,
       enabled: form.enabled,
     };
 
@@ -105,20 +110,52 @@ export function TemplateFormPage({ mode }) {
           description="Assigned templates are loaded from S3 and appended to the agent system prompt in selection order."
           bodyClassName="gap-4 px-5 py-4"
         >
-          <Input
-            isRequired
-            label="Name"
-            labelPlacement="outside"
-            placeholder="customer-response"
-            variant="bordered"
-            maxLength={100}
-            pattern="[A-Za-z0-9_-]+"
-            value={form.name}
-            onValueChange={set("name")}
-            description="Letters, digits, dash, or underscore. Unique; dots are not allowed."
-            isInvalid={Boolean(fieldErrors.name)}
-            errorMessage={fieldErrors.name}
-          />
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <Input
+              isRequired
+              label="Name"
+              labelPlacement="outside-top"
+              placeholder="customer-response"
+              variant="bordered"
+              maxLength={100}
+              pattern="[A-Za-z0-9_-]+"
+              value={form.name}
+              onValueChange={set("name")}
+              description="Letters, digits, dash, or underscore. Unique; dots are not allowed."
+              isInvalid={Boolean(fieldErrors.name)}
+              errorMessage={fieldErrors.name}
+            />
+            <div className="flex min-w-0 flex-col">
+              <span
+                aria-hidden="true"
+                className={`pb-2 text-small ${
+                  fieldErrors.format ? "text-danger" : "text-foreground"
+                }`}
+              >
+                Generated file format
+                <span className="ms-0.5 text-danger">*</span>
+              </span>
+              <Select
+                isRequired
+                label="Generated file format"
+                labelPlacement="outside-top"
+                placeholder="Choose a format"
+                variant="bordered"
+                classNames={{ label: "sr-only" }}
+                selectedKeys={form.format ? [form.format] : []}
+                onSelectionChange={(keys) => set("format")([...keys][0] ?? "")}
+                description="The artifact format used when this template produces a file."
+                isInvalid={Boolean(fieldErrors.format)}
+                errorMessage={fieldErrors.format}
+              >
+                {FORMAT_OPTIONS.map(([value, format]) => (
+                  <SelectItem key={value} textValue={format.label}>
+                    {format.label} ({format.extension})
+                  </SelectItem>
+                ))}
+              </Select>
+            </div>
+          </div>
           <Input
             type="file"
             accept=".md,.txt,text/markdown,text/plain"

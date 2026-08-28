@@ -72,21 +72,26 @@ export function artifactExtension(kind, language) {
 export function artifactKind(artifact = {}) {
   if (ARTIFACT_FORMATS[artifact.kind]) return artifact.kind;
   if (ARTIFACT_FORMATS[artifact.metadata?.kind]) return artifact.metadata.kind;
-  if (TOOL_KINDS[artifact.toolName]) return TOOL_KINDS[artifact.toolName];
-  // A language is only ever set on a code artifact, so it identifies one before
-  // the content type gets a chance to mislabel text/plain.
-  if (artifactLanguage(artifact)) return "code";
-  const contentType = String(artifact.contentType ?? "").toLowerCase();
-  if (contentType.startsWith("text/markdown")) return "markdown";
-  if (contentType.startsWith("text/html")) return "html";
-  if (contentType.startsWith("text/csv")) return "csv";
-  if (contentType.startsWith("application/x-ndjson")) return "ndjson";
-  if (contentType.startsWith("application/json")) return "json";
-  if (contentType.includes("wordprocessingml")) return "docx";
-  if (contentType.includes("spreadsheetml")) return "xlsx";
+
+  const toolKind = TOOL_KINDS[artifact.toolName];
+  // Every tool except create_json_artifact identifies exactly one format. JSON
+  // and NDJSON share a tool, so only those two may break that tie.
+  if (toolKind && artifact.toolName !== "create_json_artifact") return toolKind;
+
   const filename = String(
     artifact.filename ?? artifact.metadata?.filename ?? "",
   ).toLowerCase();
+  const contentType = String(artifact.contentType ?? "").toLowerCase();
+  if (artifact.toolName === "create_json_artifact") {
+    if (filename.endsWith(ARTIFACT_FORMATS.ndjson.extension)) return "ndjson";
+    if (filename.endsWith(ARTIFACT_FORMATS.json.extension)) return "json";
+    if (contentType.startsWith("application/x-ndjson")) return "ndjson";
+    return "json";
+  }
+
+  // A language is only ever set on a code artifact, so it identifies one before
+  // a generic text/plain content type gets a chance to hide it.
+  if (artifactLanguage(artifact)) return "code";
   if (
     Object.values(CODE_EXTENSIONS).some(
       (extension) => extension !== ".txt" && filename.endsWith(extension),
@@ -94,12 +99,20 @@ export function artifactKind(artifact = {}) {
   ) {
     return "code";
   }
-  return (
-    Object.entries(ARTIFACT_FORMATS).find(
-      // `code` is excluded: its `.txt` fallback would claim every plain-text name.
-      ([kind, format]) => kind !== "code" && filename.endsWith(format.extension),
-    )?.[0] ?? "markdown"
-  );
+  const filenameKind = Object.entries(ARTIFACT_FORMATS).find(
+    // `code` is excluded: its `.txt` fallback would claim every plain-text name.
+    ([kind, format]) => kind !== "code" && filename.endsWith(format.extension),
+  )?.[0];
+  if (filenameKind) return filenameKind;
+
+  if (contentType.startsWith("text/markdown")) return "markdown";
+  if (contentType.startsWith("text/html")) return "html";
+  if (contentType.startsWith("text/csv")) return "csv";
+  if (contentType.startsWith("application/x-ndjson")) return "ndjson";
+  if (contentType.startsWith("application/json")) return "json";
+  if (contentType.includes("wordprocessingml")) return "docx";
+  if (contentType.includes("spreadsheetml")) return "xlsx";
+  return "markdown";
 }
 
 export function artifactLabel(artifact) {

@@ -2,6 +2,7 @@ import { Button, Chip, Code } from "@heroui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { ARTIFACT_FORMATS } from "../components/artifacts/artifact-utils.js";
 import {
   EmptyState,
   ErrorNote,
@@ -41,7 +42,12 @@ export function TemplatesPage() {
     if (!templates || !query.trim()) return templates;
     const needle = query.trim().toLowerCase();
     return templates.filter((template) =>
-      [template.name, template.uri]
+      [
+        template.name,
+        template.uri,
+        template.format,
+        ARTIFACT_FORMATS[template.format]?.label,
+      ]
         .filter(Boolean)
         .some((value) => value.toLowerCase().includes(needle)),
     );
@@ -132,6 +138,18 @@ export function TemplatesPage() {
                       }}
                     >
                       {template.uri?.startsWith("s3://") ? "S3" : "HTTPS"}
+                    </Chip>
+                    <Chip
+                      size="sm"
+                      variant="flat"
+                      color="secondary"
+                      classNames={{
+                        base: "h-5 rounded-full",
+                        content:
+                          "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
+                      }}
+                    >
+                      {ARTIFACT_FORMATS[template.format]?.label ?? template.format}
                     </Chip>
                     <StatusPill status={template.enabled ? "enabled" : "disabled"} />
                   </>

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ARTIFACT_FORMATS, type ArtifactKind } from '../artifacts/artifact-formats.js';
 import { S3_URI_PATTERN } from '../content/s3-uri.js';
 
 const identifier = z
@@ -13,9 +14,16 @@ const templateName = z
   .max(100)
   .regex(/^[A-Za-z0-9_-]+$/);
 
+export const TEMPLATE_FORMAT_NAMES = Object.keys(ARTIFACT_FORMATS) as [
+  ArtifactKind,
+  ...ArtifactKind[],
+];
+export const templateFormatSchema = z.enum(TEMPLATE_FORMAT_NAMES);
+
 const templateShape = {
   name: templateName,
   uri: z.string().min(1).max(2_048).regex(S3_URI_PATTERN),
+  format: templateFormatSchema.default('html'),
   enabled: z.boolean(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
