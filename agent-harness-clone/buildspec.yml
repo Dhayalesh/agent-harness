@@ -3,12 +3,13 @@ version: 0.2
 env:
   shell: bash
   variables:
-    AWS_PAGER: ''
+    AWS_PAGER: ""
     AWS_DEFAULT_OUTPUT: json
-    AWS_REGION: 'us-east-1'
-    ECR_REGISTRY: '498341975048.dkr.ecr.us-east-1.amazonaws.com'
-    ECR_REPOSITORY: 'agentcore'
-    AGENTCORE_RUNTIME_ID: 'arn:aws:bedrock-agentcore:us-east-1:498341975048:runtime/agent_harness-Jax4VH7YQj'
+    DOCKER_BUILDKIT: "1"
+    AWS_REGION: "us-east-1"
+    ECR_REGISTRY: "498341975048.dkr.ecr.us-east-1.amazonaws.com"
+    ECR_REPOSITORY: "agentcore"
+    AGENTCORE_RUNTIME_ID: "agent_harness-Jax4VH7YQj"
 
 phases:
   install:
@@ -17,239 +18,342 @@ phases:
     commands:
       - |
         set -euo pipefail
-        echo "Installing dependencies"
-        command -v aws >/dev/null || {
-          echo "ERROR: AWS CLI is required" >&2
-          exit 1
-        }
-        command -v docker >/dev/null || {
-          echo "ERROR: Docker is required" >&2
-          exit 1
-        }
-        command -v python3 >/dev/null || {
-          echo "ERROR: Python 3 is required" >&2
-          exit 1
-        }
-        npm ci
+        echo "========== INSTALL =========="
+
+        command -v aws >/dev/null || { echo "ERROR: AWS CLI missing"; exit 1; }
+        command -v docker >/dev/null || { echo "ERROR: Docker missing"; exit 1; }
+        command -v jq >/dev/null || { echo "ERROR: jq missing"; exit 1; }
+
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        [[ -d "$APP_DIR" ]] || { echo "ERROR: $APP_DIR not found"; exit 1; }
+
+        cd "$APP_DIR"
+        [[ -f package.json ]] || { echo "ERROR: package.json missing"; exit 1; }
+        [[ -f package-lock.json ]] || { echo "ERROR: package-lock.json missing"; exit 1; }
+
+        npm ci --no-audit --no-fund
+        echo "INSTALL SUCCESS"
 
   pre_build:
     commands:
       - |
         set -euo pipefail
-        echo "Validating build configuration"
-        : "${AWS_REGION:?AWS_REGION must be set}"
-        : "${ECR_REGISTRY:?ECR_REGISTRY must be set}"
-        : "${ECR_REPOSITORY:?ECR_REPOSITORY must be set}"
-        : "${AGENTCORE_RUNTIME_ID:?AGENTCORE_RUNTIME_ID must be set}"
-        : "${CODEBUILD_RESOLVED_SOURCE_VERSION:?CODEBUILD_RESOLVED_SOURCE_VERSION is unavailable}"
-        if [[ "$ECR_REGISTRY" == *://* || "$ECR_REGISTRY" == */* ]]; then
-          echo "ERROR: ECR_REGISTRY must be registry hostname only" >&2
-          exit 1
-        fi
-        if [[ ! "$ECR_REPOSITORY" =~ ^[a-z0-9]+([._/-][a-z0-9]+)*$ ]]; then
-          echo "ERROR: Invalid ECR repository name" >&2
-          exit 1
-        fi
-        if [[ ! "$AGENTCORE_RUNTIME_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,99}-[a-zA-Z0-9]{10}$ ]]; then
-          echo "ERROR: Invalid AgentCore Runtime ID" >&2
-          exit 1
-        fi
-        if [[ ! "$CODEBUILD_RESOLVED_SOURCE_VERSION" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
-          echo "ERROR: Source version must be a Git commit SHA" >&2
-          exit 1
-        fi
+        echo "========== PRE_BUILD =========="
+
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        cd "$APP_DIR"
+
+        : "${AWS_REGION:?AWS_REGION is required}"
+        : "${ECR_REGISTRY:?ECR_REGISTRY is required}"
+        : "${ECR_REPOSITORY:?ECR_REPOSITORY is required}"
+        : "${AGENTCORE_RUNTIME_ID:?AGENTCORE_RUNTIME_ID is required}"
+        : "${CODEBUILD_RESOLVED_SOURCE_VERSION:?CODEBUILD_RESOLVED_SOURCE_VERSION is required}"
+
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-        echo "Running type checks"
+
+        echo "IMAGE_URI=$IMAGE_URI"
+        echo "AGENTCORE_RUNTIME_ID=$AGENTCORE_RUNTIME_ID"
+
+        echo "===== TYPECHECK ====="
         npm run typecheck
-        echo "Running tests"
+
+        echo "===== TEST ====="
         npm test
-        echo "Building application"
+
+        echo "===== APPLICATION BUILD ====="
         npm run build
-        echo "Authenticating to ECR"
-        aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+        echo "===== AWS IDENTITY ====="
+        aws sts get-caller-identity --region "$AWS_REGION"
+
+        echo "===== ECR CHECK ====="
+        aws ecr describe-repositories \
+          --region "$AWS_REGION" \
+          --repository-names "$ECR_REPOSITORY" \
+          --output json
+
+        echo "===== ECR LOGIN ====="
+        aws ecr get-login-password --region "$AWS_REGION" |
+          docker login --username AWS --password-stdin "$ECR_REGISTRY"
+
+        echo "===== ARM64 BINfmt ====="
+        docker run --privileged --rm \
+          tonistiigi/binfmt:latest \
+          --install arm64
+
+        echo "===== ARM64 TEST ====="
+        ARCH="$(docker run --rm --platform linux/arm64 arm64v8/alpine:latest uname -m)"
+        echo "ARCH=$ARCH"
+
+        [[ "$ARCH" == "aarch64" ]] || {
+          echo "FAILED AT: ARM64 EMULATION"
+          exit 1
+        }
+
+        echo "PRE_BUILD SUCCESS"
 
   build:
     commands:
       - |
         set -euo pipefail
+        echo "========== [1/4] DOCKER BUILD =========="
+
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        cd "$APP_DIR"
+
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-        echo "=========================================="
-        echo "Building ARM64 Docker image"
-        echo "Image: ${IMAGE_URI}"
-        echo "Platform: linux/arm64"
-        echo "=========================================="
-        DOCKER_BUILDKIT=1 docker build --platform linux/arm64 --tag "$IMAGE_URI" .
-        IMAGE_PLATFORM="$(docker image inspect "$IMAGE_URI" --format '{{.Os}}/{{.Architecture}}')"
-        if [[ "$IMAGE_PLATFORM" != "linux/arm64" ]]; then
-          echo "ERROR: Built image platform is ${IMAGE_PLATFORM}" >&2
-          echo "Expected: linux/arm64" >&2
+
+        if ! docker build \
+          --platform linux/arm64 \
+          --tag "$IMAGE_URI" \
+          .; then
+          echo "FAILED AT: DOCKER BUILD"
           exit 1
         fi
-        echo "Verified image platform: ${IMAGE_PLATFORM}"
+
+        IMAGE_PLATFORM="$(docker image inspect "$IMAGE_URI" --format '{{.Os}}/{{.Architecture}}')"
+        echo "IMAGE_PLATFORM=$IMAGE_PLATFORM"
+
+        [[ "$IMAGE_PLATFORM" == "linux/arm64" ]] || {
+          echo "FAILED AT: IMAGE PLATFORM"
+          exit 1
+        }
+
+        echo "DOCKER BUILD SUCCESS"
+
+        echo "========== [2/4] ECR PUSH =========="
+
+        if ! docker push "$IMAGE_URI"; then
+          echo "FAILED AT: ECR PUSH"
+          exit 1
+        fi
+
+        IMAGE_DIGEST="$(
+          aws ecr describe-images \
+            --region "$AWS_REGION" \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids "imageTag=$IMAGE_TAG" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text
+        )"
+
+        echo "IMAGE_DIGEST=$IMAGE_DIGEST"
+        [[ "$IMAGE_DIGEST" == sha256:* ]] || {
+          echo "FAILED AT: ECR DIGEST"
+          exit 1
+        }
+
+        echo "ECR SUCCESS"
 
   post_build:
     commands:
       - |
         set -euo pipefail
+        echo "========== [3/4] AGENTCORE UPDATE =========="
+
+        APP_DIR="${CODEBUILD_SRC_DIR}/agent-harness-clone"
+        cd "$APP_DIR"
+
         IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | tr '[:upper:]' '[:lower:]')"
         IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-        echo "=========================================="
-        echo "Pushing image to ECR"
-        echo "Image: ${IMAGE_URI}"
-        echo "=========================================="
-        docker push "$IMAGE_URI"
-        IMAGE_DIGEST="$(aws ecr describe-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=${IMAGE_TAG}" --query 'imageDetails[0].imageDigest' --output text)"
-        if [[ "$IMAGE_DIGEST" != sha256:* ]]; then
-          echo "ERROR: ECR did not return a valid image digest" >&2
+
+        TMP_DIR="$(mktemp -d)"
+        trap 'rm -rf "$TMP_DIR"' EXIT
+
+        CURRENT="$TMP_DIR/current.json"
+        REQUEST="$TMP_DIR/request.json"
+        RESPONSE="$TMP_DIR/response.json"
+        ERROR_FILE="$TMP_DIR/error.txt"
+
+        echo "===== GET AGENTCORE RUNTIME ====="
+
+        if ! aws bedrock-agentcore-control get-agent-runtime \
+          --region "$AWS_REGION" \
+          --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+          --output json > "$CURRENT" 2> "$ERROR_FILE"; then
+          echo "FAILED AT: GET AGENTCORE RUNTIME"
+          cat "$ERROR_FILE"
           exit 1
         fi
-        echo "ECR image digest: ${IMAGE_DIGEST}"
-        echo "=========================================="
-        echo "Getting current AgentCore Runtime"
-        echo "=========================================="
-        DEPLOY_TMP="$(mktemp -d)"
-        trap 'rm -rf "$DEPLOY_TMP"' EXIT
-        CURRENT_RUNTIME="$DEPLOY_TMP/current-runtime.json"
-        UPDATE_INPUT="$DEPLOY_TMP/update-runtime.json"
-        aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" > "$CURRENT_RUNTIME"
-        cat > "$DEPLOY_TMP/update_runtime.py" << 'PYTHON_SCRIPT'
-import hashlib
-import json
-import sys
 
-source_path = sys.argv[1]
-output_path = sys.argv[2]
-runtime_id = sys.argv[3]
-image_uri = sys.argv[4]
+        echo "GET AGENTCORE RUNTIME SUCCESS"
 
-with open(source_path, encoding="utf-8") as source:
-    current = json.load(source)
+        ROLE_ARN="$(jq -r '.roleArn // empty' "$CURRENT")"
+        NETWORK_MODE="$(jq -r '.networkConfiguration.networkMode // empty' "$CURRENT")"
 
-if not current.get("roleArn"):
-    raise SystemExit("ERROR: Existing runtime response does not contain roleArn")
+        echo "ROLE_ARN=$ROLE_ARN"
+        echo "NETWORK_MODE=$NETWORK_MODE"
 
-update = {
-    "agentRuntimeId": runtime_id,
-    "agentRuntimeArtifact": {
-        "containerConfiguration": {
-            "containerUri": image_uri
+        [[ -n "$ROLE_ARN" ]] || {
+          echo "FAILED AT: ROLE ARN"
+          exit 1
         }
-    },
-    "roleArn": current["roleArn"],
-    "clientToken": (
-        "codebuild-"
-        + hashlib.sha256(
-            f"{runtime_id}:{image_uri}".encode()
-        ).hexdigest()
-    ),
-}
 
-preserved_fields = (
-    "networkConfiguration",
-    "description",
-    "authorizerConfiguration",
-    "requestHeaderConfiguration",
-    "protocolConfiguration",
-    "lifecycleConfiguration",
-    "metadataConfiguration",
-    "environmentVariables",
-    "filesystemConfigurations",
-    "capacityProviderConfiguration",
-)
+        [[ -n "$NETWORK_MODE" ]] || {
+          echo "FAILED AT: NETWORK MODE"
+          exit 1
+        }
 
-for field in preserved_fields:
-    if field in current:
-        update[field] = current[field]
+        echo "===== BUILD UPDATE REQUEST ====="
 
-with open(output_path, "w", encoding="utf-8") as output:
-    json.dump(update, output)
+        jq -n \
+          --arg runtimeId "$AGENTCORE_RUNTIME_ID" \
+          --arg image "$IMAGE_URI" \
+          --arg networkMode "$NETWORK_MODE" \
+          --arg roleArn "$ROLE_ARN" \
+          '{
+            agentRuntimeId: $runtimeId,
+            agentRuntimeArtifact: {
+              containerConfiguration: {
+                containerUri: $image
+              }
+            },
+            networkConfiguration: {
+              networkMode: $networkMode
+            },
+            roleArn: $roleArn
+          }' > "$REQUEST"
 
-print(f"Generated AgentCore update configuration for {runtime_id}")
-print(f"Container image: {image_uri}")
-PYTHON_SCRIPT
-        python3 "$DEPLOY_TMP/update_runtime.py" "$CURRENT_RUNTIME" "$UPDATE_INPUT" "$AGENTCORE_RUNTIME_ID" "$IMAGE_URI"
-        echo "=========================================="
-        echo "Creating new AgentCore Runtime version"
-        echo "=========================================="
-        NEW_RUNTIME_VERSION="$(aws bedrock-agentcore-control update-agent-runtime --region "$AWS_REGION" --cli-input-json "file://${UPDATE_INPUT}" --query agentRuntimeVersion --output text)"
-        if [[ ! "$NEW_RUNTIME_VERSION" =~ ^[1-9][0-9]{0,4}$ ]]; then
-          echo "ERROR: Invalid AgentCore Runtime version returned" >&2
+        echo "REQUEST:"
+        jq . "$REQUEST"
+
+        echo "===== [4/4] UPDATE AGENTCORE RUNTIME ====="
+
+        if ! aws bedrock-agentcore-control update-agent-runtime \
+          --region "$AWS_REGION" \
+          --cli-input-json "file://$REQUEST" \
+          --output json > "$RESPONSE" 2> "$ERROR_FILE"; then
+
+          echo "=========================================="
+          echo "FAILED AT: UPDATE AGENTCORE RUNTIME"
+          echo "=========================================="
+          echo "AWS ERROR:"
+          cat "$ERROR_FILE"
+
+          echo "REQUEST:"
+          jq . "$REQUEST"
+
           exit 1
         fi
-        echo "Created Runtime version: ${NEW_RUNTIME_VERSION}"
-        echo "=========================================="
-        echo "Waiting for Runtime to become READY"
-        echo "=========================================="
+
+        echo "UPDATE AGENTCORE RUNTIME SUCCESS"
+        echo "RESPONSE:"
+        jq . "$RESPONSE"
+
+        NEW_RUNTIME_VERSION="$(jq -r '.agentRuntimeVersion // empty' "$RESPONSE")"
+
+        [[ -n "$NEW_RUNTIME_VERSION" ]] || {
+          echo "FAILED AT: RUNTIME VERSION RESPONSE"
+          exit 1
+        }
+
+        echo "NEW_RUNTIME_VERSION=$NEW_RUNTIME_VERSION"
+
+        echo "===== WAIT FOR RUNTIME READY ====="
+
         RUNTIME_STATUS=""
+
         for attempt in $(seq 1 120); do
-          RUNTIME_STATUS="$(aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --agent-runtime-version "$NEW_RUNTIME_VERSION" --query status --output text)"
-          echo "Attempt ${attempt}/120"
-          echo "Runtime status: ${RUNTIME_STATUS}"
-          case "$RUNTIME_STATUS" in
-            READY)
-              break
-              ;;
-            CREATE_FAILED|UPDATE_FAILED|DELETING)
-              echo "ERROR: Runtime deployment failed: ${RUNTIME_STATUS}" >&2
-              exit 1
-              ;;
-          esac
-          sleep 5
-        done
-        if [[ "$RUNTIME_STATUS" != "READY" ]]; then
-          echo "ERROR: Runtime did not become READY within timeout" >&2
-          exit 1
-        fi
-        echo "Runtime version ${NEW_RUNTIME_VERSION} is READY"
-        echo "=========================================="
-        echo "Verifying deployed image"
-        echo "=========================================="
-        DEPLOYED_URI="$(aws bedrock-agentcore-control get-agent-runtime --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --agent-runtime-version "$NEW_RUNTIME_VERSION" --query 'agentRuntimeArtifact.containerConfiguration.containerUri' --output text)"
-        if [[ "$DEPLOYED_URI" != "$IMAGE_URI" ]]; then
-          echo "ERROR: Deployed image does not match expected image" >&2
-          echo "Expected: ${IMAGE_URI}" >&2
-          echo "Actual:   ${DEPLOYED_URI}" >&2
-          exit 1
-        fi
-        echo "Verified deployed image: ${DEPLOYED_URI}"
-        echo "=========================================="
-        echo "Checking DEFAULT endpoint"
-        echo "=========================================="
-        ENDPOINT_STATUS=""
-        LIVE_VERSION=""
-        for attempt in $(seq 1 120); do
-          read -r ENDPOINT_STATUS LIVE_VERSION < <(aws bedrock-agentcore-control get-agent-runtime-endpoint --region "$AWS_REGION" --agent-runtime-id "$AGENTCORE_RUNTIME_ID" --endpoint-name DEFAULT --query '[status,liveVersion]' --output text)
-          echo "Attempt ${attempt}/120"
-          echo "Endpoint status: ${ENDPOINT_STATUS}"
-          echo "Live version: ${LIVE_VERSION}"
-          if [[ "$ENDPOINT_STATUS" == "READY" && "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]]; then
+          RUNTIME_JSON="$(
+            aws bedrock-agentcore-control get-agent-runtime \
+              --region "$AWS_REGION" \
+              --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+              --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+              --output json
+          )"
+
+          RUNTIME_STATUS="$(printf '%s' "$RUNTIME_JSON" | jq -r '.status // empty')"
+
+          echo "Attempt $attempt/120: $RUNTIME_STATUS"
+
+          if [[ "$RUNTIME_STATUS" == "READY" ]]; then
             break
           fi
-          case "$ENDPOINT_STATUS" in
+
+          case "$RUNTIME_STATUS" in
             CREATE_FAILED|UPDATE_FAILED|DELETING)
-              echo "ERROR: DEFAULT endpoint deployment failed: ${ENDPOINT_STATUS}" >&2
+              echo "FAILED AT: AGENTCORE RUNTIME"
+              echo "$RUNTIME_JSON"
               exit 1
               ;;
           esac
+
           sleep 5
         done
-        if [[ "$ENDPOINT_STATUS" != "READY" || "$LIVE_VERSION" != "$NEW_RUNTIME_VERSION" ]]; then
-          echo "ERROR: DEFAULT endpoint did not reach expected version" >&2
+
+        [[ "$RUNTIME_STATUS" == "READY" ]] || {
+          echo "FAILED AT: RUNTIME READY TIMEOUT"
+          exit 1
+        }
+
+        DEPLOYED_URI="$(
+          aws bedrock-agentcore-control get-agent-runtime \
+            --region "$AWS_REGION" \
+            --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+            --agent-runtime-version "$NEW_RUNTIME_VERSION" \
+            --query 'agentRuntimeArtifact.containerConfiguration.containerUri' \
+            --output text
+        )"
+
+        echo "Expected image: $IMAGE_URI"
+        echo "Deployed image: $DEPLOYED_URI"
+
+        [[ "$DEPLOYED_URI" == "$IMAGE_URI" ]] || {
+          echo "FAILED AT: DEPLOYED IMAGE VERIFICATION"
+          exit 1
+        }
+
+        echo "===== WAIT FOR DEFAULT ENDPOINT ====="
+
+        ENDPOINT_STATUS=""
+        LIVE_VERSION=""
+
+        for attempt in $(seq 1 120); do
+          ENDPOINT_JSON="$(
+            aws bedrock-agentcore-control get-agent-runtime-endpoint \
+              --region "$AWS_REGION" \
+              --agent-runtime-id "$AGENTCORE_RUNTIME_ID" \
+              --endpoint-name DEFAULT \
+              --output json
+          )"
+
+          ENDPOINT_STATUS="$(printf '%s' "$ENDPOINT_JSON" | jq -r '.status // empty')"
+          LIVE_VERSION="$(printf '%s' "$ENDPOINT_JSON" | jq -r '.liveVersion // empty')"
+
+          echo "Attempt $attempt/120: status=$ENDPOINT_STATUS liveVersion=$LIVE_VERSION"
+
+          if [[ "$ENDPOINT_STATUS" == "READY" &&
+                "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]]; then
+            break
+          fi
+
+          case "$ENDPOINT_STATUS" in
+            CREATE_FAILED|UPDATE_FAILED|DELETING)
+              echo "FAILED AT: DEFAULT ENDPOINT"
+              echo "$ENDPOINT_JSON"
+              exit 1
+              ;;
+          esac
+
+          sleep 5
+        done
+
+        if [[ "$ENDPOINT_STATUS" != "READY" ||
+              "$LIVE_VERSION" != "$NEW_RUNTIME_VERSION" ]]; then
+          echo "FAILED AT: DEFAULT ENDPOINT VERSION"
+          echo "Expected: $NEW_RUNTIME_VERSION"
+          echo "Actual: $LIVE_VERSION"
           exit 1
         fi
-        echo ""
+
         echo "=========================================="
         echo "DEPLOYMENT SUCCESSFUL"
         echo "=========================================="
-        echo "AWS Region       : ${AWS_REGION}"
-        echo "ECR Repository   : ${ECR_REPOSITORY}"
-        echo "Image            : ${IMAGE_URI}"
-        echo "Image Digest     : ${IMAGE_DIGEST}"
-        echo "Runtime ID       : ${AGENTCORE_RUNTIME_ID}"
-        echo "Runtime Version  : ${NEW_RUNTIME_VERSION}"
-        echo "Runtime Status   : ${RUNTIME_STATUS}"
-        echo "Endpoint Status  : ${ENDPOINT_STATUS}"
-        echo "Live Version     : ${LIVE_VERSION}"
+        echo "Image: $IMAGE_URI"
+        echo "Runtime: $AGENTCORE_RUNTIME_ID"
+        echo "Version: $NEW_RUNTIME_VERSION"
+        echo "Endpoint: DEFAULT"
+        echo "Live version: $LIVE_VERSION"
         echo "=========================================="
