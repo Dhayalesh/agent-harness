@@ -30,7 +30,31 @@ phases:
           echo "ERROR: Python 3 is required" >&2
           exit 1
         }
-        npm ci
+        echo "Node version: $(node --version)"
+        echo "npm version: $(npm --version)"
+        echo "Working directory: $(pwd)"
+        echo "Repository root contents:"
+        ls -la
+
+        if [[ ! -f package.json ]]; then
+          echo "ERROR: package.json was not found in $(pwd)" >&2
+          echo "npm ci must be run from the directory containing package.json" >&2
+          exit 1
+        fi
+
+        if [[ ! -f package-lock.json ]]; then
+          echo "ERROR: package-lock.json was not found in $(pwd)" >&2
+          echo "npm ci requires an existing package-lock.json or npm-shrinkwrap.json" >&2
+          exit 1
+        fi
+
+        echo "package.json found"
+        echo "package-lock.json found"
+        echo "Checking npm lockfile consistency..."
+        npm install --package-lock-only --ignore-scripts --no-audit --no-fund --loglevel=error
+
+        echo "Installing dependencies with npm ci..."
+        npm ci --verbose --no-audit --no-fund
 
   pre_build:
     commands:
@@ -125,46 +149,46 @@ phases:
         image_uri = sys.argv[4]
         
         with open(source_path, encoding="utf-8") as source:
-            current = json.load(source)
+        current = json.load(source)
         
         if not current.get("roleArn"):
-            raise SystemExit("ERROR: Existing runtime response does not contain roleArn")
+        raise SystemExit("ERROR: Existing runtime response does not contain roleArn")
         
         update = {
-            "agentRuntimeId": runtime_id,
-            "agentRuntimeArtifact": {
-                "containerConfiguration": {
-                    "containerUri": image_uri
-                }
-            },
-            "roleArn": current["roleArn"],
-            "clientToken": (
-                "codebuild-"
-                + hashlib.sha256(
-                    f"{runtime_id}:{image_uri}".encode()
-                ).hexdigest()
-            ),
+        "agentRuntimeId": runtime_id,
+        "agentRuntimeArtifact": {
+        "containerConfiguration": {
+        "containerUri": image_uri
+        }
+        },
+        "roleArn": current["roleArn"],
+        "clientToken": (
+        "codebuild-"
+        + hashlib.sha256(
+        f"{runtime_id}:{image_uri}".encode()
+        ).hexdigest()
+        ),
         }
         
         preserved_fields = (
-            "networkConfiguration",
-            "description",
-            "authorizerConfiguration",
-            "requestHeaderConfiguration",
-            "protocolConfiguration",
-            "lifecycleConfiguration",
-            "metadataConfiguration",
-            "environmentVariables",
-            "filesystemConfigurations",
-            "capacityProviderConfiguration",
+        "networkConfiguration",
+        "description",
+        "authorizerConfiguration",
+        "requestHeaderConfiguration",
+        "protocolConfiguration",
+        "lifecycleConfiguration",
+        "metadataConfiguration",
+        "environmentVariables",
+        "filesystemConfigurations",
+        "capacityProviderConfiguration",
         )
         
         for field in preserved_fields:
-            if field in current:
-                update[field] = current[field]
+        if field in current:
+        update[field] = current[field]
         
         with open(output_path, "w", encoding="utf-8") as output:
-            json.dump(update, output)
+        json.dump(update, output)
         
         print(f"Generated AgentCore update configuration for {runtime_id}")
         print(f"Container image: {image_uri}")
