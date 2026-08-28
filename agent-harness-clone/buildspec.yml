@@ -441,6 +441,6 @@ phases:
         echo "Live Version   : $LIVE_VERSION"
         echo "=========================================="
         
-          post_build:
-            commands:
-              - echo "POST_BUILD completed."
+  post_build:
+    commands:
+      - echo "POST_BUILD completed."
