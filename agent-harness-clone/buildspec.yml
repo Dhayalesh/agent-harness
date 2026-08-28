@@ -92,8 +92,9 @@ phases:
           echo "ERROR: Invalid ECR repository name" >&2
           exit 1
         fi
-        if [[ ! "$AGENTCORE_RUNTIME_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,99}-[a-zA-Z0-9]{10}$ ]]; then
-          echo "ERROR: Invalid AgentCore Runtime ID" >&2
+        if [[ ! "$AGENTCORE_RUNTIME_ID" =~ ^arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:runtime/.+$ ]]; then
+          echo "ERROR: Invalid AgentCore Runtime ARN" >&2
+          echo "Value: $AGENTCORE_RUNTIME_ID" >&2
           exit 1
         fi
         if [[ ! "$CODEBUILD_RESOLVED_SOURCE_VERSION" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
