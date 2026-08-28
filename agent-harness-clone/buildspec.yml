@@ -110,7 +110,28 @@ phases:
         echo "Building application"
         npm run build
         echo "Authenticating to ECR"
-        aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+        echo "AWS identity:"
+        aws sts get-caller-identity --region "$AWS_REGION"
+
+        ECR_PASSWORD_FILE="$(mktemp)"
+        trap 'rm -f "$ECR_PASSWORD_FILE"' EXIT
+
+        echo "Requesting ECR authorization token..."
+        if ! aws ecr get-login-password --region "$AWS_REGION" > "$ECR_PASSWORD_FILE"; then
+          echo "ERROR: AWS could not issue an ECR authorization token." >&2
+          echo "Check the CodeBuild service role for ecr:GetAuthorizationToken." >&2
+          exit 1
+        fi
+
+        if ! docker login --username AWS --password-stdin "$ECR_REGISTRY" < "$ECR_PASSWORD_FILE"; then
+          echo "ERROR: Docker could not authenticate to ECR registry: $ECR_REGISTRY" >&2
+          echo "Check the registry/account/region and ECR permissions." >&2
+          exit 1
+        fi
+
+        rm -f "$ECR_PASSWORD_FILE"
+        trap - EXIT
+        echo "ECR authentication succeeded"
 
   build:
     commands:
@@ -179,54 +200,54 @@ phases:
         import hashlib
         import json
         import sys
-        
+
         source_path = sys.argv[1]
         output_path = sys.argv[2]
         runtime_id = sys.argv[3]
         image_uri = sys.argv[4]
-        
+
         with open(source_path, encoding="utf-8") as source:
-        current = json.load(source)
-        
+            current = json.load(source)
+
         if not current.get("roleArn"):
-        raise SystemExit("ERROR: Existing runtime response does not contain roleArn")
-        
+            raise SystemExit("ERROR: Existing runtime response does not contain roleArn")
+
         update = {
-        "agentRuntimeId": runtime_id,
-        "agentRuntimeArtifact": {
-        "containerConfiguration": {
-        "containerUri": image_uri
+            "agentRuntimeId": runtime_id,
+            "agentRuntimeArtifact": {
+                "containerConfiguration": {
+                    "containerUri": image_uri
+                }
+            },
+            "roleArn": current["roleArn"],
+            "clientToken": (
+                "codebuild-"
+                + hashlib.sha256(
+                    f"{runtime_id}:{image_uri}".encode()
+                ).hexdigest()
+            ),
         }
-        },
-        "roleArn": current["roleArn"],
-        "clientToken": (
-        "codebuild-"
-        + hashlib.sha256(
-        f"{runtime_id}:{image_uri}".encode()
-        ).hexdigest()
-        ),
-        }
-        
+
         preserved_fields = (
-        "networkConfiguration",
-        "description",
-        "authorizerConfiguration",
-        "requestHeaderConfiguration",
-        "protocolConfiguration",
-        "lifecycleConfiguration",
-        "metadataConfiguration",
-        "environmentVariables",
-        "filesystemConfigurations",
-        "capacityProviderConfiguration",
+            "networkConfiguration",
+            "description",
+            "authorizerConfiguration",
+            "requestHeaderConfiguration",
+            "protocolConfiguration",
+            "lifecycleConfiguration",
+            "metadataConfiguration",
+            "environmentVariables",
+            "filesystemConfigurations",
+            "capacityProviderConfiguration",
         )
-        
+
         for field in preserved_fields:
-        if field in current:
-        update[field] = current[field]
-        
+            if field in current:
+                update[field] = current[field]
+
         with open(output_path, "w", encoding="utf-8") as output:
-        json.dump(update, output)
-        
+            json.dump(update, output)
+
         print(f"Generated AgentCore update configuration for {runtime_id}")
         print(f"Container image: {image_uri}")
         PYTHON_SCRIPT
