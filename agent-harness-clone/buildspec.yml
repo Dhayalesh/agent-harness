@@ -8,7 +8,7 @@ env:
     AWS_REGION: 'us-east-1'
     ECR_REGISTRY: '498341975048.dkr.ecr.us-east-1.amazonaws.com'
     ECR_REPOSITORY: 'agentcore'
-    AGENTCORE_RUNTIME_ID: 'arn:aws:bedrock-agentcore:us-east-1:498341975048:runtime/agent_harness-Jax4VH7YQj'
+    AGENTCORE_RUNTIME_ID: 'agent_harness-Jax4VH7YQj'
 
 phases:
   install:
@@ -59,8 +59,8 @@ phases:
 
         echo "package.json found"
         echo "package-lock.json found"
-        echo "Checking npm lockfile consistency..."
-        npm install --package-lock-only --ignore-scripts --no-audit --no-fund --loglevel=error
+        echo "Validating package-lock.json without modifying it..."
+        npm ci --ignore-scripts --dry-run --no-audit --no-fund --loglevel=error
 
         echo "Installing dependencies with npm ci..."
         npm ci --verbose --no-audit --no-fund
@@ -92,8 +92,9 @@ phases:
           echo "ERROR: Invalid ECR repository name" >&2
           exit 1
         fi
-        if [[ ! "$AGENTCORE_RUNTIME_ID" =~ ^arn:aws:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:runtime/.+$ ]]; then
-          echo "ERROR: Invalid AgentCore Runtime ARN" >&2
+        if [[ ! "$AGENTCORE_RUNTIME_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]{0,99}-[a-zA-Z0-9]{10}$ ]]; then
+          echo "ERROR: Invalid AgentCore Runtime ID" >&2
+          echo "Expected format: name-XXXXXXXXXX" >&2
           echo "Value: $AGENTCORE_RUNTIME_ID" >&2
           exit 1
         fi
@@ -109,6 +110,13 @@ phases:
         npm test
         echo "Building application"
         npm run build
+        echo "Validating ECR access"
+        if ! aws ecr describe-repositories           --region "$AWS_REGION"           --repository-names "$ECR_REPOSITORY"           --query 'repositories[0].repositoryUri'           --output text; then
+          echo "ERROR: Cannot access ECR repository '$ECR_REPOSITORY'." >&2
+          echo "The CodeBuild service role needs ECR repository permissions." >&2
+          exit 1
+        fi
+
         echo "Authenticating to ECR"
         echo "AWS identity:"
         aws sts get-caller-identity --region "$AWS_REGION"
@@ -181,8 +189,13 @@ phases:
         echo "Pushing image to ECR"
         echo "Image: ${IMAGE_URI}"
         echo "=========================================="
-        docker push "$IMAGE_URI"
-        IMAGE_DIGEST="$(aws ecr describe-images --region "$AWS_REGION" --repository-name "$ECR_REPOSITORY" --image-ids "imageTag=${IMAGE_TAG}" --query 'imageDetails[0].imageDigest' --output text)"
+        if ! docker push "$IMAGE_URI"; then
+          echo "ERROR: Docker failed to push ${IMAGE_URI}" >&2
+          echo "Check ECR push permissions for the CodeBuild service role." >&2
+          exit 1
+        fi
+
+        IMAGE_DIGEST="$(aws ecr describe-images           --region "$AWS_REGION"           --repository-name "$ECR_REPOSITORY"           --image-ids "imageTag=${IMAGE_TAG}"           --query 'imageDetails[0].imageDigest'           --output text)"
         if [[ "$IMAGE_DIGEST" != sha256:* ]]; then
           echo "ERROR: ECR did not return a valid image digest" >&2
           exit 1
@@ -255,7 +268,12 @@ phases:
         echo "=========================================="
         echo "Creating new AgentCore Runtime version"
         echo "=========================================="
-        NEW_RUNTIME_VERSION="$(aws bedrock-agentcore-control update-agent-runtime --region "$AWS_REGION" --cli-input-json "file://${UPDATE_INPUT}" --query agentRuntimeVersion --output text)"
+        if ! NEW_RUNTIME_VERSION="$(aws bedrock-agentcore-control update-agent-runtime           --region "$AWS_REGION"           --cli-input-json "file://${UPDATE_INPUT}"           --query agentRuntimeVersion           --output text)"; then
+          echo "ERROR: AgentCore update-agent-runtime failed." >&2
+          echo "Check the CodeBuild role permissions and the AgentCore Runtime role/image permissions." >&2
+          exit 1
+        fi
+
         if [[ ! "$NEW_RUNTIME_VERSION" =~ ^[1-9][0-9]{0,4}$ ]]; then
           echo "ERROR: Invalid AgentCore Runtime version returned" >&2
           exit 1
