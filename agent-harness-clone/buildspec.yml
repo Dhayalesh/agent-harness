@@ -183,102 +183,91 @@ phases:
 
         echo "Existing runtime retrieved."
 
-        echo "Creating UpdateAgentRuntime request..."
+        echo "Creating minimal UpdateAgentRuntime request..."
 
         python3 - "$CURRENT" "$REQUEST" "$AGENTCORE_RUNTIME_ID" "$IMAGE_URI" <<'PY'
+        import hashlib
         import json
         import sys
-        import hashlib
         
-        current_file = sys.argv[1]
-        request_file = sys.argv[2]
-        runtime_id = sys.argv[3]
-        image_uri = sys.argv[4]
+        current_file, request_file, runtime_id, image_uri = sys.argv[1:5]
         
         with open(current_file, encoding="utf-8") as f:
             current = json.load(f)
         
         role_arn = current.get("roleArn")
-        network = current.get("networkConfiguration")
+        network = current.get("networkConfiguration") or {}
         
         if not role_arn:
             raise SystemExit("ERROR: Existing runtime has no roleArn")
         
-        if not network:
-            raise SystemExit("ERROR: Existing runtime has no networkConfiguration")
-        
-        if not network.get("networkMode"):
-            raise SystemExit("ERROR: networkConfiguration.networkMode is missing")
+        network_mode = network.get("networkMode")
+        if not network_mode:
+            raise SystemExit("ERROR: Existing runtime has no networkConfiguration.networkMode")
         
         request = {
             "agentRuntimeId": runtime_id,
             "agentRuntimeArtifact": {
-                "containerConfiguration": {
-                    "containerUri": image_uri
-                }
+        "containerConfiguration": {
+            "containerUri": image_uri
+        }
             },
-            "networkConfiguration": network,
+            "networkConfiguration": {
+        "networkMode": network_mode
+            },
             "roleArn": role_arn,
             "clientToken": "cb-" + hashlib.sha256(
-                f"{runtime_id}:{image_uri}".encode("utf-8")
+        f"{runtime_id}:{image_uri}".encode("utf-8")
             ).hexdigest()[:32]
         }
-        
-        # Only copy fields accepted by UpdateAgentRuntime when they exist.
-        optional_fields = [
-            "authorizerConfiguration",
-            "capacityProviderConfiguration",
-            "description",
-            "environmentVariables",
-            "filesystemConfigurations",
-            "lifecycleConfiguration",
-            "metadataConfiguration",
-            "protocolConfiguration",
-            "requestHeaderConfiguration"
-        ]
-        
-        for field in optional_fields:
-            value = current.get(field)
-            if value is not None:
-                request[field] = value
         
         with open(request_file, "w", encoding="utf-8") as f:
             json.dump(request, f, separators=(",", ":"))
         
-        print("Update request created successfully.")
+        print("Minimal UpdateAgentRuntime request created.")
         print("Runtime ID:", runtime_id)
         print("Role ARN:", role_arn)
-        print("Network mode:", network["networkMode"])
+        print("Network mode:", network_mode)
         print("Image:", image_uri)
         PY
 
         echo "Validating request JSON..."
-        python3 - "$REQUEST" <<'PY'
+
+        python3 - "$REQUEST" "$IMAGE_URI" "$AGENTCORE_RUNTIME_ID" <<'PY'
         import json
         import sys
         
-        with open(sys.argv[1], encoding="utf-8") as f:
+        request_file, expected_image, expected_runtime_id = sys.argv[1:4]
+        
+        with open(request_file, encoding="utf-8") as f:
             data = json.load(f)
         
         required = (
             "agentRuntimeId",
             "agentRuntimeArtifact",
             "networkConfiguration",
-            "roleArn"
+            "roleArn",
         )
         
-        for field in required:
-            if not data.get(field):
-                raise SystemExit(f"ERROR: Required field missing: {field}")
+        missing = [field for field in required if not data.get(field)]
+        if missing:
+            raise SystemExit("ERROR: Missing required fields: " + ", ".join(missing))
+        
+        if data["agentRuntimeId"] != expected_runtime_id:
+            raise SystemExit("ERROR: agentRuntimeId mismatch")
         
         container = data["agentRuntimeArtifact"].get("containerConfiguration", {})
-        if not container.get("containerUri"):
-            raise SystemExit("ERROR: containerUri is missing")
+        if container.get("containerUri") != expected_image:
+            raise SystemExit("ERROR: containerUri mismatch")
         
-        if not data["networkConfiguration"].get("networkMode"):
-            raise SystemExit("ERROR: networkConfiguration.networkMode is missing")
+        network_mode = data["networkConfiguration"].get("networkMode")
+        if network_mode not in ("PUBLIC", "VPC"):
+            raise SystemExit("ERROR: Unsupported networkMode: " + str(network_mode))
         
-        print("Request JSON validation passed.")
+        if not data["roleArn"].startswith("arn:aws:iam::"):
+            raise SystemExit("ERROR: Invalid roleArn")
+        
+        print("UpdateAgentRuntime request validation passed.")
         PY
 
         echo "UpdateAgentRuntime request:"
@@ -322,18 +311,18 @@ phases:
         print(version)
         PY
         )"
-
+        
         echo "New Runtime Version: $NEW_RUNTIME_VERSION"
-
+        
         if [[ ! "$NEW_RUNTIME_VERSION" =~ ^[1-9][0-9]*$ ]]; then
           echo "ERROR: Invalid runtime version: $NEW_RUNTIME_VERSION" >&2
           exit 1
         fi
-
+        
         echo "Waiting for Runtime to become READY..."
-
+        
         RUNTIME_STATUS=""
-
+        
         for attempt in $(seq 1 120); do
           RUNTIME_JSON="$(
             aws bedrock-agentcore-control get-agent-runtime \
@@ -342,18 +331,18 @@ phases:
               --agent-runtime-version "$NEW_RUNTIME_VERSION" \
               --output json
           )"
-
+        
           RUNTIME_STATUS="$(
             printf '%s' "$RUNTIME_JSON" |
               python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))'
           )"
-
+        
           echo "Attempt $attempt/120 - Runtime status: $RUNTIME_STATUS"
-
+        
           if [[ "$RUNTIME_STATUS" == "READY" ]]; then
             break
           fi
-
+        
           case "$RUNTIME_STATUS" in
             CREATE_FAILED|UPDATE_FAILED)
               echo "ERROR: Runtime deployment failed." >&2
@@ -361,17 +350,17 @@ phases:
               exit 1
               ;;
           esac
-
+        
           sleep 5
         done
-
+        
         if [[ "$RUNTIME_STATUS" != "READY" ]]; then
           echo "ERROR: Runtime did not become READY within timeout." >&2
           exit 1
         fi
-
+        
         echo "Runtime is READY."
-
+        
         DEPLOYED_URI="$(
           aws bedrock-agentcore-control get-agent-runtime \
             --region "$AWS_REGION" \
@@ -380,20 +369,20 @@ phases:
             --query 'agentRuntimeArtifact.containerConfiguration.containerUri' \
             --output text
         )"
-
+        
         echo "Expected image: $IMAGE_URI"
         echo "Deployed image: $DEPLOYED_URI"
-
+        
         if [[ "$DEPLOYED_URI" != "$IMAGE_URI" ]]; then
           echo "ERROR: AgentCore deployed image does not match ECR image." >&2
           exit 1
         fi
-
+        
         echo "Waiting for DEFAULT endpoint..."
-
+        
         ENDPOINT_STATUS=""
         LIVE_VERSION=""
-
+        
         for attempt in $(seq 1 120); do
           ENDPOINT_JSON="$(
             aws bedrock-agentcore-control get-agent-runtime-endpoint \
@@ -402,26 +391,26 @@ phases:
               --endpoint-name DEFAULT \
               --output json
           )"
-
+        
           ENDPOINT_STATUS="$(
             printf '%s' "$ENDPOINT_JSON" |
               python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))'
           )"
-
+        
           LIVE_VERSION="$(
             printf '%s' "$ENDPOINT_JSON" |
               python3 -c 'import json,sys; print(json.load(sys.stdin).get("liveVersion",""))'
           )"
-
+        
           echo "Attempt $attempt/120"
           echo "Endpoint status: $ENDPOINT_STATUS"
           echo "Live version: $LIVE_VERSION"
-
+        
           if [[ "$ENDPOINT_STATUS" == "READY" &&
                 "$LIVE_VERSION" == "$NEW_RUNTIME_VERSION" ]]; then
             break
           fi
-
+        
           case "$ENDPOINT_STATUS" in
             CREATE_FAILED|UPDATE_FAILED|DELETING)
               echo "ERROR: DEFAULT endpoint failed." >&2
@@ -429,16 +418,16 @@ phases:
               exit 1
               ;;
           esac
-
+        
           sleep 5
         done
-
+        
         if [[ "$ENDPOINT_STATUS" != "READY" ||
               "$LIVE_VERSION" != "$NEW_RUNTIME_VERSION" ]]; then
           echo "ERROR: DEFAULT endpoint did not reach the new runtime version." >&2
           exit 1
         fi
-
+        
         echo "=========================================="
         echo "DEPLOYMENT SUCCESSFUL"
         echo "=========================================="
@@ -451,7 +440,7 @@ phases:
         echo "Endpoint Status: $ENDPOINT_STATUS"
         echo "Live Version   : $LIVE_VERSION"
         echo "=========================================="
-
-  post_build:
-    commands:
-      - echo "POST_BUILD completed."
+        
+          post_build:
+            commands:
+              - echo "POST_BUILD completed."
