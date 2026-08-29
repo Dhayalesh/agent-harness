@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { AgentMessage } from '../core/messages.js';
+import type { CapabilityMetadata } from '../context-intelligence/contracts.js';
 
 export type ToolKind = 'read' | 'write' | 'execute' | 'network' | 'interactive';
 
@@ -66,6 +67,13 @@ export interface Tool<Input = unknown> {
   readonly kind: ToolKind;
   readonly concurrencySafe: boolean;
   readonly destructive?: boolean;
+  /**
+   * Optional domain/application metadata consumed by Context Intelligence when it
+   * narrows the tool catalogue. This augments discovery; it never grants execution
+   * permission and the existing validation/permission/execution path remains the
+   * authority for every call.
+   */
+  readonly contextMetadata?: CapabilityMetadata;
   /**
    * Optional per-invocation permission check, evaluated after input validation
    * and before the session's `PermissionHandler`. A `deny` here is absolute:

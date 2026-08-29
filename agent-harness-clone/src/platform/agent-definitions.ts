@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { contextIntelligenceConfigSchema } from '../context-intelligence/config-schema.js';
 
 /**
  * The timestamp helper is shared with `model_providers` rather than duplicated:
@@ -132,6 +133,8 @@ const agentShape = {
   /** `mcp_servers._id` references, connected for this agent only. */
   mcpServerIds: z.array(objectId).max(50),
   limits: agentLimitsSchema,
+  /** Domain-agnostic Context Intelligence policy and source/capability metadata. */
+  contextIntelligence: contextIntelligenceConfigSchema.optional(),
   enabled: z.boolean(),
   /**
    * The record a run picks when the caller names no agent. At most one record

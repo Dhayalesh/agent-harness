@@ -573,3 +573,155 @@ export type { HeadlessServerOptions, RunningHeadlessServer } from './headless/se
 export { ResumeWindowExpiredError, RunRegistry } from './headless/run-registry.js';
 export type { RunFactory, RunRecord, RunRegistryOptions } from './headless/run-registry.js';
 export { AsyncEventQueue } from './core/event-queue.js';
+
+// Complete generic Context Intelligence extension surface. The execution boundary
+// remains AgentSession/ToolRegistry/MCP; these components plan, curate, validate,
+// shape, remember, and finalize the context around that existing runtime.
+export {
+  ContextIntelligenceEngine,
+  estimatedContractTokens,
+  insufficientQualityReport,
+} from './context-intelligence/engine.js';
+export type {
+  ContextIntelligenceEngineOptions,
+  ContextIntelligenceTelemetryEvent,
+  PrepareContextIntelligenceInput,
+  PrepareContextIntelligenceResult,
+} from './context-intelligence/engine.js';
+export {
+  DEFAULT_CONTEXT_INTELLIGENCE_CONFIG,
+  resolveContextIntelligenceConfig,
+} from './context-intelligence/config.js';
+export type {
+  ContextIntelligenceConfig,
+  ContextIntelligenceConfigInput,
+  ContextIntelligenceFeatureFlags,
+} from './context-intelligence/config.js';
+export {
+  contextIntelligenceConfigSchema,
+  contextSourceMetadataSchema,
+} from './context-intelligence/config-schema.js';
+export type { ContextIntelligenceConfigWire } from './context-intelligence/config-schema.js';
+export type {
+  CapabilityMetadata,
+  ContextBudgetAllocation,
+  ContextBudgetCategory,
+  ContextBudgetSnapshot,
+  ContextConflict,
+  ContextContract,
+  ContextItem as IntelligenceContextItem,
+  ContextItemKind as IntelligenceContextItemKind,
+  ContextQualityIssue,
+  ContextQualityReport,
+  ContextQualityStatus,
+  ContextScope,
+  EvidenceItem,
+  FinalContextSection,
+  FinalizedContext,
+  IntentEntity,
+  MemoryAdmissionDecision,
+  MemoryItem,
+  MemoryLifecycleStatus,
+  MemoryType,
+  NormalizedIntent,
+  OffloadedArtifact,
+  PersistedContextIntelligenceState,
+  Provenance,
+  ProvenanceStep,
+  QueryPlan,
+  QueryStatus,
+  QueryVariant,
+  ReasoningSupport,
+  RetrievalIteration,
+  RetrievalMode,
+  RetrievalOutcome,
+  RetrievalProvider,
+  RetrievalProviderMetadata,
+  RetrievalRequest,
+  RetrievalResult,
+  RetrievalReranker,
+  SelectedCapability,
+  SourceMetadata,
+  SourceType,
+  TaskState,
+  TaskStep,
+  TemporalRequirement,
+  ToolObservation,
+  ToolOutcome,
+  ToolPlan,
+} from './context-intelligence/contracts.js';
+export { IntentResolver, QueryIntelligence } from './context-intelligence/query-intelligence.js';
+export type { QueryTransformer } from './context-intelligence/query-intelligence.js';
+export {
+  detectRetrievalConflicts,
+  QueryAgent,
+  RetrievalIntelligence,
+  RetrievalProviderRegistry,
+  RetrievalRouter,
+  retrievalKeywords,
+} from './context-intelligence/retrieval-intelligence.js';
+export type { RoutedRetrievalProvider } from './context-intelligence/retrieval-intelligence.js';
+export {
+  AgenticChunkingStrategy,
+  ChunkingIntelligence,
+  ChunkingStrategyRegistry,
+  DocumentStructureChunkingStrategy,
+  FixedSizeChunkingStrategy,
+  HierarchicalChunkingStrategy,
+  LateChunkingStrategy,
+  LlmChunkingStrategy,
+  RecursiveChunkingStrategy,
+  SemanticChunkingStrategy,
+} from './context-intelligence/chunking.js';
+export type {
+  AgenticChunkReviewer,
+  ChunkBoundaryProvider,
+  ChunkingContext,
+  ChunkingStrategy,
+  DocumentChunk,
+  DocumentDescriptor,
+} from './context-intelligence/chunking.js';
+export { StructuredResultShaper } from './context-intelligence/structured-result-shaper.js';
+export type {
+  AggregationSpec,
+  FieldProfile,
+  FilterOperator,
+  StructuredFilter,
+  StructuredRecord,
+  StructuredShapeRequest,
+  StructuredShapeResult,
+} from './context-intelligence/structured-result-shaper.js';
+export {
+  memoryFingerprint,
+  LayeredMemoryProvider,
+  MemoryIntelligence,
+  SessionMemoryProvider,
+  TaskStateManager,
+} from './context-intelligence/memory.js';
+export type {
+  MemoryCandidate,
+  MemoryProvider,
+  MemoryQuery,
+} from './context-intelligence/memory.js';
+export {
+  CapabilityIntelligence,
+  CapabilityRegistry,
+} from './context-intelligence/capability-intelligence.js';
+export type { CapabilityMetadataProvider } from './context-intelligence/capability-intelligence.js';
+export { ObservationIntelligence } from './context-intelligence/observation-intelligence.js';
+export type { ProcessedObservation } from './context-intelligence/observation-intelligence.js';
+export {
+  ContextBudgetEngine,
+  ContextCompressor,
+  ContextFinalizer,
+  ContextHygieneEngine,
+  ContextOffloader,
+  detectContextConflicts,
+  itemFreshness,
+} from './context-intelligence/hygiene.js';
+export type {
+  HygieneResult,
+  SemanticSummarizer,
+} from './context-intelligence/hygiene.js';
+export { MultiSourceSynthesizer } from './context-intelligence/synthesis.js';
+export { createContextArtifactReadTool } from './context-intelligence/artifact-drilldown-tool.js';

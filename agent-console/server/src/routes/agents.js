@@ -94,7 +94,7 @@ agentsRouter.patch("/:id", asyncHandler(async (request, response) => {
   const patch = parseOrThrow(agentUpdateSchema, request.body);
   const agent = await loadAgent(request.params.id);
   const candidate = { ...plain(agent), ...patch, updatedAt: nowIso() };
-  for (const field of ["description", "model", "isDefault"]) {
+  for (const field of ["description", "model", "isDefault", "contextIntelligence"]) {
     if (candidate[field] === null) delete candidate[field];
   }
   const validated = parseRecordOrThrow(agentRecordSchema, candidate, "Agent");
@@ -103,7 +103,7 @@ agentsRouter.patch("/:id", asyncHandler(async (request, response) => {
   // `set(object)` only writes keys present in the object. The validation
   // candidate deliberately omits explicit nulls, so unset those fields on the
   // document as well instead of accidentally retaining their previous values.
-  for (const field of ["description", "model", "isDefault"]) {
+  for (const field of ["description", "model", "isDefault", "contextIntelligence"]) {
     if (patch[field] === null) agent.set(field, undefined);
   }
   try {

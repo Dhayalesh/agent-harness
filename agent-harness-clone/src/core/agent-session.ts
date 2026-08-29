@@ -46,6 +46,15 @@ import {
 } from '../services/observability.js';
 import { BudgetTracker, type BudgetLimits, type SessionRateLimiter } from '../services/limits.js';
 import { formatProjectContext, type ProjectContextProvider } from '../context/project-context.js';
+import {
+  ContextIntelligenceEngine,
+  type ContextIntelligenceEngineOptions,
+} from '../context-intelligence/engine.js';
+import type {
+  ContextScope,
+  PersistedContextIntelligenceState,
+} from '../context-intelligence/contracts.js';
+import type { MemoryCandidate } from '../context-intelligence/memory.js';
 
 export type AgentLimits = {
   maxTurns: number;
@@ -96,6 +105,14 @@ export type AgentSessionConfig = {
   budget?: BudgetLimits;
   rateLimiter?: SessionRateLimiter;
   projectContextProvider?: ProjectContextProvider;
+  /**
+   * Complete pre/post model Context Intelligence. Enabled with defaults when
+   * omitted; pass `false` only for a compatibility host that explicitly opts out.
+   * The engine consumes tool metadata but never executes or authorizes a tool.
+   */
+  contextIntelligence?: ContextIntelligenceEngine | ContextIntelligenceEngineOptions | false;
+  /** Restored governed state from the existing SessionStore record. */
+  contextIntelligenceState?: PersistedContextIntelligenceState;
   limits?: Partial<AgentLimits>;
   /**
    * Model context capabilities (contextWindow, maxOutputTokens) used to derive
@@ -161,6 +178,9 @@ export async function resumeAgentSession(
     sessionId: stored.id,
     initialMessages: stored.messages,
     ...(stored.preparedContext === undefined ? {} : { preparedContext: stored.preparedContext }),
+    ...(stored.contextIntelligence === undefined
+      ? {}
+      : { contextIntelligenceState: stored.contextIntelligence }),
     sessionCreatedAt: stored.createdAt,
     sessionState: { mode: 'persistent', resumed: true, origin: 'store' },
     metadata: stored.metadata,
@@ -190,6 +210,7 @@ class AgentSessionImpl implements AgentSession {
   private readonly budget: BudgetTracker;
   private readonly rateLimiter: SessionRateLimiter | undefined;
   private readonly projectContextProvider: ProjectContextProvider | undefined;
+  private readonly contextIntelligence: ContextIntelligenceEngine | undefined;
   private readonly modelCapabilities: ModelContextCapabilities | undefined;
   private readonly pendingPermissions = new Map<string, PermissionWaiter>();
   private activeController: AbortController | undefined;
@@ -244,6 +265,36 @@ class AgentSessionImpl implements AgentSession {
     this.rateLimiter = config.rateLimiter;
     this.projectContextProvider = config.projectContextProvider;
     this.modelCapabilities = config.modelCapabilities;
+    const intelligence = config.contextIntelligence;
+    if (
+      intelligence === false ||
+      (!(intelligence instanceof ContextIntelligenceEngine) && intelligence?.config?.enabled === false)
+    ) {
+      this.contextIntelligence = undefined;
+    } else if (intelligence instanceof ContextIntelligenceEngine) {
+      this.contextIntelligence = intelligence;
+    } else {
+      const supplied = intelligence ?? {};
+      const externalTelemetry = supplied.onTelemetry;
+      this.contextIntelligence = new ContextIntelligenceEngine({
+        ...supplied,
+        ...(supplied.artifactStore === undefined && this.artifactStore !== undefined
+          ? { artifactStore: this.artifactStore }
+          : {}),
+        ...(supplied.initialState === undefined && config.contextIntelligenceState !== undefined
+          ? { initialState: config.contextIntelligenceState }
+          : {}),
+        onTelemetry: (event) => {
+          externalTelemetry?.(event);
+          this.log({
+            event: event.event,
+            sessionId: event.sessionId,
+            ...(event.turnId === undefined ? {} : { turnId: event.turnId }),
+            ...event.data,
+          });
+        },
+      });
+    }
     this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
     this.preparedContext =
@@ -272,6 +323,7 @@ class AgentSessionImpl implements AgentSession {
 
     this.running = true;
     this.activeController = new AbortController();
+    this.contextIntelligence?.beginRequest();
 
     try {
       if (!this.started) {
@@ -295,6 +347,9 @@ class AgentSessionImpl implements AgentSession {
           : resolvedInput?.type === 'prompt'
             ? resolvedInput.prompt
             : input.prompt;
+      const intelligenceScope = contextScopeOf(this.id, input.metadata, this.metadata);
+      const memoryCandidates = memoryCandidatesOf(input.metadata);
+      let memoryCandidatesConsumed = false;
       this.history.push(userMessage(this.idFactory(), prompt, this.now(), input.images ?? []));
       await this.persist();
 
@@ -338,16 +393,57 @@ class AgentSessionImpl implements AgentSession {
           ]
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
+          let intelligentContext:
+            | Awaited<ReturnType<ContextIntelligenceEngine['prepare']>>
+            | undefined;
+          if (this.contextIntelligence) {
+            try {
+              intelligentContext = await this.contextIntelligence.prepare({
+                request: prompt,
+                messages: prepared.messages,
+                tools: this.registry.list(),
+                systemPrompt,
+                scope: intelligenceScope,
+                sessionId: this.id,
+                turnId,
+                inputLimit: this.modelCapabilities?.contextWindow ?? 128_000,
+                outputReservation:
+                  this.modelCapabilities?.maxOutputTokens ??
+                  this.limits.maxOutputTokens ??
+                  DEFAULT_LIMITS.maxOutputTokens ??
+                  8_192,
+                signal: this.activeController.signal,
+              });
+            } catch (error) {
+              this.log({
+                level: 'warn',
+                event: 'context-intelligence.lifecycle',
+                sessionId: this.id,
+                turnId,
+                phase: 'prepare',
+                outcome: 'degraded',
+                error: describeError(error),
+              });
+            }
+          }
+          const modelMessages = intelligentContext?.finalized.messages ?? prepared.messages;
+          const modelTools = intelligentContext?.finalized.tools ?? this.registry.descriptors();
+          const curatedSystemPrompt = [
+            systemPrompt,
+            intelligentContext?.finalized.systemPromptAddition,
+          ]
+            .filter((part): part is string => Boolean(part))
+            .join('\n\n');
           modelRequestId = randomUUID();
           const modelRequest = {
-            messages: prepared.messages,
-            tools: this.registry.descriptors(),
+            messages: modelMessages,
+            tools: modelTools,
             signal: this.activeController.signal,
             modelRequestId,
             sessionId: this.id,
             turnId,
             ...(this.config.model === undefined ? {} : { model: this.config.model }),
-            ...(systemPrompt === '' ? {} : { systemPrompt }),
+            ...(curatedSystemPrompt === '' ? {} : { systemPrompt: curatedSystemPrompt }),
             ...(this.limits.maxOutputTokens === undefined
               ? {}
               : { maxOutputTokens: this.limits.maxOutputTokens }),
@@ -366,7 +462,8 @@ class AgentSessionImpl implements AgentSession {
             model: this.config.model,
             messageCount: modelRequest.messages.length,
             toolCount: modelRequest.tools.length,
-            estimatedInputTokens: prepared.estimatedTokens,
+            estimatedInputTokens:
+              intelligentContext?.finalized.budget.usedInput ?? prepared.estimatedTokens,
             systemPromptChars: modelRequest.systemPrompt?.length ?? 0,
             maxOutputTokens: modelRequest.maxOutputTokens,
           });
@@ -560,6 +657,31 @@ class AgentSessionImpl implements AgentSession {
           ],
         };
         this.history.push(assistantMessage);
+        if (this.contextIntelligence) {
+          try {
+            await this.contextIntelligence.afterResponse({
+              message: assistantMessage,
+              stopReason,
+              scope: intelligenceScope,
+              ...(!memoryCandidatesConsumed && memoryCandidates.length > 0
+                ? { memoryCandidates }
+                : {}),
+              sessionId: this.id,
+              turnId,
+            });
+            memoryCandidatesConsumed = true;
+          } catch (error) {
+            this.log({
+              level: 'warn',
+              event: 'context-intelligence.lifecycle',
+              sessionId: this.id,
+              turnId,
+              phase: 'post-response',
+              outcome: 'degraded',
+              error: describeError(error),
+            });
+          }
+        }
         await this.persist();
         for (const hook of this.hooks.list()) {
           await hook.afterModel?.({ sessionId: this.id, turnId }, assistantMessage, stopReason);
@@ -786,14 +908,36 @@ class AgentSessionImpl implements AgentSession {
       return result;
     }
 
+    const actionBudget = this.contextIntelligence?.reserveToolAction({
+      toolName: tool.name,
+      sessionId: this.id,
+      turnId,
+    });
+    if (actionBudget && !actionBudget.allowed) {
+      let result = this.toolError(
+        call.id,
+        actionBudget.reason ?? 'Context Intelligence tool/action budget exhausted',
+      );
+      result = await this.processToolFailure(tool, call, result, turnId);
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.denied',
+        failureStage: 'context_budget',
+        code: 'CONTEXT_TOOL_BUDGET_EXCEEDED',
+        tool,
+      });
+      yield this.event({ type: 'tool.completed', turnId, result });
+      return result;
+    }
+
     const parsed = tool.inputSchema.safeParse(call.input);
     if (!parsed.success) {
-      const result = this.toolError(
+      let result = this.toolError(
         call.id,
         `Invalid input for ${call.name}: ${parsed.error.issues
           .map((issue) => `${issue.path.join('.') || 'input'}: ${issue.message}`)
           .join('; ')}`,
       );
+      result = await this.processToolFailure(tool, call, result, turnId);
       this.logToolTerminal(call, turnId, result, lifecycleStarted, {
         event: 'tool.execution.failed',
         failureStage: 'validation',
@@ -808,10 +952,11 @@ class AgentSessionImpl implements AgentSession {
     for (const hook of this.hooks.list()) {
       const hookResult = await hook.beforeTool?.({ sessionId: this.id, turnId }, call);
       if (hookResult && !hookResult.allow) {
-        const result = this.toolError(
+        let result = this.toolError(
           call.id,
           hookResult.message ?? `Blocked by hook ${hook.name}`,
         );
+        result = await this.processToolFailure(tool, call, result, turnId);
         this.logToolTerminal(call, turnId, result, lifecycleStarted, {
           event: 'tool.execution.denied',
           failureStage: 'hook',
@@ -835,10 +980,11 @@ class AgentSessionImpl implements AgentSession {
           workingDirectory: this.workingDirectory,
         });
       } catch (error) {
-        const result = this.toolError(
+        let result = this.toolError(
           call.id,
           `Permission check failed for ${tool.name}: ${errorMessage(error)}`,
         );
+        result = await this.processToolFailure(tool, call, result, turnId);
         this.logToolTerminal(call, turnId, result, lifecycleStarted, {
           event: 'tool.execution.failed',
           failureStage: 'permission_check',
@@ -850,10 +996,11 @@ class AgentSessionImpl implements AgentSession {
         return result;
       }
       if (toolCheck.decision === 'deny') {
-        const result = this.toolError(
+        let result = this.toolError(
           call.id,
           toolCheck.reason ?? `Permission denied for ${tool.name}`,
         );
+        result = await this.processToolFailure(tool, call, result, turnId);
         this.logToolTerminal(call, turnId, result, lifecycleStarted, {
           event: 'tool.execution.denied',
           failureStage: 'tool_permission',
@@ -902,12 +1049,13 @@ class AgentSessionImpl implements AgentSession {
     }
 
     if (decision === 'deny') {
-      const result = this.toolError(
+      let result = this.toolError(
         call.id,
         toolCheck?.reason === undefined
           ? `Permission denied for ${tool.name}`
           : `Permission denied for ${tool.name}: ${toolCheck.reason}`,
       );
+      result = await this.processToolFailure(tool, call, result, turnId);
       this.logToolTerminal(call, turnId, result, lifecycleStarted, {
         event: 'tool.execution.denied',
         failureStage: 'permission_policy',
@@ -976,7 +1124,30 @@ class AgentSessionImpl implements AgentSession {
       yield* progress.drain();
       const settled = await execution;
       if (!settled.ok) throw settled.error;
-      const output = settled.output;
+      let output = settled.output;
+      if (this.contextIntelligence) {
+        try {
+          const processed = await this.contextIntelligence.processObservation({
+            tool,
+            toolCallId: call.id,
+            output,
+            sessionId: this.id,
+            turnId,
+          });
+          output = processed.result;
+        } catch (error) {
+          this.log({
+            level: 'warn',
+            event: 'context-intelligence.lifecycle',
+            sessionId: this.id,
+            turnId,
+            toolCallId: call.id,
+            phase: 'observation',
+            outcome: 'degraded',
+            error: describeError(error),
+          });
+        }
+      }
       let content = output.content;
       let artifactMetadata: Record<string, unknown> = {};
       if (content.length > this.maxInlineToolResultChars && this.artifactStore) {
@@ -1042,7 +1213,8 @@ class AgentSessionImpl implements AgentSession {
       return result;
     } catch (error) {
       // Whatever the tool reported before it failed has already been yielded.
-      const result = this.toolError(call.id, errorMessage(error));
+      let result = this.toolError(call.id, errorMessage(error));
+      result = await this.processToolFailure(tool, call, result, turnId);
       this.log({
         level: 'error',
         event: 'tool.execution.failed',
@@ -1110,6 +1282,39 @@ class AgentSessionImpl implements AgentSession {
 
   private toolError(toolCallId: string, content: string): ToolResultBlock {
     return { type: 'tool_result', toolCallId, content, isError: true };
+  }
+
+  private async processToolFailure(
+    tool: Tool,
+    call: ToolCallBlock,
+    result: ToolResultBlock,
+    turnId: string,
+  ): Promise<ToolResultBlock> {
+    if (!this.contextIntelligence) return result;
+    try {
+      const processed = await this.contextIntelligence.processObservation({
+        tool,
+        toolCallId: call.id,
+        output: {
+          content: result.content,
+          isError: true,
+          ...(result.metadata === undefined ? {} : { metadata: result.metadata }),
+        },
+        sessionId: this.id,
+        turnId,
+      });
+      return {
+        type: 'tool_result',
+        toolCallId: call.id,
+        content: processed.result.content,
+        isError: true,
+        ...(processed.result.metadata === undefined
+          ? {}
+          : { metadata: processed.result.metadata }),
+      };
+    } catch {
+      return result;
+    }
   }
 
   private logToolTerminal(
@@ -1205,6 +1410,9 @@ class AgentSessionImpl implements AgentSession {
       ...(this.preparedContext === undefined
         ? {}
         : { preparedContext: structuredClone(this.preparedContext) }),
+      ...(this.contextIntelligence === undefined
+        ? {}
+        : { contextIntelligence: this.contextIntelligence.snapshot() }),
       metadata: structuredClone(this.metadata),
     };
     try {
@@ -1562,6 +1770,97 @@ function contextDecisionFields(decision: ContextDecision): Record<string, unknow
       : { deduplicatedToolResults: decision.deduplicatedToolResults }),
     state: decision.state,
   };
+}
+
+function contextScopeOf(
+  sessionId: string,
+  inputMetadata: Record<string, unknown> | undefined,
+  sessionMetadata: Record<string, unknown>,
+): ContextScope {
+  const merged = { ...sessionMetadata, ...inputMetadata };
+  const intelligence = asRecord(merged.contextIntelligence);
+  const namespaces = Array.isArray(intelligence?.namespaces)
+    ? intelligence.namespaces.filter((value): value is string => typeof value === 'string')
+    : [];
+  const value: ContextScope = {
+    conversationId: stringValue(intelligence?.conversationId) ?? sessionId,
+    taskId: stringValue(intelligence?.taskId) ?? sessionId,
+    namespaces,
+    ...(stringValue(intelligence?.userId) === undefined
+      ? {}
+      : { userId: stringValue(intelligence?.userId)! }),
+    ...(stringValue(intelligence?.applicationId ?? merged.agentId) === undefined
+      ? {}
+      : { applicationId: stringValue(intelligence?.applicationId ?? merged.agentId)! }),
+    ...(stringValue(intelligence?.tenantId) === undefined
+      ? {}
+      : { tenantId: stringValue(intelligence?.tenantId)! }),
+  };
+  return value;
+}
+
+function memoryCandidatesOf(metadata: Record<string, unknown> | undefined): MemoryCandidate[] {
+  const intelligence = asRecord(metadata?.contextIntelligence);
+  const candidates = intelligence?.memoryCandidates;
+  if (!Array.isArray(candidates)) return [];
+  const output: MemoryCandidate[] = [];
+  for (const value of candidates.slice(0, 50)) {
+    const candidate = asRecord(value);
+    if (!candidate) continue;
+    const type = candidate?.type;
+    const content = candidate?.content;
+    if (
+      (type !== 'semantic' && type !== 'procedural' && type !== 'episodic') ||
+      typeof content !== 'string' ||
+      !content.trim()
+    ) {
+      continue;
+    }
+    const privacy = candidate.privacy;
+    output.push({
+      type,
+      content: content.slice(0, 100_000),
+      ...(candidate.structured === undefined
+        ? {}
+        : { structured: structuredClone(candidate.structured) }),
+      labels: stringArray(candidate.labels),
+      entities: stringArray(candidate.entities),
+      confidence: boundedNumber(candidate.confidence, 0.7),
+      authority: boundedNumber(candidate.authority, 0.6),
+      durability: boundedNumber(candidate.durability, 0.7),
+      usefulness: boundedNumber(candidate.usefulness, 0.7),
+      ...(privacy === 'public' ||
+      privacy === 'internal' ||
+      privacy === 'confidential' ||
+      privacy === 'restricted'
+        ? { privacy }
+        : {}),
+      ...(typeof candidate.expiresAt === 'string' ? { expiresAt: candidate.expiresAt } : {}),
+    });
+  }
+  return output;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string').slice(0, 100)
+    : [];
+}
+
+function boundedNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(1, Math.max(0, value))
+    : fallback;
 }
 
 function isPromptTooLong(error: unknown): boolean {

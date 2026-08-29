@@ -41,6 +41,8 @@ const agentSchema = new mongoose.Schema(
     templates: { type: [templateReferenceSchema], default: [] },
     mcpServerIds: { type: [String], default: [] },
     limits: { type: limitsSchema, required: true },
+    /** Validated by the API's typed Context Intelligence configuration schema. */
+    contextIntelligence: mongoose.Schema.Types.Mixed,
     // Historical records predate this field; the default fills it on hydration so
     // they stay valid without a migration.
     stream: { type: Boolean, required: true, default: false },

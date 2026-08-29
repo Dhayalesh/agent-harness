@@ -37,6 +37,8 @@ import { createWebTools, type WebToolsOptions } from '../tools/web/index.js';
 import type { Tool } from '../tools/tool.js';
 import { resolveInlineAgent } from './inline-agent.js';
 import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
+import type { ContextIntelligenceEngineOptions } from '../context-intelligence/engine.js';
+import { createContextArtifactReadTool } from '../context-intelligence/artifact-drilldown-tool.js';
 
 /**
  * Runs one payload to completion, or streams the events of one payload.
@@ -90,6 +92,17 @@ export type HeadlessRunOptions = {
    */
   sessionStore?: SessionStore;
   artifactStore?: ArtifactStore;
+  /**
+   * Deployment-provided Context Intelligence adapters (retrievers, rerankers,
+   * summarizers, capability metadata). The payload supplies policy/configuration;
+   * executable adapters stay on the trusted host side.
+   */
+  contextIntelligence?:
+    | Omit<
+        ContextIntelligenceEngineOptions,
+        'config' | 'initialState' | 'artifactStore' | 'onTelemetry'
+      >
+    | false;
   /** Replaces the SDK-backed S3 reader for skill documents. */
   skillContentStore?: ContentStore;
   eventSink?: EventSink;
@@ -757,6 +770,26 @@ async function prepare(
       ...(stored === undefined ? {} : { sessionCreatedAt: stored.createdAt }),
       sessionState: sessionInfo,
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
+      contextIntelligence:
+        options.contextIntelligence === false
+          ? false
+          : {
+              ...options.contextIntelligence,
+              ...(payload.agent.contextIntelligence === undefined
+                ? {}
+                : {
+                    config:
+                      payload.agent.contextIntelligence as NonNullable<
+                        ContextIntelligenceEngineOptions['config']
+                      >,
+                  }),
+              ...(options.artifactStore === undefined
+                ? {}
+                : { artifactStore: options.artifactStore }),
+              ...(stored?.contextIntelligence === undefined
+                ? {}
+                : { initialState: stored.contextIntelligence }),
+            },
       ...(options.eventSink === undefined ? {} : { eventSink: options.eventSink }),
       ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
       logContext,
@@ -1015,6 +1048,9 @@ export function headlessToolCatalogue(
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
     }),
     ...(options.webToolOptions === false ? [] : createWebTools(options.webToolOptions ?? {})),
+    ...(options.artifactStore === undefined
+      ? []
+      : [createContextArtifactReadTool(options.artifactStore)]),
     ...(options.additionalTools ?? []),
   ];
 }

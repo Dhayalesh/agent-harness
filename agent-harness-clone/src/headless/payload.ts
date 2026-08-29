@@ -11,6 +11,7 @@ import {
 } from '../platform/model-provider-definitions.js';
 import { S3_URI_PATTERN } from '../content/s3-uri.js';
 import { templateFormatSchema } from '../platform/template-definitions.js';
+import { contextIntelligenceConfigSchema } from '../context-intelligence/config-schema.js';
 
 /**
  * The headless invocation contract: one JSON object that carries everything a run
@@ -171,6 +172,8 @@ export const headlessAgentSchema = z
      */
     tools: z.array(identifier).max(200).optional(),
     limits: headlessLimitsSchema.optional(),
+    /** Domain-agnostic Context Intelligence policy and application source metadata. */
+    contextIntelligence: contextIntelligenceConfigSchema.optional(),
   })
   .strict();
 

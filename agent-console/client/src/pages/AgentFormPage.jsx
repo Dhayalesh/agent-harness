@@ -40,6 +40,12 @@ const EMPTY = {
   maxTurns: 12,
   compactionThresholdPercent: "",
   maxOutputTokens: "",
+  contextIntelligenceEnabled: true,
+  maxRetrievalIterations: 3,
+  memoryRecallLimit: 12,
+  maximumExposedTools: 20,
+  offloadThresholdChars: 40000,
+  defaultChunkingStrategy: "recursive",
   stream: false,
   enabled: true,
   isDefault: false,
@@ -52,6 +58,27 @@ const EMPTY_CATALOGUE = {
   skills: [],
   templates: [],
 };
+
+function agentContext(form) {
+  return {
+    enabled: Boolean(form.contextIntelligenceEnabled),
+    budgets: {
+      maxRetrievalIterations: Number(form.maxRetrievalIterations) || 3,
+    },
+    memory: {
+      recallLimit: Number(form.memoryRecallLimit) || 12,
+    },
+    capability: {
+      maximumExposed: Number(form.maximumExposedTools) || 20,
+    },
+    hygiene: {
+      offloadThresholdChars: Number(form.offloadThresholdChars) || 40000,
+    },
+    chunking: {
+      defaultStrategy: form.defaultChunkingStrategy || "recursive",
+    },
+  };
+}
 
 export function AgentFormPage({ mode }) {
   const { id } = useParams();
@@ -100,6 +127,20 @@ export function AgentFormPage({ mode }) {
             compactionThresholdPercent:
               agent.limits?.compactionThresholdPercent ?? "",
             maxOutputTokens: agent.limits?.maxOutputTokens ?? "",
+            contextIntelligenceEnabled:
+              agent.contextIntelligence?.enabled !== false,
+            maxRetrievalIterations:
+              agent.contextIntelligence?.budgets?.maxRetrievalIterations ?? 3,
+            memoryRecallLimit:
+              agent.contextIntelligence?.memory?.recallLimit ?? 12,
+            maximumExposedTools:
+              agent.contextIntelligence?.capability?.maximumExposed ?? 20,
+            offloadThresholdChars:
+              agent.contextIntelligence?.hygiene?.offloadThresholdChars ??
+              40000,
+            defaultChunkingStrategy:
+              agent.contextIntelligence?.chunking?.defaultStrategy ??
+              "recursive",
           });
           return;
         }
@@ -220,6 +261,9 @@ export function AgentFormPage({ mode }) {
       })),
       mcpServerIds: [...form.mcpServerIds],
       limits,
+      contextIntelligence: {
+        ...(agentContext(form)),
+      },
       stream: form.stream,
       enabled: form.enabled,
       isDefault: form.isDefault,
@@ -646,6 +690,85 @@ export function AgentFormPage({ mode }) {
               </p>
             )}
           </Field>
+        </SectionCard>
+
+        <SectionCard
+          title="Context Intelligence"
+          description="Curates intent, memory, evidence, observations, and relevant tools before each model decision."
+          bodyClassName="gap-4 px-5 py-4"
+        >
+          <Checkbox
+            isSelected={form.contextIntelligenceEnabled}
+            onValueChange={set("contextIntelligenceEnabled")}
+          >
+            Enable Context Intelligence
+          </Checkbox>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <Input
+              type="number"
+              min={1}
+              max={20}
+              label="Retrieval iterations"
+              labelPlacement="outside"
+              variant="bordered"
+              value={String(form.maxRetrievalIterations)}
+              onValueChange={setNumber("maxRetrievalIterations")}
+              description="Bounded adaptive query/retrieval retries."
+            />
+            <Input
+              type="number"
+              min={1}
+              max={1000}
+              label="Memory recall limit"
+              labelPlacement="outside"
+              variant="bordered"
+              value={String(form.memoryRecallLimit)}
+              onValueChange={setNumber("memoryRecallLimit")}
+              description="Highest-ranked memories admitted to active context."
+            />
+            <Input
+              type="number"
+              min={1}
+              max={1000}
+              label="Maximum exposed tools"
+              labelPlacement="outside"
+              variant="bordered"
+              value={String(form.maximumExposedTools)}
+              onValueChange={setNumber("maximumExposedTools")}
+              description="Relevant subset offered to the model."
+            />
+            <Input
+              type="number"
+              min={1000}
+              max={100000000}
+              label="Offload threshold (chars)"
+              labelPlacement="outside"
+              variant="bordered"
+              value={String(form.offloadThresholdChars)}
+              onValueChange={setNumber("offloadThresholdChars")}
+              description="Large observations become artifact handles."
+            />
+            <Select
+              label="Default chunking"
+              labelPlacement="outside"
+              variant="bordered"
+              selectedKeys={[form.defaultChunkingStrategy]}
+              onSelectionChange={(keys) =>
+                set("defaultChunkingStrategy")([...keys][0] ?? "recursive")
+              }
+            >
+              {[
+                "fixed",
+                "recursive",
+                "document",
+                "semantic",
+                "hierarchical",
+                "late",
+              ].map((strategy) => (
+                <SelectItem key={strategy}>{strategy}</SelectItem>
+              ))}
+            </Select>
+          </div>
         </SectionCard>
 
         <SectionCard

@@ -54,6 +54,192 @@ export const limitsSchema = z
   })
   .strict();
 
+const unitInterval = z.number().min(0).max(1);
+const contextSourceMetadataSchema = z
+  .object({
+    id: z.string().trim().min(1).max(300),
+    name: z.string().trim().min(1).max(300),
+    type: z.enum([
+      "user",
+      "conversation",
+      "memory",
+      "document",
+      "structured",
+      "vector",
+      "semantic",
+      "keyword",
+      "hybrid",
+      "tool",
+      "external",
+      "derived",
+    ]),
+    provider: z.string().trim().min(1).max(300).optional(),
+    authority: unitInterval,
+    retrievedAt: isoTimestamp.optional(),
+    observedAt: isoTimestamp.optional(),
+    validFrom: isoTimestamp.optional(),
+    validUntil: isoTimestamp.optional(),
+    version: z.string().max(300).optional(),
+    scope: z.array(z.string().max(300)).max(100).optional(),
+    uri: z.string().max(4096).optional(),
+    contentHash: z.string().max(300).optional(),
+    policyLabels: z.array(z.string().max(200)).max(100).optional(),
+  })
+  .strict();
+
+export const contextIntelligenceConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    features: z
+      .object({
+        queryIntelligence: z.boolean().optional(),
+        retrieval: z.boolean().optional(),
+        memory: z.boolean().optional(),
+        chunking: z.boolean().optional(),
+        structuredShaping: z.boolean().optional(),
+        capabilityNarrowing: z.boolean().optional(),
+        observationProcessing: z.boolean().optional(),
+        conflictDetection: z.boolean().optional(),
+        compression: z.boolean().optional(),
+        pruning: z.boolean().optional(),
+        offloading: z.boolean().optional(),
+        advancedReasoning: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    budgets: z
+      .object({
+        maxInputTokens: z.number().int().positive().max(10000000).optional(),
+        outputReservationTokens: z.number().int().positive().max(10000000).optional(),
+        safetyMarginTokens: z.number().int().nonnegative().max(1000000).optional(),
+        categoryShares: z
+          .object({
+            systemInstructions: unitInterval.optional(),
+            taskInstructions: unitInterval.optional(),
+            userRequest: unitInterval.optional(),
+            conversationHistory: unitInterval.optional(),
+            memory: unitInterval.optional(),
+            retrievalEvidence: unitInterval.optional(),
+            toolObservations: unitInterval.optional(),
+            taskState: unitInterval.optional(),
+            safetyPolicy: unitInterval.optional(),
+          })
+          .strict()
+          .optional(),
+        maxRetrievalIterations: z.number().int().positive().max(20).optional(),
+        maxRetrievalResults: z.number().int().positive().max(1000).optional(),
+        maxRetrievalTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(10000000)
+          .optional(),
+        maxToolActions: z.number().int().positive().max(1000).optional(),
+        maxLoopMilliseconds: z.number().int().positive().max(600000).optional(),
+      })
+      .strict()
+      .optional(),
+    retrieval: z
+      .object({
+        relevanceThreshold: unitInterval.optional(),
+        sufficiencyThreshold: unitInterval.optional(),
+        freshnessHalfLifeMs: z.number().int().positive().optional(),
+        maximumProvidersPerQuery: z.number().int().positive().max(100).optional(),
+        deduplicationThreshold: unitInterval.optional(),
+        rerank: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    memory: z
+      .object({
+        recallLimit: z.number().int().positive().max(1000).optional(),
+        admissionThreshold: unitInterval.optional(),
+        relevanceThreshold: unitInterval.optional(),
+        maximumItems: z.number().int().positive().max(100000).optional(),
+        defaultTtlMs: z.number().int().positive().optional(),
+        allowedPrivacy: z
+          .array(z.enum(["public", "internal", "confidential", "restricted"]))
+          .max(4)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    query: z
+      .object({
+        maximumExpansions: z.number().int().nonnegative().max(50).optional(),
+        maximumSubqueries: z.number().int().positive().max(100).optional(),
+        minimumRewriteLength: z.number().int().nonnegative().max(10000).optional(),
+        aliases: z.record(z.array(z.string().max(300)).max(50)).optional(),
+      })
+      .strict()
+      .optional(),
+    hygiene: z
+      .object({
+        relevanceThreshold: unitInterval.optional(),
+        authorityThreshold: unitInterval.optional(),
+        freshnessThreshold: unitInterval.optional(),
+        compressionThresholdTokens: z.number().int().positive().max(10000000).optional(),
+        offloadThresholdChars: z.number().int().positive().max(100000000).optional(),
+        maximumActiveItems: z.number().int().positive().max(10000).optional(),
+      })
+      .strict()
+      .optional(),
+    capability: z
+      .object({
+        relevanceThreshold: unitInterval.optional(),
+        maximumExposed: z.number().int().positive().max(1000).optional(),
+        minimumExposed: z.number().int().nonnegative().max(1000).optional(),
+        alwaysExpose: z.array(identifier).max(1000).optional(),
+      })
+      .strict()
+      .optional(),
+    chunking: z
+      .object({
+        defaultStrategy: z
+          .enum([
+            "fixed",
+            "recursive",
+            "document",
+            "semantic",
+            "llm",
+            "agentic",
+            "hierarchical",
+            "late",
+          ])
+          .optional(),
+        targetTokens: z.number().int().positive().max(1000000).optional(),
+        overlapTokens: z.number().int().nonnegative().max(1000000).optional(),
+        maximumTokens: z.number().int().positive().max(1000000).optional(),
+        semanticThreshold: unitInterval.optional(),
+      })
+      .strict()
+      .optional(),
+    reasoning: z
+      .object({
+        mode: z
+          .enum(["auto", "direct", "react", "alternatives", "tree"])
+          .optional(),
+        examples: z
+          .array(
+            z
+              .object({
+                input: z.string().min(1).max(10000),
+                output: z.string().min(1).max(20000),
+              })
+              .strict(),
+          )
+          .max(20)
+          .optional(),
+        maximumAlternatives: z.number().int().positive().max(20).optional(),
+      })
+      .strict()
+      .optional(),
+    sourceAuthority: z.record(unitInterval).optional(),
+    sourceMetadata: z.array(contextSourceMetadataSchema).max(1000).optional(),
+    policyLabels: z.array(z.string().max(200)).max(100).optional(),
+  })
+  .strict();
+
 const agentSkillSchema = z
   .object({
     skillId: objectIdString,
@@ -78,6 +264,7 @@ const agentShape = {
   templates: z.array(agentTemplateSchema).max(100).default([]),
   mcpServerIds: z.array(objectIdString).max(50).default([]),
   limits: limitsSchema.default({ maxTurns: 24 }),
+  contextIntelligence: contextIntelligenceConfigSchema.optional(),
   /**
    * Asks the runtime to answer as an event stream rather than one buffered result.
    * Off by default, and only sent in the payload when it is on, so an agent that
@@ -137,6 +324,9 @@ export const agentUpdateSchema = z
   .extend({
     description: z.string().trim().max(1_000).nullable().optional(),
     model: z.string().trim().min(1).max(300).nullable().optional(),
+    contextIntelligence: z
+      .union([contextIntelligenceConfigSchema, z.null()])
+      .optional(),
     isDefault: z.boolean().nullable().optional(),
   })
   .strict()
