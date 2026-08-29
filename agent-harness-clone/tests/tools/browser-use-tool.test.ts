@@ -142,6 +142,47 @@ test(
 );
 
 test(
+  'navigate with newTab switches the session to a new tab, leaving the original navigable behavior alone',
+  { skip: !chromiumAvailable && 'no Chromium-family binary found on this machine' },
+  async (t) => {
+    const first = await startTestServer();
+    t.after(() => first.server.close());
+    const second = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.end(
+        '<!doctype html><html><head><title>Second tab</title></head><body>Second</body></html>',
+      );
+    });
+    await new Promise<void>((resolve) => second.listen(0, '127.0.0.1', resolve));
+    const secondPort = (second.address() as AddressInfo).port;
+    t.after(() => second.close());
+
+    const tool = createBrowserUseTool({
+      allowPrivateHosts: true,
+      allowInsecureHttp: true,
+      idleTimeoutMs: 2_000,
+    });
+    assert.ok(tool);
+    const context = executionContext();
+
+    const firstNav = await tool.execute({ action: 'navigate', url: first.url }, context);
+    assert.match(firstNav.content, /Title: Test page/);
+
+    const secondNav = await tool.execute(
+      { action: 'navigate', url: `http://127.0.0.1:${secondPort}/`, newTab: true },
+      context,
+    );
+    assert.equal(secondNav.isError, undefined);
+    assert.match(secondNav.content, /Title: Second tab/);
+
+    // The session now drives the new tab, not the original one — the same
+    // way a human who just opened a new tab keeps typing into that one.
+    const read = await tool.execute({ action: 'read' }, context);
+    assert.match(read.content, /Title: Second tab/);
+  },
+);
+
+test(
   'read warns about a full-page overlay before a click on it can time out',
   { skip: !chromiumAvailable && 'no Chromium-family binary found on this machine' },
   async (t) => {
