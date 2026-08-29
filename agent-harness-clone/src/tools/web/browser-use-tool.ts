@@ -288,6 +288,16 @@ export function createBrowserUseTool(
           '--no-first-run',
           '--noerrdialogs',
           '--disable-infobars',
+          // No real GPU exists inside Xvfb. Without these, Chrome's compositor
+          // tries GPU rendering anyway; the *first* full paint (a fresh
+          // navigation) still lands, but incremental repaints afterward — a
+          // scroll's animation settling, most of all — stop reaching the X11
+          // window, so the VNC feed silently stops following anything past
+          // that first frame. Forcing software rendering is what makes every
+          // repaint actually hit the window x11vnc is watching.
+          '--disable-gpu',
+          '--disable-gpu-compositing',
+          '--use-gl=swiftshader',
         ],
       });
       // `browser.newContext()` explicitly, not the `browser.newPage()`
@@ -339,6 +349,16 @@ export function createBrowserUseTool(
           '-forever',
           '-shared',
           '-quiet',
+          // Belt-and-suspenders alongside the software-rendering flags above:
+          // `-noxdamage` stops x11vnc trusting the X11 damage extension to
+          // announce every changed region and makes it poll the full
+          // framebuffer on its own schedule instead, so a repaint it doesn't
+          // get told about still gets picked up on the next poll. `-wait 100`
+          // keeps that polling frequent (every 100ms) rather than defaulting
+          // to a much coarser interval.
+          '-noxdamage',
+          '-wait',
+          '100',
           '-rfbport',
           String(vncPort),
         ],
@@ -556,6 +576,10 @@ async function runAction(
     case 'scroll': {
       const delta = input.amount ?? 800;
       await page.mouse.wheel(0, input.direction === 'down' ? delta : -delta);
+      // A brief settle: without it, an immediately following `read` can catch
+      // `scrollY` before the wheel event has finished being applied, reporting
+      // a stale position — same reasoning as the pause around `click`'s glide.
+      await page.waitForTimeout(150);
       return {
         progressMessage: `Scrolled ${input.direction}`,
         content: `Scrolled ${input.direction} by ${delta}px.\n\nCall \`read\` to see what's visible now.`,
@@ -664,9 +688,36 @@ async function readSnapshot(
   // after burning a full timeout on a doomed click.
   const overlay = await detectBlockingOverlay(page);
 
+  // `body.innerText()` above returns the *whole* page's text regardless of
+  // scroll offset — scrolling never changes what it reports. Without this,
+  // that looks indistinguishable from "the page isn't actually scrolling" (a
+  // real, observed confusion), when the page has in fact moved. Reported
+  // explicitly so scrolling has a signal that actually reflects it.
+  const scroll = await page
+    .evaluate(() => {
+      const browserGlobal = globalThis as unknown as {
+        window: { scrollY: number; innerHeight: number };
+        document: { documentElement: { scrollHeight: number } };
+      };
+      return {
+        scrollY: Math.round(browserGlobal.window.scrollY),
+        innerHeight: browserGlobal.window.innerHeight,
+        scrollHeight: browserGlobal.document.documentElement.scrollHeight,
+      };
+    })
+    .catch(() => undefined);
+  const scrollableHeight = scroll ? scroll.scrollHeight - scroll.innerHeight : 0;
+  const scrollPercent =
+    scroll && scrollableHeight > 0 ? Math.round((scroll.scrollY / scrollableHeight) * 100) : 0;
+
   return [
     `Title: ${title}`,
     `URL: ${page.url()}`,
+    ...(scroll
+      ? [
+          `Scroll position: ${scroll.scrollY}px from top, page is ${scroll.scrollHeight}px tall (${scrollPercent}% down).`,
+        ]
+      : []),
     ...(overlay
       ? [
           '',
@@ -676,7 +727,10 @@ async function readSnapshot(
         ]
       : []),
     '',
-    'Visible text:',
+    // Deliberately not "visible text": this is the whole page's text — check
+    // the scroll position above, not a change here, to tell whether a scroll
+    // actually moved the page.
+    "Page text (the whole page's text, not scoped to what scroll position currently shows):",
     truncatedText || '(none)',
     '',
     `Interactive elements (selector to use with click/type, ${elements.length} shown):`,

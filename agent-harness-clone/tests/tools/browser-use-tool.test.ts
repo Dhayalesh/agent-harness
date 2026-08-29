@@ -217,3 +217,40 @@ test(
     assert.match(read.content, /#modal/);
   },
 );
+
+test(
+  'read reports the scroll position, which advances after scroll even though the page text does not',
+  { skip: !chromiumAvailable && 'no Chromium-family binary found on this machine' },
+  async (t) => {
+    const server = createServer((_request, response) => {
+      response.setHeader('content-type', 'text/html; charset=utf-8');
+      response.end(
+        `<!doctype html><html><head><title>Tall page</title></head>` +
+          `<body><div style="height:4000px">Same text throughout</div></body></html>`,
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as AddressInfo;
+    t.after(() => server.close());
+
+    const tool = createBrowserUseTool({
+      allowPrivateHosts: true,
+      allowInsecureHttp: true,
+      idleTimeoutMs: 2_000,
+    });
+    assert.ok(tool);
+    const context = executionContext();
+
+    await tool.execute({ action: 'navigate', url: `http://127.0.0.1:${port}/` }, context);
+    const beforeScroll = await tool.execute({ action: 'read' }, context);
+    assert.match(beforeScroll.content, /Scroll position: 0px from top/);
+
+    await tool.execute({ action: 'scroll', direction: 'down', amount: 800 }, context);
+    const afterScroll = await tool.execute({ action: 'read' }, context);
+    assert.match(afterScroll.content, /Scroll position: 800px from top/);
+    // The reported page text is unchanged by the scroll — this is what a
+    // model reading only the text (not the scroll line) would misread as
+    // "scrolling isn't doing anything."
+    assert.match(afterScroll.content, /Same text throughout/);
+  },
+);
