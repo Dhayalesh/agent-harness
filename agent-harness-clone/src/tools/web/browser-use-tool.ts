@@ -125,6 +125,13 @@ type Session = {
   vncWsUrl: string;
   /** Xvfb, x11vnc, websockify — torn down together whenever the session is. */
   processes: readonly ChildProcess[];
+  /**
+   * Where the pointer last was. Playwright doesn't expose the real cursor
+   * position, so this is what lets `glideMouseTo` animate *from* somewhere
+   * instead of teleporting in from an assumed start point every time.
+   */
+  mouseX: number;
+  mouseY: number;
 };
 
 /**
@@ -381,6 +388,8 @@ export function createBrowserUseTool(
         display,
         vncWsUrl: `ws://127.0.0.1:${wsPort}/`,
         processes,
+        mouseX: viewport.width / 2,
+        mouseY: viewport.height / 2,
       };
       sessions.set(sessionId, session);
       return session;
@@ -496,6 +505,35 @@ type ActionHelpers = {
 
 type ActionSummary = { content: string; progressMessage: string };
 
+/**
+ * Moves the pointer across the screen in visible, spaced-out steps rather
+ * than one CDP call — a live human watching over VNC needs the motion spread
+ * over real wall-clock time to actually perceive it. Playwright's own
+ * `mouse.move(x, y, { steps })` dispatches every intermediate point with no
+ * delay between them at all, so from a live viewer's perspective it still
+ * looks like a teleport; this is what makes it a glide instead.
+ */
+async function glideMouseTo(
+  page: Page,
+  session: Session,
+  targetX: number,
+  targetY: number,
+): Promise<void> {
+  const steps = 18;
+  const stepDelayMs = 14;
+  const startX = session.mouseX;
+  const startY = session.mouseY;
+  for (let step = 1; step <= steps; step += 1) {
+    await page.mouse.move(
+      startX + ((targetX - startX) * step) / steps,
+      startY + ((targetY - startY) * step) / steps,
+    );
+    await page.waitForTimeout(stepDelayMs);
+  }
+  session.mouseX = targetX;
+  session.mouseY = targetY;
+}
+
 async function runAction(
   session: Session,
   input: BrowserUseInput,
@@ -538,11 +576,8 @@ async function runAction(
       await locator.scrollIntoViewIfNeeded();
       const box = await locator.boundingBox();
       if (box) {
-        // A real cursor glide, not a teleport: with a live human watching over
-        // VNC, `{ steps }` is what makes the movement visible rather than the
-        // pointer just appearing at the target an instant before the click.
-        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 24 });
-        await page.waitForTimeout(120);
+        await glideMouseTo(page, session, box.x + box.width / 2, box.y + box.height / 2);
+        await page.waitForTimeout(80);
         await page.mouse.down();
         await page.waitForTimeout(60);
         await page.mouse.up();
@@ -557,8 +592,38 @@ async function runAction(
       };
     }
     case 'type': {
-      await page.fill(input.selector, input.text);
-      if (input.submit) await page.press(input.selector, 'Enter');
+      const locator = page.locator(input.selector).first();
+      await locator.scrollIntoViewIfNeeded();
+      const box = await locator.boundingBox();
+      if (box) {
+        // Glide in and click to focus first, the same way the `click` action
+        // does — a live viewer sees the pointer actually arrive at the field,
+        // not text simply appearing in it.
+        await glideMouseTo(page, session, box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.waitForTimeout(40);
+        await page.mouse.up();
+      } else {
+        await locator.click();
+      }
+      // Select-all + delete first: `pressSequentially` types at the cursor,
+      // it doesn't replace existing content the way the old `fill()` did.
+      await page.keyboard.press('ControlOrMeta+A');
+      await page.keyboard.press('Backspace');
+      if (input.text.length <= 300) {
+        // Real per-character keystrokes, paced to be visible over VNC without
+        // making a long field take forever — capped at ~1.2s of total typing
+        // regardless of length, floor/ceiling keep short and long text both
+        // looking natural rather than instant or glacial.
+        const delayMs = Math.min(60, Math.max(15, Math.round(1200 / input.text.length)));
+        await locator.pressSequentially(input.text, { delay: delayMs });
+      } else {
+        // Long text is a paste, not typing — animating thousands of
+        // characters one at a time would blow well past any reasonable
+        // action time for no visible benefit.
+        await locator.fill(input.text);
+      }
+      if (input.submit) await page.keyboard.press('Enter');
       return {
         progressMessage: `Typed into ${input.selector}`,
         content:
