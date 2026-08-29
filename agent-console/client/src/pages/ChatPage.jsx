@@ -244,7 +244,6 @@ export function ChatPage() {
       key: tool.key,
       vncWsUrl: tool.vncWsUrl,
       running: tool.state === "running",
-      lastAction: [...tool.output].reverse()[0] ?? "",
     };
   }, [live?.tools]);
 
@@ -2177,11 +2176,6 @@ function BrowserWorkspace({ view, onClose }) {
           </div>
         )}
       </div>
-      {view.lastAction && (
-        <p className="border-t border-divider px-4 py-2 text-tiny text-default-500">
-          {view.lastAction}
-        </p>
-      )}
     </aside>
   );
 }
