@@ -316,6 +316,46 @@ test('omits the turn budget line when announceTurnBudget is disabled', async () 
     provider,
     limits: { maxTurns: 5 },
     announceTurnBudget: false,
+    announceCurrentDate: false,
+  });
+  await collect(session.run({ prompt: 'Loop' }));
+
+  assert.equal(seenPrompt, undefined);
+});
+
+test('announces the current date in the system prompt by default', async () => {
+  let seenPrompt: string | undefined;
+  const provider = new ScriptedModelProvider([
+    (request) => {
+      seenPrompt = request.systemPrompt;
+      return [
+        { type: 'text_delta', delta: 'done' },
+        { type: 'completed', stopReason: 'end_turn' },
+      ];
+    },
+  ]);
+  const clock = () => new Date('2026-08-29T12:00:00.000Z');
+  const session = createAgentSession({ provider, clock, announceTurnBudget: false });
+  await collect(session.run({ prompt: 'What day is it?' }));
+
+  assert.match(seenPrompt ?? '', /Today's date: 2026-08-29 \(Saturday\)\./);
+});
+
+test('omits the current date line when announceCurrentDate is disabled', async () => {
+  let seenPrompt: string | undefined;
+  const provider = new ScriptedModelProvider([
+    (request) => {
+      seenPrompt = request.systemPrompt;
+      return [
+        { type: 'text_delta', delta: 'done' },
+        { type: 'completed', stopReason: 'end_turn' },
+      ];
+    },
+  ]);
+  const session = createAgentSession({
+    provider,
+    announceTurnBudget: false,
+    announceCurrentDate: false,
   });
   await collect(session.run({ prompt: 'Loop' }));
 

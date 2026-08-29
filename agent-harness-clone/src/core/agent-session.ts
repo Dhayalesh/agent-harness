@@ -124,6 +124,18 @@ export type AgentSessionConfig = {
    */
   announceTurnBudget?: boolean;
   /**
+   * Append the current date to the system prompt each turn, e.g.
+   * `Today's date: 2026-08-29 (Saturday).` — nothing else in this harness or
+   * in agent-console tells the model what day it is; without this it has
+   * only its training cutoff to reason from; wrong for "how old is this,"
+   * "is this current," and any other date-relative question.
+   *
+   * Default **on**, same reasoning as `announceTurnBudget`: negligible token
+   * cost, strictly-better-informed behavior, but named explicitly since it
+   * changes every agent's system prompt rather than doing so silently.
+   */
+  announceCurrentDate?: boolean;
+  /**
    * Where this session's `sequence` numbering starts.
    *
    * A transport that emitted its own events before the session began — the
@@ -214,6 +226,7 @@ class AgentSessionImpl implements AgentSession {
   private readonly projectContextProvider: ProjectContextProvider | undefined;
   private readonly modelCapabilities: ModelContextCapabilities | undefined;
   private readonly announceTurnBudget: boolean;
+  private readonly announceCurrentDate: boolean;
   private readonly pendingPermissions = new Map<string, PermissionWaiter>();
   private readonly recentToolCalls: RecentToolCall[] = [];
   private activeController: AbortController | undefined;
@@ -269,6 +282,7 @@ class AgentSessionImpl implements AgentSession {
     this.projectContextProvider = config.projectContextProvider;
     this.modelCapabilities = config.modelCapabilities;
     this.announceTurnBudget = config.announceTurnBudget ?? true;
+    this.announceCurrentDate = config.announceCurrentDate ?? true;
     this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
     this.preparedContext =
@@ -360,6 +374,7 @@ class AgentSessionImpl implements AgentSession {
           const systemPrompt = [
             this.config.systemPrompt,
             projectContext === undefined ? undefined : formatProjectContext(projectContext),
+            this.announceCurrentDate ? this.formatCurrentDate() : undefined,
             this.announceTurnBudget
               ? `Turn ${turn} of ${this.limits.maxTurns} (${this.limits.maxTurns - turn} remaining).`
               : undefined,
@@ -785,6 +800,7 @@ class AgentSessionImpl implements AgentSession {
 
       const systemPrompt = [
         this.config.systemPrompt,
+        this.announceCurrentDate ? this.formatCurrentDate() : undefined,
         'You have used all available turns. Do not attempt to use any tool — none ' +
           'are offered on this request. Using everything already gathered in this ' +
           'conversation, give your best final answer now. If it is not enough to ' +
@@ -1454,6 +1470,16 @@ class AgentSessionImpl implements AgentSession {
 
   private now(): string {
     return this.clock().toISOString();
+  }
+
+  /** UTC throughout, so the weekday always matches the date beside it. */
+  private formatCurrentDate(): string {
+    const now = this.clock();
+    const isoDate = now.toISOString().slice(0, 10);
+    const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(
+      now,
+    );
+    return `Today's date: ${isoDate} (${weekday}).`;
   }
 
   private throwIfAborted(): void {
