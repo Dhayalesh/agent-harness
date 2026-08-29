@@ -29,21 +29,25 @@ phases:
 
         command -v aws >/dev/null || {
           echo "ERROR: AWS CLI is required"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
         command -v docker >/dev/null || {
           echo "ERROR: Docker is required"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
         command -v jq >/dev/null || {
           echo "ERROR: jq is required"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
         command -v python3 >/dev/null || {
           echo "ERROR: Python 3 is required"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
@@ -51,6 +55,7 @@ phases:
 
         [[ -d "$APP_DIR" ]] || {
           echo "ERROR: Application directory not found: $APP_DIR"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
@@ -58,11 +63,13 @@ phases:
 
         [[ -f package.json ]] || {
           echo "ERROR: package.json not found"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
         [[ -f package-lock.json ]] || {
           echo "ERROR: package-lock.json not found"
+          echo "FAILED AT: INSTALL"
           exit 1
         }
 
@@ -119,19 +126,28 @@ phases:
         echo "TYPECHECK"
         echo "=========================================="
 
-        npm run typecheck
+        npm run typecheck || {
+          echo "FAILED AT: TYPECHECK"
+          exit 1
+        }
 
         echo "=========================================="
         echo "TEST"
         echo "=========================================="
 
-        npm test
+        npm test || {
+          echo "FAILED AT: TEST"
+          exit 1
+        }
 
         echo "=========================================="
         echo "APPLICATION BUILD"
         echo "=========================================="
 
-        npm run build
+        npm run build || {
+          echo "FAILED AT: APPLICATION BUILD"
+          exit 1
+        }
 
         echo "=========================================="
         echo "ECR REPOSITORY CHECK"
@@ -221,7 +237,10 @@ phases:
         docker build \
           --platform linux/arm64 \
           --tag "$IMAGE_URI" \
-          .
+          . || {
+          echo "FAILED AT: DOCKER BUILD"
+          exit 1
+        }
 
         IMAGE_PLATFORM="$(
           docker image inspect \
@@ -233,6 +252,7 @@ phases:
 
         [[ "$IMAGE_PLATFORM" == "linux/arm64" ]] || {
           echo "ERROR: Expected linux/arm64, got $IMAGE_PLATFORM"
+          echo "FAILED AT: DOCKER BUILD"
           exit 1
         }
 
@@ -240,7 +260,10 @@ phases:
         echo "PUSH IMAGE"
         echo "=========================================="
 
-        docker push "$IMAGE_URI"
+        docker push "$IMAGE_URI" || {
+          echo "FAILED AT: ECR PUSH"
+          exit 1
+        }
 
         echo "=========================================="
         echo "VERIFY ECR IMAGE"
@@ -259,6 +282,7 @@ phases:
 
         [[ "$IMAGE_DIGEST" == sha256:* ]] || {
           echo "ERROR: Invalid ECR digest"
+          echo "FAILED AT: ECR PUSH"
           exit 1
         }
 
@@ -323,17 +347,18 @@ phases:
         NETWORK_MODE="$(jq -r '.networkConfiguration.networkMode // empty' "$CURRENT")"
 
         [[ -n "$ROLE_ARN" ]] || {
-          echo "FAILED AT: ROLE ARN"
+          echo "FAILED AT: GET AGENTCORE RUNTIME"
+          echo "ERROR: roleArn is empty"
           exit 1
         }
 
         [[ -n "$NETWORK_MODE" ]] || {
-          echo "FAILED AT: NETWORK MODE"
+          echo "FAILED AT: GET AGENTCORE RUNTIME"
+          echo "ERROR: networkMode is empty"
           exit 1
         }
 
         echo "GET RUNTIME SUCCESS"
-        echo "ROLE ARN: $ROLE_ARN"
         echo "NETWORK MODE: $NETWORK_MODE"
 
         echo "=========================================="
@@ -377,6 +402,9 @@ phases:
         echo "BUILD AGENTCORE UPDATE REQUEST"
         echo "=========================================="
 
+        # Build one environmentVariables object and conditionally append
+        # TAVILY_API_KEY using .environmentVariables.TAVILY_API_KEY = ...
+        # This avoids the + operator which would replace the entire object.
         jq -n \
           --arg runtimeId "$AGENTCORE_RUNTIME_ID" \
           --arg image "$IMAGE_URI" \
@@ -510,6 +538,7 @@ phases:
 
         [[ -n "$NEW_RUNTIME_VERSION" ]] || {
           echo "ERROR: No agentRuntimeVersion returned"
+          echo "FAILED AT: UPDATE AGENTCORE RUNTIME"
           exit 1
         }
 
@@ -545,7 +574,7 @@ phases:
           case "$RUNTIME_STATUS" in
             CREATE_FAILED|UPDATE_FAILED)
               echo "FAILED AT: AGENTCORE RUNTIME"
-              echo "$RUNTIME_JSON" | jq .
+              printf '%s' "$RUNTIME_JSON" | jq .
               exit 1
               ;;
           esac
@@ -555,7 +584,8 @@ phases:
         done
 
         [[ "$RUNTIME_STATUS" == "READY" ]] || {
-          echo "FAILED AT: RUNTIME READY TIMEOUT"
+          echo "FAILED AT: AGENTCORE RUNTIME"
+          echo "ERROR: Timed out waiting for READY status"
           exit 1
         }
 
@@ -606,6 +636,7 @@ phases:
 
         [[ "$DEPLOYED_ENV_COUNT" -ge "$REQUEST_ENV_COUNT" ]] || {
           echo "ERROR: AgentCore environment variable count is lower than requested"
+          echo "FAILED AT: AGENTCORE ENVIRONMENT VERIFICATION"
           exit 1
         }
 
@@ -643,6 +674,7 @@ phases:
 
           if [[ -z "$EXISTS" ]]; then
             echo "ERROR: AgentCore variable missing: $VAR_NAME"
+            echo "FAILED AT: AGENTCORE ENVIRONMENT VERIFICATION"
             exit 1
           fi
 
@@ -659,6 +691,7 @@ phases:
 
           if [[ -z "$TAVILY_EXISTS" ]]; then
             echo "ERROR: TAVILY_API_KEY was requested but is missing"
+            echo "FAILED AT: AGENTCORE ENVIRONMENT VERIFICATION"
             exit 1
           fi
 
@@ -705,7 +738,7 @@ phases:
           case "$ENDPOINT_STATUS" in
             CREATE_FAILED|UPDATE_FAILED|DELETING)
               echo "FAILED AT: DEFAULT ENDPOINT"
-              echo "$ENDPOINT_JSON" | jq .
+              printf '%s' "$ENDPOINT_JSON" | jq .
               exit 1
               ;;
           esac
@@ -717,9 +750,10 @@ phases:
         if [[ "$ENDPOINT_STATUS" != "READY" ||
               "$LIVE_VERSION" != "$NEW_RUNTIME_VERSION" ]]; then
 
-          echo "FAILED AT: DEFAULT ENDPOINT VERSION"
-          echo "Expected: $NEW_RUNTIME_VERSION"
-          echo "Actual: $LIVE_VERSION"
+          echo "FAILED AT: DEFAULT ENDPOINT"
+          echo "Expected liveVersion: $NEW_RUNTIME_VERSION"
+          echo "Actual liveVersion: $LIVE_VERSION"
+          echo "Endpoint status: $ENDPOINT_STATUS"
           exit 1
         fi
 
