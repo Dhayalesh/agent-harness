@@ -3,3 +3,4 @@ node_modules/
 dist/
 .env
 jwt-secret.js
+__pycache__/
