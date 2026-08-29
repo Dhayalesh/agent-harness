@@ -17,6 +17,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    build: {
+      // noVNC's rfb.js uses a top-level await (WebCodecs feature probe) that
+      // Vite's default esbuild target (pre-dating it) rejects at build time.
+      target: "esnext",
+    },
     server: {
       port: 5173,
       // Keep the browser on one origin and follow the API address configured in

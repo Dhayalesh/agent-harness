@@ -70,7 +70,7 @@ test('checkPermissions denies navigate to a non-public host by default', async (
 });
 
 test(
-  'browser_use navigates, reads, types, clicks, and reports a live-view tab list',
+  'browser_use navigates, reads, types, clicks, and reports a live-view VNC URL',
   { skip: !chromiumAvailable && 'no Chromium-family binary found on this machine' },
   async (t) => {
     const { url, server } = await startTestServer();
@@ -105,25 +105,16 @@ test(
     const secondRead = await tool.execute({ action: 'read' }, context);
     assert.match(secondRead.content, /searched: MARA/);
 
-    // The live-view tab list is deliberately best-effort (the debug HTTP
-    // server briefly not answering must never fail the action it rides
-    // alongside — see execute()'s own comment on this), so this allows for one
-    // miss rather than requiring all 5 of the execute() calls above to have
-    // reported one. Every action reporting tabs on every single run is not a
-    // guarantee this tool makes; at least 4 of 5 catches a real regression
-    // without being flaky.
-    const withTabs = progressEvents.filter((event) => event.data?.tabs);
-    assert.ok(
-      withTabs.length >= 4,
-      `expected at least 4 of 5 actions to report a live-view tab list, got ${withTabs.length}`,
-    );
-    for (const event of withTabs) {
-      assert.equal(typeof event.data?.liveViewUrl, 'string');
-      assert.match(event.data?.liveViewUrl as string, /^http:\/\/127\.0\.0\.1:\d+\/devtools\//);
-      const tabs = event.data?.tabs as Array<Record<string, unknown>>;
-      assert.ok(Array.isArray(tabs) && tabs.length >= 1);
-      assert.ok(tabs.some((tab) => tab.active === true));
-    }
+    // `vncWsUrl` is a plain field on the session, not an async lookup, so
+    // every one of the 5 execute() calls above reports it at the end (`navigate`
+    // also fires its own pre-navigation "Navigating" progress event with no
+    // `vncWsUrl`, same as before this tool had a live view at all).
+    const withVncUrl = progressEvents.filter((event) => event.data?.vncWsUrl);
+    assert.equal(withVncUrl.length, 5);
+    const vncWsUrls = new Set(withVncUrl.map((event) => event.data?.vncWsUrl));
+    assert.equal(vncWsUrls.size, 1, 'expected the same live-view URL across the whole session');
+    const [vncWsUrl] = vncWsUrls;
+    assert.match(vncWsUrl as string, /^ws:\/\/127\.0\.0\.1:\d+\/$/);
   },
 );
 

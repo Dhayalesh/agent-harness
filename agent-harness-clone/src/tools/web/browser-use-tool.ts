@@ -1,6 +1,7 @@
-import { createServer } from 'node:net';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { chromium, type Browser, type CDPSession, type Page } from 'playwright-core';
+import { connect as netConnect, createServer } from 'node:net';
+import { chromium, type Browser, type Page } from 'playwright-core';
 import { z } from 'zod';
 import { AgentHarnessError } from '../../core/errors.js';
 import type { Tool, ToolExecutionContext, ToolExecutionResult } from '../tool.js';
@@ -21,17 +22,20 @@ import { assertHostAllowed, resolveFetchUrl, type UrlPolicyOptions } from './url
  * (CSS, or Playwright's built-in `text=`/`role=` engines) rather than pixel
  * coordinates it cannot verify.
  *
- * The *human* watching gets a real live video feed, not a screenshot taken
- * once after each action: while an action runs, this tool streams the page's
- * own CDP screencast (`Page.startScreencast`) frame by frame through
- * `reportProgress`, and a small injected cursor overlay (`CURSOR_SCRIPT`
- * below) makes real mouse movement visible in that feed rather than only the
- * before/after state. Deliberately *not* an iframed DevTools frontend: that
- * page is Chrome's own multi-panel inspector (Elements, Console, sources) —
- * there is no supported way to load just its rendered-page viewport, and it
- * is cross-origin content this tool cannot reach into to hide the rest. A
- * plain image the harness fully controls what's drawn into is simpler and is
- * actually just the browser screen, nothing else.
+ * The *human* watching gets a genuinely interactive remote browser, not an
+ * image of one. Each session runs a real (non-headless) Chromium inside its
+ * own virtual display (`Xvfb`), captured live over VNC (`x11vnc`) and bridged
+ * to a WebSocket (`websockify`) the live-view panel connects a canvas to —
+ * the same architecture behind every "remote browser" product's live view.
+ * Two things fall out of it for free, versus an iframed DevTools frontend or
+ * a captured-frame video: (1) it is *only* the browser's own window — no
+ * window manager runs in the virtual display, so there are no OS decorations,
+ * and no DevTools panel, because DevTools is never opened; the browser's own
+ * ordinary tab strip is what's visible, so a human can switch to any tab the
+ * agent opened the same way they would in their own browser. (2) input is
+ * genuinely two-way: VNC forwards the viewer's real clicks and keystrokes
+ * into the display, so a human can take over or assist mid-task, not just
+ * watch.
  */
 
 const actionSchema = z.discriminatedUnion('action', [
@@ -110,16 +114,18 @@ type Session = {
   browser: Browser;
   page: Page;
   lastUsedAt: number;
-  /** Chromium's own CDP HTTP port, opened solely for the live-view iframe. */
-  debugPort: number;
-  /** CDP target id of `page`, so the live view can mark it as the active tab. */
-  targetId: string;
+  display: number;
+  /** The live-view panel's own WebSocket URL, constant for the session's life. */
+  vncWsUrl: string;
+  /** Xvfb, x11vnc, websockify — torn down together whenever the session is. */
+  processes: readonly ChildProcess[];
 };
 
 /**
  * Binds to an ephemeral port, reads back what the OS assigned, and releases
- * it immediately — a short race (something else could grab it before Chromium
- * does) accepted the same way every "ask the OS for a free port" helper does.
+ * it immediately — a short race (something else could grab it before the real
+ * listener does) accepted the same way every "ask the OS for a free port"
+ * helper does.
  */
 async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -135,6 +141,53 @@ async function findFreePort(): Promise<number> {
       });
     });
   });
+}
+
+const usedDisplays = new Set<number>();
+
+/** The first `:N` (N ≥ 90, well past any real display) with no live X socket. */
+function allocateDisplay(): number {
+  for (let candidate = 90; candidate < 990; candidate += 1) {
+    if (usedDisplays.has(candidate)) continue;
+    if (existsSync(`/tmp/.X11-unix/X${candidate}`)) continue;
+    usedDisplays.add(candidate);
+    return candidate;
+  }
+  throw new AgentHarnessError('No free X display in range :90-:989', 'BROWSER_LAUNCH_FAILED');
+}
+
+/** Polls for the Unix socket Xvfb creates once its display is actually up. */
+async function waitForX11Socket(display: number, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(`/tmp/.X11-unix/X${display}`)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new AgentHarnessError(`Xvfb did not start on :${display} in time`, 'BROWSER_LAUNCH_FAILED');
+}
+
+/** Polls for a TCP listener — used for x11vnc and websockify's own startup. */
+async function waitForPort(port: number, host: string, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const reachable = await new Promise<boolean>((resolve) => {
+      const socket = netConnect(port, host);
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+    if (reachable) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new AgentHarnessError(
+    `Nothing listening on ${host}:${port} in time`,
+    'BROWSER_LAUNCH_FAILED',
+  );
 }
 
 /**
@@ -162,13 +215,19 @@ export function createBrowserUseTool(
   const actionTimeoutMs = options.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
   const sessions = new Map<string, Session>();
 
+  function teardown(session: Session): void {
+    void session.browser.close().catch(() => undefined);
+    for (const proc of session.processes) proc.kill();
+    usedDisplays.delete(session.display);
+  }
+
   const sweep = setInterval(
     () => {
       const cutoff = Date.now() - idleTimeoutMs;
       for (const [sessionId, session] of sessions) {
         if (session.lastUsedAt < cutoff) {
           sessions.delete(sessionId);
-          void session.browser.close().catch(() => undefined);
+          teardown(session);
         }
       }
     },
@@ -176,90 +235,128 @@ export function createBrowserUseTool(
   );
   sweep.unref();
 
+  // Real (Chrome's own) tab strip and address bar, on a full-height window,
+  // leaves noticeably more room for the page itself than a real desktop's
+  // browser chrome would — a live view exists to show the page, not to
+  // reproduce a desktop.
+  const chromeUiHeight = 96;
+
   async function sessionFor(sessionId: string): Promise<Session> {
     const existing = sessions.get(sessionId);
     if (existing) {
       existing.lastUsedAt = Date.now();
       return existing;
     }
-    const debugPort = await findFreePort();
-    const browser = await chromium.launch({
-      executablePath: resolvedExecutablePath,
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        // A second, independent CDP HTTP server (Playwright still controls the
-        // browser over its own separate pipe) that exists purely so the
-        // live-view panel can iframe the real DevTools frontend for a tab —
-        // the same unauthenticated-local-debug-surface tradeoff the harness
-        // itself already carries and warns about for `/invocations`; fine for
-        // a local/loopback deployment, not something to expose to the open
-        // internet without a proxy in front of it.
-        `--remote-debugging-port=${debugPort}`,
-        '--remote-debugging-address=127.0.0.1',
-        '--remote-allow-origins=*',
-      ],
-    });
-    // Headless Chromium's own default UA string contains "HeadlessChrome", which
-    // a number of ordinary sites' WAFs pattern-match and block outright — not
-    // because the site forbids automation, but because that literal substring is
-    // an easy signal to filter on. Presenting as an ordinary desktop Chrome is
-    // standard, honest browser configuration, not a stealth/evasion technique;
-    // this tool still identifies its actions faithfully everywhere else (real
-    // clicks, real navigation, no fingerprint spoofing beyond this one header).
-    const page = await browser.newPage({
-      viewport,
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-        'Chrome/128.0.0.0 Safari/537.36',
-    });
-    page.setDefaultTimeout(actionTimeoutMs);
-    const cdp: CDPSession = await page.context().newCDPSession(page);
-    const targetInfo = (await cdp.send('Target.getTargetInfo')) as { targetInfo: { targetId: string } };
-    const session: Session = {
-      browser,
-      page,
-      lastUsedAt: Date.now(),
-      debugPort,
-      targetId: targetInfo.targetInfo.targetId,
-    };
-    sessions.set(sessionId, session);
-    return session;
-  }
 
-  type LiveTab = { id: string; title: string; url: string; liveViewUrl: string; active: boolean };
-
-  /**
-   * Every currently open tab in this session's Chromium, from its own CDP
-   * `/json/list` — including tabs the agent never opened directly (a
-   * `target="_blank"` link, a popup), which is exactly what lets a human
-   * browse to one in the live-view panel that the model isn't looking at.
-   * Best-effort: the debug HTTP server briefly not answering must not fail
-   * the action it's reported alongside.
-   */
-  async function liveTabs(session: Session): Promise<LiveTab[] | undefined> {
+    const display = allocateDisplay();
+    const processes: ChildProcess[] = [];
     try {
-      const response = await fetch(`http://127.0.0.1:${session.debugPort}/json/list`);
-      if (!response.ok) return undefined;
-      const targets = (await response.json()) as Array<Record<string, unknown>>;
-      return targets
-        .filter((target) => target.type === 'page')
-        .map((target) => ({
-          id: String(target.id ?? ''),
-          title: String(target.title ?? ''),
-          url: String(target.url ?? ''),
-          // Built directly rather than taken from `devtoolsFrontendUrl`: newer
-          // Chrome points that field at Google's hosted frontend
-          // (chrome-devtools-frontend.appspot.com), which depends on the
-          // viewer's own internet access and an unknown framing policy.
-          // Chrome also serves this same frontend locally off the debug port
-          // itself — no external dependency, and it's ours to iframe freely.
-          liveViewUrl: `http://127.0.0.1:${session.debugPort}/devtools/inspector.html?ws=127.0.0.1:${session.debugPort}/devtools/page/${target.id}`,
-          active: target.id === session.targetId,
-        }));
-    } catch {
-      return undefined;
+      const xvfb = spawn(
+        'Xvfb',
+        [
+          `:${display}`,
+          '-screen',
+          '0',
+          `${viewport.width}x${viewport.height + chromeUiHeight}x24`,
+          '-nolisten',
+          'tcp',
+        ],
+        { stdio: 'ignore' },
+      );
+      processes.push(xvfb);
+      await waitForX11Socket(display, 5_000);
+
+      // Headless Chromium's own default UA string contains "HeadlessChrome",
+      // which a number of ordinary sites' WAFs pattern-match and block
+      // outright — moot here (this browser is not headless), kept anyway so a
+      // page sees the same honest, ordinary-desktop-Chrome identity either way.
+      const browser = await chromium.launch({
+        executablePath: resolvedExecutablePath,
+        headless: false,
+        env: { ...process.env, DISPLAY: `:${display}` },
+        args: [
+          '--no-sandbox',
+          '--disable-dev-shm-usage',
+          `--window-size=${viewport.width},${viewport.height + chromeUiHeight}`,
+          '--window-position=0,0',
+          '--no-first-run',
+          '--noerrdialogs',
+          '--disable-infobars',
+        ],
+      });
+      const page = await browser.newPage({
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
+          'Chrome/128.0.0.0 Safari/537.36',
+      });
+      page.setDefaultTimeout(actionTimeoutMs);
+      // `--window-size` is a request Chrome doesn't always honour exactly with
+      // no window manager present to negotiate it; forcing the bounds
+      // directly is what actually fills the virtual display end to end, so
+      // the live view isn't showing bare (black) desktop below the window.
+      try {
+        const browserCdp = await page.context().newCDPSession(page);
+        const { windowId } = (await browserCdp.send('Browser.getWindowForTarget')) as {
+          windowId: number;
+        };
+        await browserCdp.send('Browser.setWindowBounds', {
+          windowId,
+          bounds: {
+            left: 0,
+            top: 0,
+            width: viewport.width,
+            height: viewport.height + chromeUiHeight,
+          },
+        });
+      } catch {
+        // Best-effort sizing only — a slightly imperfect fit is cosmetic, not
+        // worth failing session setup over.
+      }
+
+      const vncPort = await findFreePort();
+      // `-localhost`: only websockify (on this same machine) may connect —
+      // the same loopback-only posture the harness's own `/invocations`
+      // warns about when unauthenticated; fine for local/loopback use, not
+      // something to expose to the open internet without a proxy in front.
+      const x11vnc = spawn(
+        'x11vnc',
+        [
+          '-display',
+          `:${display}`,
+          '-localhost',
+          '-nopw',
+          '-forever',
+          '-shared',
+          '-quiet',
+          '-rfbport',
+          String(vncPort),
+        ],
+        { stdio: 'ignore' },
+      );
+      processes.push(x11vnc);
+      await waitForPort(vncPort, '127.0.0.1', 5_000);
+
+      const wsPort = await findFreePort();
+      const bridge = spawn('websockify', [`127.0.0.1:${wsPort}`, `localhost:${vncPort}`], {
+        stdio: 'ignore',
+      });
+      processes.push(bridge);
+      await waitForPort(wsPort, '127.0.0.1', 5_000);
+
+      const session: Session = {
+        browser,
+        page,
+        lastUsedAt: Date.now(),
+        display,
+        vncWsUrl: `ws://127.0.0.1:${wsPort}/`,
+        processes,
+      };
+      sessions.set(sessionId, session);
+      return session;
+    } catch (error) {
+      for (const proc of processes) proc.kill();
+      usedDisplays.delete(display);
+      throw error;
     }
   }
 
@@ -323,28 +420,15 @@ export function createBrowserUseTool(
         actionFailure = errorMessage(error);
       }
 
-      // The live-view tab list is best-effort and reported either way; the
-      // debug HTTP server briefly not answering must never turn an action that
-      // actually succeeded into a reported tool failure, so it is caught on
-      // its own rather than sharing the block above.
-      try {
-        const tabs = await liveTabs(session);
-        if (tabs) {
-          context.reportProgress(
-            actionFailure
-              ? `browser_use: ${input.action} failed`
-              : (summary?.progressMessage ?? input.action),
-            {
-              liveViewUrl: tabs.find((tab) => tab.active)?.liveViewUrl ?? tabs[0]?.liveViewUrl,
-              tabs,
-              url: page.url(),
-            },
-          );
-        }
-      } catch {
-        // The page itself may be the thing that failed to respond; the action's
-        // own outcome below is unaffected either way.
-      }
+      // `vncWsUrl` is constant for the session, but reported alongside every
+      // action anyway — simplest way for a client that missed the first one
+      // (a reconnect, a panel opened late) to still pick it up.
+      context.reportProgress(
+        actionFailure
+          ? `browser_use: ${input.action} failed`
+          : (summary?.progressMessage ?? input.action),
+        { vncWsUrl: session.vncWsUrl, url: page.url() },
+      );
 
       if (actionFailure !== undefined) {
         return { content: `browser_use ${input.action} failed: ${actionFailure}`, isError: true };
@@ -390,7 +474,23 @@ async function runAction(
       return { progressMessage: 'Read page', content: snapshot };
     }
     case 'click': {
-      await page.click(input.selector);
+      const locator = page.locator(input.selector).first();
+      await locator.scrollIntoViewIfNeeded();
+      const box = await locator.boundingBox();
+      if (box) {
+        // A real cursor glide, not a teleport: with a live human watching over
+        // VNC, `{ steps }` is what makes the movement visible rather than the
+        // pointer just appearing at the target an instant before the click.
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 24 });
+        await page.waitForTimeout(120);
+        await page.mouse.down();
+        await page.waitForTimeout(60);
+        await page.mouse.up();
+      } else {
+        // No box (e.g. laid out only after a script runs) — Playwright's own
+        // click still finds and waits for it; this loses the glide, not the click.
+        await locator.click();
+      }
       return {
         progressMessage: `Clicked ${input.selector}`,
         content: `Clicked: ${input.selector}\n\nCall \`read\` to see what changed.`,

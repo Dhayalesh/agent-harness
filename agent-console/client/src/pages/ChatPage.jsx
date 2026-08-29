@@ -234,7 +234,7 @@ export function ChatPage() {
    */
   const liveBrowserView = useMemo(() => {
     const calls = (live?.tools ?? []).filter(
-      (tool) => tool.name === "browser_use" && tool.tabs?.length,
+      (tool) => tool.name === "browser_use" && tool.vncWsUrl,
     );
     if (!calls.length) return null;
     const running = [...calls].reverse().find((tool) => tool.state === "running");
@@ -242,7 +242,7 @@ export function ChatPage() {
     return {
       kind: "browser",
       key: tool.key,
-      tabs: tool.tabs,
+      vncWsUrl: tool.vncWsUrl,
       running: tool.state === "running",
       lastAction: [...tool.output].reverse()[0] ?? "",
     };
@@ -1666,13 +1666,13 @@ function applyLiveEvent(live, event) {
       return {
         ...current,
         // `browser_use` (and anything else that calls `reportProgress` with a
-        // `tabs` list) rides the same event; only the latest tab list is kept,
-        // since the panel iframes the browser's own live DevTools view rather
-        // than replaying a filmstrip of captured frames.
+        // `vncWsUrl`) rides the same event. The URL is constant for the whole
+        // browser session, not per call, but keeping it on the tool record is
+        // what lets `liveBrowserView` find it without a separate lookup.
         tools: upsertTool(current.tools, event.toolCallId, (tool) => ({
           ...tool,
           output: [...tool.output, event.message].slice(-40),
-          tabs: event.data?.tabs ?? tool.tabs,
+          vncWsUrl: event.data?.vncWsUrl ?? tool.vncWsUrl,
         })),
       };
     case "tool.completed":
@@ -2094,33 +2094,46 @@ function DocumentWorkspace({ document, onClose }) {
 
 /**
  * A dedicated docked pane holding the actual, live, interactive browser the
- * agent is driving — Codex/Atlas-style: the panel iframes Chrome's own
- * DevTools live view of a tab (real rendering, real cursor, click/scroll/type
- * land on the real page), not a screenshot the harness re-captures after each
- * action. A tab strip across the top lists every tab currently open in that
- * session's browser — including ones the agent opened as a side effect
- * (`target="_blank"`, a popup) — so a human can look at any of them, not only
- * whichever one the agent is actively driving.
+ * agent is driving — Codex/Atlas-style. The harness runs that browser
+ * headed, inside its own virtual display, captured live over VNC; this panel
+ * is a canvas connected straight to that VNC session (via noVNC). What's
+ * visible is exactly the browser's own window — its real tab strip and
+ * address bar, nothing added by this panel — because nothing else runs on
+ * that display, and no DevTools is ever opened. Clicking or typing into the
+ * canvas is real input forwarded to that browser, not a demonstration of one.
  *
  * Shares `DocumentWorkspace`'s grid slot (only one of the two is ever mounted
  * at a time) but nothing else: there's no document to fetch, no preview/code
  * mode to switch between.
  */
 function BrowserWorkspace({ view, onClose }) {
-  const tabs = view.tabs ?? [];
-  const [selectedTabId, setSelectedTabId] = useState(null);
+  const containerRef = useRef(null);
+  const [status, setStatus] = useState("connecting");
 
   useEffect(() => {
-    // Follow the agent to whichever tab it's driving, unless a human has
-    // already clicked over to a different tab that's still open — a manual
-    // choice to look elsewhere shouldn't get yanked back on the agent's next
-    // action.
-    if (selectedTabId && tabs.some((tab) => tab.id === selectedTabId)) return;
-    setSelectedTabId(tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs]);
+    const container = containerRef.current;
+    if (!container || !view.vncWsUrl) return undefined;
 
-  const activeTab = tabs.find((tab) => tab.id === selectedTabId) ?? tabs[0];
+    setStatus("connecting");
+    let rfb;
+    let cancelled = false;
+    // noVNC is loaded lazily: it's a sizeable canvas/WebSocket client this
+    // panel is the only consumer of, not worth putting in the main bundle.
+    import("@novnc/novnc").then(({ default: RFB }) => {
+      if (cancelled) return;
+      rfb = new RFB(container, view.vncWsUrl);
+      rfb.scaleViewport = true;
+      rfb.clipViewport = false;
+      rfb.resizeSession = false;
+      rfb.addEventListener("connect", () => setStatus("connected"));
+      rfb.addEventListener("disconnect", () => setStatus("disconnected"));
+    });
+
+    return () => {
+      cancelled = true;
+      rfb?.disconnect();
+    };
+  }, [view.vncWsUrl]);
 
   return (
     <aside className="absolute inset-y-0 right-0 z-30 flex w-full flex-col border-l border-divider bg-content1 shadow-[-16px_0_40px_rgba(28,25,22,0.12)] sm:w-[min(680px,82vw)] xl:static xl:z-auto xl:w-auto xl:shadow-none">
@@ -2133,13 +2146,15 @@ function BrowserWorkspace({ view, onClose }) {
             Browser
           </strong>
           <span className="block truncate text-[11px] text-default-500">
-            {view.running ? (
+            {status === "connected" ? (
               <span className="inline-flex items-center gap-1.5">
                 <ActivityIndicator size="sm" />
-                Browsing live
+                Live — click or type to take over
               </span>
+            ) : status === "connecting" ? (
+              "Connecting…"
             ) : (
-              "Live view"
+              "Disconnected"
             )}
           </span>
         </span>
@@ -2154,37 +2169,11 @@ function BrowserWorkspace({ view, onClose }) {
         </Button>
       </header>
 
-      {tabs.length > 1 && (
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-divider bg-content2 px-2 py-1.5">
-          {tabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setSelectedTabId(tab.id)}
-              title={tab.url}
-              className={`max-w-[180px] shrink-0 truncate rounded-medium px-2.5 py-1 text-tiny transition-colors ${
-                tab.id === activeTab?.id
-                  ? "bg-content1 font-medium text-foreground shadow-sm"
-                  : "text-default-500 hover:bg-content1/60"
-              }`}
-            >
-              {tab.title || tab.url || "New tab"}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="min-h-0 flex-1 bg-[#fbfaf7] dark:bg-[#1c1b19]">
-        {activeTab ? (
-          <iframe
-            key={activeTab.id}
-            src={activeTab.liveViewUrl}
-            title={`Live browser — ${activeTab.title || activeTab.url || "tab"}`}
-            className="h-full w-full border-0"
-          />
-        ) : (
-          <div className="grid h-full place-items-center text-small text-default-500">
-            Waiting for the browser…
+      <div className="relative min-h-0 flex-1 bg-[#1c1b19]">
+        <div ref={containerRef} className="h-full w-full" />
+        {status !== "connected" && (
+          <div className="pointer-events-none absolute inset-0 grid place-items-center text-small text-default-400">
+            {status === "connecting" ? "Connecting to the live browser…" : "Disconnected"}
           </div>
         )}
       </div>
