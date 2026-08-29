@@ -1,4 +1,4 @@
-import { AgentAbortError, errorMessage } from '../core/errors.js';
+import { AgentAbortError, AgentHarnessError, errorMessage } from '../core/errors.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { ModelProvider, ModelRequest, ModelStreamEvent } from './provider.js';
 
@@ -124,7 +124,18 @@ function describeError(error: unknown): { name: string; message: string; stack?:
   };
 }
 
+// A model returning a tool call it cannot itself parse back into valid JSON
+// (missing id/name, or arguments that don't parse) is the provider catching
+// its own output malformed, not a problem with the request — observed in
+// practice as a one-off glitch from a model that had just produced a dozen
+// valid tool calls in a row, exactly the kind of transient error a fresh
+// sample is likely to fix. Retried only when nothing has streamed yet for
+// this attempt (`!emitted`, checked by the caller) — never after real output.
+const RETRYABLE_MODEL_OUTPUT_CODES = new Set(['MALFORMED_TOOL_CALL', 'MALFORMED_TOOL_JSON']);
+
 function defaultRetryable(error: unknown): boolean {
+  if (error instanceof AgentHarnessError && RETRYABLE_MODEL_OUTPUT_CODES.has(error.code))
+    return true;
   if (!(error instanceof Error)) return false;
   const status = 'status' in error ? Number(error.status) : undefined;
   return status === 408 || status === 409 || status === 429 || (status ?? 0) >= 500;
