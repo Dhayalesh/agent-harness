@@ -1,5 +1,6 @@
 import type { AgentMessage } from '../core/messages.js';
 import { AgentHarnessError } from '../core/errors.js';
+import type { PersistedContextIntelligenceState } from '../context-intelligence/contracts.js';
 
 export const PREPARED_CONTEXT_MAX_MESSAGES = 1_000;
 export const PREPARED_CONTEXT_MAX_BYTES = 2 * 1024 * 1024;
@@ -24,6 +25,12 @@ export type StoredSession = {
   messages: AgentMessage[];
   /** Prepared model context; canonical history always remains in `messages`. */
   preparedContext?: PreparedContextCheckpoint;
+  /**
+   * Governed task, memory, observation, and offload state. This is derived state;
+   * canonical messages remain authoritative and an invalid block is discarded on
+   * load without losing the session.
+   */
+  contextIntelligence?: PersistedContextIntelligenceState;
   metadata: Record<string, unknown>;
 };
 
@@ -116,18 +123,45 @@ export function validateStoredSession(value: unknown): StoredSession {
   ) {
     throw new AgentHarnessError('Stored session is invalid', 'INVALID_STORED_SESSION');
   }
-  const session = value as StoredSession & { preparedContext?: unknown };
+  const session = value as StoredSession & {
+    preparedContext?: unknown;
+    contextIntelligence?: unknown;
+  };
   const preparedContext = validatePreparedContextCheckpoint(
     session.preparedContext,
     session.messages,
   );
-  if (session.preparedContext === undefined || preparedContext !== undefined) {
-    return preparedContext === undefined ? session : { ...session, preparedContext };
+  const contextIntelligence = validateContextIntelligenceState(session.contextIntelligence);
+  const {
+    preparedContext: _untrustedPrepared,
+    contextIntelligence: _untrustedIntelligence,
+    ...canonical
+  } = session;
+  return {
+    ...canonical,
+    ...(preparedContext === undefined ? {} : { preparedContext }),
+    ...(contextIntelligence === undefined ? {} : { contextIntelligence }),
+  };
+}
+
+function validateContextIntelligenceState(
+  value: unknown,
+): PersistedContextIntelligenceState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<PersistedContextIntelligenceState>;
+  if (
+    candidate.version !== 1 ||
+    !Array.isArray(candidate.memories) ||
+    !Array.isArray(candidate.observations) ||
+    !Array.isArray(candidate.offloadedArtifacts) ||
+    typeof candidate.updatedAt !== 'string' ||
+    candidate.memories.length > 1_000 ||
+    candidate.observations.length > 200 ||
+    candidate.offloadedArtifacts.length > 200
+  ) {
+    return undefined;
   }
-  // A bad checkpoint is disposable derived state. The canonical transcript remains
-  // authoritative, so loading an old or damaged checkpoint must not lose a session.
-  const { preparedContext: _discarded, ...canonical } = session;
-  return canonical;
+  return structuredClone(candidate as PersistedContextIntelligenceState);
 }
 
 export function createPreparedContextCheckpoint(
