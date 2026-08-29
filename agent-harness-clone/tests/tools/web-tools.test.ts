@@ -286,7 +286,10 @@ test('createWebTools registers fetch always and search only with a provider', (t
     else process.env.TAVILY_API_KEY = previousKey;
   });
 
-  const withoutSearch = createWebTools();
+  // `browser` disabled explicitly: whether `browser_use` registers itself
+  // depends on the host actually having a Chromium binary (see
+  // `browser-use-tool.test.ts`), which this test should not depend on.
+  const withoutSearch = createWebTools({ browser: false });
   assert.deepEqual(
     withoutSearch.map((tool) => tool.name),
     ['web_fetch'],
@@ -294,6 +297,7 @@ test('createWebTools registers fetch always and search only with a provider', (t
   assert.equal(withoutSearch[0]?.kind, 'network');
 
   const withSearch = createWebTools({
+    browser: false,
     searchProvider: { name: 'stub', search: async () => ({ hits: [] }) },
   });
   assert.deepEqual(
@@ -303,6 +307,7 @@ test('createWebTools registers fetch always and search only with a provider', (t
   assert.deepEqual(
     createWebTools({
       fetch: false,
+      browser: false,
       searchProvider: { name: 'stub', search: async () => ({ hits: [] }) },
     }).map((tool) => tool.name),
     ['web_search'],

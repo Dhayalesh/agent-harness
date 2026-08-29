@@ -167,6 +167,7 @@ export type {
 } from './tools/shell/index.js';
 export {
   assertHostAllowed,
+  createBrowserUseTool,
   createTavilySearchProvider,
   createWebFetchTool,
   createWebSearchTool,
@@ -178,10 +179,13 @@ export {
   isSameSiteRedirect,
   MAX_FETCH_URL_LENGTH,
   resolveFetchUrl,
+  resolveSystemChromium,
   TAVILY_SEARCH_ENDPOINT,
   tavilyProviderFromEnvironment,
 } from './tools/web/index.js';
 export type {
+  BrowserUseInput,
+  BrowserUseToolOptions,
   TavilySearchProviderOptions,
   UrlPolicyOptions,
   WebFetchInput,

@@ -30,8 +30,14 @@ WORKDIR /app
 # repository state. Add any other binary a payload's stdio MCP server `command`
 # needs: a stdio server whose command is missing fails at agent assembly, so it
 # fails the invocation that named it rather than logging a warning.
+#
+# chromium is here for the `browser_use` tool (src/tools/web/browser-use-tool.ts),
+# which looks for it at /usr/bin/chromium and simply does not register itself
+# when it is absent — so removing this line degrades that one tool rather than
+# breaking the image. It is a large dependency (fonts, X11 libs); leave it out
+# of a deployment that never needs browser_use.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates \
+  && apt-get install -y --no-install-recommends git ca-certificates chromium \
   && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \

@@ -184,6 +184,7 @@ const KNOWN_TOOLS = [
   "todo_write",
   "web_fetch",
   "web_search",
+  "browser_use",
 ];
 
 /**
@@ -191,6 +192,11 @@ const KNOWN_TOOLS = [
  * PowerShell is explicitly disabled in the image and web_search is absent unless the
  * runtime has TAVILY_API_KEY. AGENT_RUNTIME_TOOLS lets an operator publish the exact
  * catalogue when the deployment enables optional or custom capabilities.
+ *
+ * browser_use is excluded from this default on purpose, the same way web_search
+ * is: the harness's own Dockerfile now installs chromium, but a deployment only
+ * actually has it once rebuilt and redeployed from that Dockerfile version — add
+ * "browser_use" to AGENT_RUNTIME_TOOLS once that is true for this deployment.
  */
 const DEFAULT_RUNTIME_TOOLS = [
   "read_file",

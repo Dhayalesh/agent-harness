@@ -188,6 +188,13 @@ const paths = {
       <path d="M3 12h18" />
     </>
   ),
+  /** A browser window: rectangle with a title-bar rule, for the live browser view. */
+  browser: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M7 6.5h.01M10 6.5h.01" />
+    </>
+  ),
 };
 
 export function Icon({ name, className = "h-4 w-4", strokeWidth = 1.8 }) {

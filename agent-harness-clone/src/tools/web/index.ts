@@ -1,4 +1,5 @@
 import type { Tool } from '../tool.js';
+import { createBrowserUseTool, type BrowserUseToolOptions } from './browser-use-tool.js';
 import { createTavilySearchProvider, type WebSearchProvider } from './search-provider.js';
 import { createWebFetchTool, type WebFetchToolOptions } from './web-fetch-tool.js';
 import { createWebSearchTool, type WebSearchToolOptions } from './web-search-tool.js';
@@ -12,13 +13,21 @@ export type WebToolsOptions = {
    */
   searchProvider?: WebSearchProvider;
   search?: Omit<WebSearchToolOptions, 'provider'>;
+  /**
+   * Set to `false` to omit `browser_use` even when a browser binary is on the
+   * host. Otherwise, `browser_use` is registered only when a Chromium-family
+   * binary can be found — see `resolveSystemChromium` — the same "absent
+   * rather than failing every call" pattern `web_search` uses.
+   */
+  browser?: BrowserUseToolOptions | false;
 };
 
 /**
  * Build the opt-in network tool set. Kept separate from `createBuiltinTools`
  * so existing workspace-only sessions keep exactly the tools they had.
  *
- * Both tools report `kind: 'network'`, so the default and rule permission
+ * `web_fetch`/`web_search` report `kind: 'network'` and `browser_use` reports
+ * `kind: 'interactive'`; both kinds mean the default and rule permission
  * handlers ask before running them.
  */
 export function createWebTools(options: WebToolsOptions = {}): Tool[] {
@@ -26,6 +35,10 @@ export function createWebTools(options: WebToolsOptions = {}): Tool[] {
   if (options.fetch !== false) tools.push(createWebFetchTool(options.fetch ?? {}));
   const provider = options.searchProvider ?? tavilyProviderFromEnvironment();
   if (provider) tools.push(createWebSearchTool({ provider, ...options.search }));
+  if (options.browser !== false) {
+    const browserTool = createBrowserUseTool(options.browser ?? {});
+    if (browserTool) tools.push(browserTool);
+  }
   return tools;
 }
 
@@ -50,6 +63,12 @@ export {
   type WebFetchSummarizer,
   type WebFetchToolOptions,
 } from './web-fetch-tool.js';
+export {
+  createBrowserUseTool,
+  resolveSystemChromium,
+  type BrowserUseInput,
+  type BrowserUseToolOptions,
+} from './browser-use-tool.js';
 export {
   createWebSearchTool,
   type WebSearchInput,

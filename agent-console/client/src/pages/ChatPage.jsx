@@ -83,6 +83,7 @@ export function ChatPage() {
   const composer = useRef(null);
   const inFlight = useRef(null);
   const documentAutoOpened = useRef(false);
+  const browserAutoOpened = useRef(false);
   const filePicker = useRef(null);
   // Depth rather than a boolean: dragging over a child fires leave on the parent,
   // which would otherwise clear the highlight while the pointer is still inside.
@@ -224,6 +225,40 @@ export function ChatPage() {
         : current,
     );
   }, [liveDocument]);
+
+  /**
+   * The most recently active browser_use call that has captured a frame — a
+   * dedicated docked pane (ChatGPT-Atlas-style), not the inline per-call
+   * accordion in ToolHistory. Keyed by toolCallId so the pane only follows the
+   * one call currently driving it, not whichever tool happened to update last.
+   */
+  const liveBrowserView = useMemo(() => {
+    const calls = (live?.tools ?? []).filter(
+      (tool) => tool.name === "browser_use" && tool.tabs?.length,
+    );
+    if (!calls.length) return null;
+    const running = [...calls].reverse().find((tool) => tool.state === "running");
+    const tool = running ?? calls[calls.length - 1];
+    return {
+      kind: "browser",
+      key: tool.key,
+      tabs: tool.tabs,
+      running: tool.state === "running",
+      lastAction: [...tool.output].reverse()[0] ?? "",
+    };
+  }, [live?.tools]);
+
+  useEffect(() => {
+    if (!liveBrowserView) return;
+    if (!browserAutoOpened.current) {
+      browserAutoOpened.current = true;
+      setDocumentPane(liveBrowserView);
+      return;
+    }
+    setDocumentPane((current) =>
+      current?.kind === "browser" ? liveBrowserView : current,
+    );
+  }, [liveBrowserView]);
 
   const trackScroll = (event) => {
     const node = event.currentTarget;
@@ -408,6 +443,7 @@ export function ChatPage() {
     setAttachments([]);
     setLive(streaming ? EMPTY_LIVE : null);
     documentAutoOpened.current = false;
+    browserAutoOpened.current = false;
 
     let currentChat = chat;
     try {
@@ -1120,11 +1156,18 @@ export function ChatPage() {
           )}
         </div>
 
-        {documentPane && (
-          <DocumentWorkspace
-            document={documentPane}
+        {documentPane?.kind === "browser" ? (
+          <BrowserWorkspace
+            view={documentPane}
             onClose={() => setDocumentPane(null)}
           />
+        ) : (
+          documentPane && (
+            <DocumentWorkspace
+              document={documentPane}
+              onClose={() => setDocumentPane(null)}
+            />
+          )
         )}
       </div>
 
@@ -1622,9 +1665,14 @@ function applyLiveEvent(live, event) {
     case "tool.progress":
       return {
         ...current,
+        // `browser_use` (and anything else that calls `reportProgress` with a
+        // `tabs` list) rides the same event; only the latest tab list is kept,
+        // since the panel iframes the browser's own live DevTools view rather
+        // than replaying a filmstrip of captured frames.
         tools: upsertTool(current.tools, event.toolCallId, (tool) => ({
           ...tool,
           output: [...tool.output, event.message].slice(-40),
+          tabs: event.data?.tabs ?? tool.tabs,
         })),
       };
     case "tool.completed":
@@ -2040,6 +2088,111 @@ function DocumentWorkspace({ document, onClose }) {
           />
         )}
       </div>
+    </aside>
+  );
+}
+
+/**
+ * A dedicated docked pane holding the actual, live, interactive browser the
+ * agent is driving — Codex/Atlas-style: the panel iframes Chrome's own
+ * DevTools live view of a tab (real rendering, real cursor, click/scroll/type
+ * land on the real page), not a screenshot the harness re-captures after each
+ * action. A tab strip across the top lists every tab currently open in that
+ * session's browser — including ones the agent opened as a side effect
+ * (`target="_blank"`, a popup) — so a human can look at any of them, not only
+ * whichever one the agent is actively driving.
+ *
+ * Shares `DocumentWorkspace`'s grid slot (only one of the two is ever mounted
+ * at a time) but nothing else: there's no document to fetch, no preview/code
+ * mode to switch between.
+ */
+function BrowserWorkspace({ view, onClose }) {
+  const tabs = view.tabs ?? [];
+  const [selectedTabId, setSelectedTabId] = useState(null);
+
+  useEffect(() => {
+    // Follow the agent to whichever tab it's driving, unless a human has
+    // already clicked over to a different tab that's still open — a manual
+    // choice to look elsewhere shouldn't get yanked back on the agent's next
+    // action.
+    if (selectedTabId && tabs.some((tab) => tab.id === selectedTabId)) return;
+    setSelectedTabId(tabs.find((tab) => tab.active)?.id ?? tabs[0]?.id ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabs]);
+
+  const activeTab = tabs.find((tab) => tab.id === selectedTabId) ?? tabs[0];
+
+  return (
+    <aside className="absolute inset-y-0 right-0 z-30 flex w-full flex-col border-l border-divider bg-content1 shadow-[-16px_0_40px_rgba(28,25,22,0.12)] sm:w-[min(680px,82vw)] xl:static xl:z-auto xl:w-auto xl:shadow-none">
+      <header className="flex min-h-[64px] items-center gap-3 border-b border-divider px-4">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-medium border border-[#dfcbbf] bg-[#f3e6dc] text-[#925138] dark:border-[#634438] dark:bg-[#442f27] dark:text-[#e49a7d]">
+          <Icon name="browser" className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <strong className="block truncate text-small font-semibold">
+            Browser
+          </strong>
+          <span className="block truncate text-[11px] text-default-500">
+            {view.running ? (
+              <span className="inline-flex items-center gap-1.5">
+                <ActivityIndicator size="sm" />
+                Browsing live
+              </span>
+            ) : (
+              "Live view"
+            )}
+          </span>
+        </span>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="light"
+          aria-label="Close browser view"
+          onPress={onClose}
+        >
+          <Icon name="close" className="h-4 w-4" />
+        </Button>
+      </header>
+
+      {tabs.length > 1 && (
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-divider bg-content2 px-2 py-1.5">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setSelectedTabId(tab.id)}
+              title={tab.url}
+              className={`max-w-[180px] shrink-0 truncate rounded-medium px-2.5 py-1 text-tiny transition-colors ${
+                tab.id === activeTab?.id
+                  ? "bg-content1 font-medium text-foreground shadow-sm"
+                  : "text-default-500 hover:bg-content1/60"
+              }`}
+            >
+              {tab.title || tab.url || "New tab"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="min-h-0 flex-1 bg-[#fbfaf7] dark:bg-[#1c1b19]">
+        {activeTab ? (
+          <iframe
+            key={activeTab.id}
+            src={activeTab.liveViewUrl}
+            title={`Live browser — ${activeTab.title || activeTab.url || "tab"}`}
+            className="h-full w-full border-0"
+          />
+        ) : (
+          <div className="grid h-full place-items-center text-small text-default-500">
+            Waiting for the browser…
+          </div>
+        )}
+      </div>
+      {view.lastAction && (
+        <p className="border-t border-divider px-4 py-2 text-tiny text-default-500">
+          {view.lastAction}
+        </p>
+      )}
     </aside>
   );
 }
