@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { AgentAbortError, AgentHarnessError, errorMessage } from './errors.js';
 import type { AgentEvent, EventPayload } from './events.js';
 import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
@@ -113,6 +113,17 @@ export type AgentSessionConfig = {
    */
   compactContext?: boolean;
   /**
+   * docs/agent-loop-termination-plan.md §4: append a `Turn N of maxTurns
+   * (M remaining).` line to the system prompt each turn, so the model can
+   * pace its own exploration instead of being blind to its constraints.
+   *
+   * Default **on** — the cost is a handful of tokens and the behavior change
+   * is strictly toward better-paced runs — but named explicitly rather than
+   * silently always-on, since it changes the system prompt (and therefore
+   * token usage and possibly behavior) for every agent using this harness.
+   */
+  announceTurnBudget?: boolean;
+  /**
    * Where this session's `sequence` numbering starts.
    *
    * A transport that emitted its own events before the session began — the
@@ -141,6 +152,17 @@ type PermissionWaiter = {
 };
 
 type SettledExecution = { ok: true; output: ToolExecutionResult } | { ok: false; error: unknown };
+
+/** docs/agent-loop-termination-plan.md §5: one entry per real tool execution. */
+type RecentToolCall = {
+  toolName: string;
+  inputHash: string;
+  isError: boolean;
+  errorSummary: string;
+};
+
+/** How many recent tool executions the repeated-failure guard remembers. */
+const RECENT_TOOL_CALL_HISTORY = 5;
 
 const DEFAULT_LIMITS: AgentLimits = { maxTurns: 24, maxOutputTokens: 8_192 };
 
@@ -191,7 +213,9 @@ class AgentSessionImpl implements AgentSession {
   private readonly rateLimiter: SessionRateLimiter | undefined;
   private readonly projectContextProvider: ProjectContextProvider | undefined;
   private readonly modelCapabilities: ModelContextCapabilities | undefined;
+  private readonly announceTurnBudget: boolean;
   private readonly pendingPermissions = new Map<string, PermissionWaiter>();
+  private readonly recentToolCalls: RecentToolCall[] = [];
   private activeController: AbortController | undefined;
   private running = false;
   private started = false;
@@ -244,6 +268,7 @@ class AgentSessionImpl implements AgentSession {
     this.rateLimiter = config.rateLimiter;
     this.projectContextProvider = config.projectContextProvider;
     this.modelCapabilities = config.modelCapabilities;
+    this.announceTurnBudget = config.announceTurnBudget ?? true;
     this.sequence = config.initialSequence ?? 0;
     this.history.push(...structuredClone(config.initialMessages ?? []));
     this.preparedContext =
@@ -335,6 +360,9 @@ class AgentSessionImpl implements AgentSession {
           const systemPrompt = [
             this.config.systemPrompt,
             projectContext === undefined ? undefined : formatProjectContext(projectContext),
+            this.announceTurnBudget
+              ? `Turn ${turn} of ${this.limits.maxTurns} (${this.limits.maxTurns - turn} remaining).`
+              : undefined,
           ]
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
@@ -547,15 +575,26 @@ class AgentSessionImpl implements AgentSession {
           return;
         }
 
+        const cleanedText = stripLeakedToolCallSyntax(textParts.join(''));
+        if (cleanedText.leaked) {
+          this.log({
+            level: 'warn',
+            event: 'model.output.tool_syntax_leaked',
+            sessionId: this.id,
+            turnId,
+            provider: this.config.provider.name,
+            model: this.config.model,
+          });
+        }
         const assistantMessage: AgentMessage = {
           id: this.idFactory(),
           role: 'assistant',
           createdAt: this.now(),
           ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
           content: [
-            ...(textParts.length === 0
+            ...(cleanedText.text.length === 0
               ? []
-              : [{ type: 'text' as const, text: textParts.join('') }]),
+              : [{ type: 'text' as const, text: cleanedText.text }]),
             ...toolCalls,
           ],
         };
@@ -657,6 +696,13 @@ class AgentSessionImpl implements AgentSession {
         yield this.event({ type: 'turn.completed', turnId, turn, reason: 'tool_use' });
       }
 
+      // docs/agent-loop-termination-plan.md §3: the loop above ran out of turns
+      // while the model was still mid-tool-use, so nothing above ever asked it to
+      // stop and answer. One further call, with no tools offered, forces exactly
+      // that — a model can ignore a soft instruction to wrap up, it cannot call a
+      // tool that was not offered, so this is a hard invariant rather than a hope.
+      yield* this.forceSynthesis();
+
       yield this.event({
         type: 'warning',
         code: 'MAX_TURNS_REACHED',
@@ -710,6 +756,166 @@ class AgentSessionImpl implements AgentSession {
     } finally {
       this.running = false;
       this.activeController = undefined;
+    }
+  }
+
+  /**
+   * One extra, tool-less model call issued only when `run()`'s turn loop is
+   * about to end with the model mid-tool-use (see the `max_turns` path above).
+   * `tools: []` is what makes this a hard stop rather than a request the model
+   * can override by calling one anyway: `tool_call` events from the response are
+   * deliberately ignored below, in case a provider emits one regardless.
+   *
+   * Best-effort by design: on any failure this logs and yields nothing further,
+   * so the run still ends via the ordinary `MAX_TURNS_REACHED` path the caller
+   * runs immediately after — a failed synthesis attempt must not mask why the
+   * run actually stopped, or replace one silent ending with another.
+   */
+  private async *forceSynthesis(): AsyncGenerator<AgentEvent, void> {
+    const turnId = this.idFactory();
+    try {
+      const { prepared, events } = await this.prepareContext(
+        this.contextMessages(),
+        turnId,
+        undefined,
+        undefined,
+        false,
+      );
+      for (const event of events) yield this.event(event);
+
+      const systemPrompt = [
+        this.config.systemPrompt,
+        'You have used all available turns. Do not attempt to use any tool — none ' +
+          'are offered on this request. Using everything already gathered in this ' +
+          'conversation, give your best final answer now. If it is not enough to ' +
+          'fully answer, say so honestly rather than guessing.',
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join('\n\n');
+      const modelRequestId = randomUUID();
+      const textParts: string[] = [];
+      const reasoningParts: string[] = [];
+
+      this.log({
+        event: 'model.request.started',
+        sessionId: this.id,
+        turnId,
+        modelRequestId,
+        provider: this.config.provider.name,
+        model: this.config.model,
+        messageCount: prepared.messages.length,
+        toolCount: 0,
+        estimatedInputTokens: prepared.estimatedTokens,
+        systemPromptChars: systemPrompt.length,
+        maxOutputTokens: this.limits.maxOutputTokens,
+        forcedSynthesis: true,
+      });
+
+      for await (const modelEvent of this.config.provider.stream({
+        messages: prepared.messages,
+        tools: [],
+        signal: this.activeController!.signal,
+        modelRequestId,
+        sessionId: this.id,
+        turnId,
+        ...(this.config.model === undefined ? {} : { model: this.config.model }),
+        systemPrompt,
+        ...(this.limits.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: this.limits.maxOutputTokens }),
+      })) {
+        this.throwIfAborted();
+        switch (modelEvent.type) {
+          case 'text_delta':
+            textParts.push(modelEvent.delta);
+            yield this.event({ type: 'assistant.text.delta', turnId, delta: modelEvent.delta });
+            break;
+          case 'reasoning_delta':
+            reasoningParts.push(modelEvent.delta);
+            yield this.event({
+              type: 'assistant.reasoning.delta',
+              turnId,
+              delta: modelEvent.delta,
+            });
+            break;
+          case 'warning':
+            yield this.event({
+              type: 'warning',
+              code: modelEvent.code,
+              message: modelEvent.message,
+            });
+            break;
+          case 'usage': {
+            yield this.event({ type: 'usage.updated', turnId, usage: modelEvent.usage });
+            const budget = this.budget.add(modelEvent.usage);
+            if (budget.exceeded) {
+              throw new AgentHarnessError(budget.reason ?? 'Budget exceeded', 'BUDGET_EXCEEDED');
+            }
+            break;
+          }
+          // 'tool_call' and 'tool_call_delta' are deliberately not handled: no
+          // tools were offered, so one arriving anyway is not honoured.
+          default:
+            break;
+        }
+      }
+
+      this.log({
+        event: 'model.request.completed',
+        sessionId: this.id,
+        turnId,
+        modelRequestId,
+        provider: this.config.provider.name,
+        model: this.config.model,
+        outputChars: textParts.join('').length,
+        reasoningChars: reasoningParts.join('').length,
+        forcedSynthesis: true,
+      });
+
+      // No tools were offered on this call (`tools: []` above), but that alone
+      // does not stop every model from still emitting its own tool-call
+      // template as plain text — see stripLeakedToolCallSyntax.
+      const cleanedText = stripLeakedToolCallSyntax(textParts.join(''));
+      if (cleanedText.leaked) {
+        this.log({
+          level: 'warn',
+          event: 'model.output.tool_syntax_leaked',
+          sessionId: this.id,
+          turnId,
+          provider: this.config.provider.name,
+          model: this.config.model,
+          forcedSynthesis: true,
+        });
+      }
+      const assistantMessage: AgentMessage = {
+        id: this.idFactory(),
+        role: 'assistant',
+        createdAt: this.now(),
+        ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
+        content:
+          cleanedText.text.length === 0 ? [] : [{ type: 'text' as const, text: cleanedText.text }],
+      };
+      this.history.push(assistantMessage);
+      await this.persist();
+      yield this.event({
+        type: 'assistant.message.completed',
+        turnId,
+        message: structuredClone(assistantMessage),
+      });
+    } catch (error) {
+      this.log({
+        level:
+          this.activeController?.signal.aborted || error instanceof AgentAbortError
+            ? 'warn'
+            : 'error',
+        event: 'model.request.failed',
+        sessionId: this.id,
+        turnId,
+        provider: this.config.provider.name,
+        model: this.config.model,
+        error: describeError(error),
+        forcedSynthesis: true,
+      });
     }
   }
 
@@ -769,6 +975,43 @@ class AgentSessionImpl implements AgentSession {
     this.closed = true;
   }
 
+  /**
+   * A stable digest of a tool call's parsed input, order-independent across
+   * object keys, so two calls with the same fields in a different order still
+   * compare equal. Only used to spot exact repeats — never sent to a model or
+   * exposed outside this file.
+   */
+  private hashToolInput(input: unknown): string {
+    return createHash('sha256').update(stableStringify(input)).digest('hex');
+  }
+
+  /**
+   * docs/agent-loop-termination-plan.md §5: the most recent same-name,
+   * same-input execution, if it's still within the rolling window and it
+   * failed. `undefined` means either no match or the matching call succeeded
+   * — a call that already succeeded is not the waste this guards against.
+   */
+  private findRepeatedFailure(toolName: string, input: unknown): RecentToolCall | undefined {
+    const inputHash = this.hashToolInput(input);
+    for (let index = this.recentToolCalls.length - 1; index >= 0; index -= 1) {
+      const entry = this.recentToolCalls[index];
+      if (entry?.toolName === toolName && entry.inputHash === inputHash) {
+        return entry.isError ? entry : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  private recordToolCall(toolName: string, input: unknown, result: ToolResultBlock): void {
+    this.recentToolCalls.push({
+      toolName,
+      inputHash: this.hashToolInput(input),
+      isError: result.isError ?? false,
+      errorSummary: result.isError ? truncateLogText(result.content, 300) : '',
+    });
+    if (this.recentToolCalls.length > RECENT_TOOL_CALL_HISTORY) this.recentToolCalls.shift();
+  }
+
   private async *executeTool(
     call: ToolCallBlock,
     turnId: string,
@@ -800,6 +1043,28 @@ class AgentSessionImpl implements AgentSession {
         code: 'INVALID_TOOL_INPUT',
         tool,
         issueCount: parsed.error.issues.length,
+      });
+      yield this.event({ type: 'tool.completed', turnId, result });
+      return result;
+    }
+
+    // docs/agent-loop-termination-plan.md §5: an exact repeat of a call that
+    // just failed is never re-run — it costs real wall-clock time (a blocked
+    // click's timeout, a CAPTCHA'd search) for an outcome already known.
+    const repeatedFailure = this.findRepeatedFailure(call.name, parsed.data);
+    if (repeatedFailure) {
+      const result = this.toolError(
+        call.id,
+        `This exact call already failed moments ago with: ${repeatedFailure.errorSummary}. Do not retry it unverified — try a different approach.`,
+      );
+      this.log({
+        level: 'warn',
+        event: 'tool.execution.short_circuited',
+        sessionId: this.id,
+        turnId,
+        toolCallId: call.id,
+        toolName: tool.name,
+        code: 'REPEATED_FAILED_CALL',
       });
       yield this.event({ type: 'tool.completed', turnId, result });
       return result;
@@ -1029,6 +1294,7 @@ class AgentSessionImpl implements AgentSession {
         result,
         durationMs: Date.now() - toolStarted,
       });
+      this.recordToolCall(tool.name, parsed.data, result);
       yield this.event({ type: 'tool.completed', turnId, result });
       const presentedArtifact = responseArtifact(result.metadata?.artifact);
       if (presentedArtifact) {
@@ -1070,6 +1336,7 @@ class AgentSessionImpl implements AgentSession {
         result,
         error: describeError(error),
       });
+      this.recordToolCall(tool.name, parsed.data, result);
       yield this.event({ type: 'tool.completed', turnId, result });
       for (const hook of this.hooks.list()) {
         await hook.afterTool?.({ sessionId: this.id, turnId }, call, result);
@@ -1514,6 +1781,38 @@ function safeObjectKeys(value: object): string[] {
 
 function truncateLogText(value: string, maximum = 1_000): string {
   return value.length <= maximum ? value : `${value.slice(0, maximum)}…[truncated]`;
+}
+
+/**
+ * Some models (observed: Kimi K2 via an OpenAI-compatible endpoint) fall back
+ * to emitting their own raw tool-call chat-template tokens as plain text
+ * instead of a structured tool call — notably when `tools: []` leaves the
+ * serving stack nothing to parse the emission against, so a model deep in a
+ * tool-calling pattern keeps writing in that shape anyway. A literal
+ * `<|...|>` control-token sequence never belongs in real prose, so its first
+ * appearance marks where the genuine answer ends and leaked template syntax
+ * begins.
+ */
+function stripLeakedToolCallSyntax(text: string): { text: string; leaked: boolean } {
+  const match = /<\|[a-z_]+\|>/i.exec(text);
+  if (!match) return { text, leaked: false };
+  return { text: text.slice(0, match.index).trimEnd(), leaked: true };
+}
+
+/**
+ * Deterministic JSON serialization: object keys are sorted, so two inputs
+ * that differ only in key order still produce the same string (and hash).
+ * Used solely to compare tool-call inputs for exact repeats.
+ */
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    );
+    return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
 
 /**
