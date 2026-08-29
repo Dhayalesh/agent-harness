@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { z } from 'zod';
 import {
+  AgentHarnessError,
   AllowAllPermissionHandler,
   createAgentSession,
   isSerializableEvent,
@@ -360,6 +361,60 @@ test('omits the current date line when announceCurrentDate is disabled', async (
   await collect(session.run({ prompt: 'Loop' }));
 
   assert.equal(seenPrompt, undefined);
+});
+
+test('retries a turn once on malformed tool-call JSON instead of ending the run', async () => {
+  let attempts = 0;
+  const provider = new ScriptedModelProvider([
+    () => {
+      attempts += 1;
+      throw new AgentHarnessError(
+        'Model returned malformed JSON for tool x',
+        'MALFORMED_TOOL_JSON',
+        false,
+      );
+    },
+    [
+      { type: 'text_delta', delta: 'Recovered after retry.' },
+      { type: 'completed', stopReason: 'end_turn' },
+    ],
+  ]);
+  const session = createAgentSession({ provider });
+  const events = await collect(session.run({ prompt: 'Go' }));
+
+  assert.equal(attempts, 1);
+  assert.ok(
+    events.some((event) => event.type === 'warning' && event.code === 'MALFORMED_TOOL_CALL_RETRY'),
+  );
+  const finalText = events
+    .filter((event) => event.type === 'assistant.text.delta')
+    .map((event) => event.delta)
+    .join('');
+  assert.equal(finalText, 'Recovered after retry.');
+  assert.ok(
+    events.some((event) => event.type === 'session.completed' && event.reason === 'end_turn'),
+  );
+});
+
+test('gives up after one malformed-tool-call retry and ends the run with model_error', async () => {
+  let attempts = 0;
+  const provider = new ScriptedModelProvider([
+    () => {
+      attempts += 1;
+      throw new AgentHarnessError('bad json', 'MALFORMED_TOOL_JSON', false);
+    },
+    () => {
+      attempts += 1;
+      throw new AgentHarnessError('bad json again', 'MALFORMED_TOOL_JSON', false);
+    },
+  ]);
+  const session = createAgentSession({ provider });
+  const events = await collect(session.run({ prompt: 'Go' }));
+
+  assert.equal(attempts, 2);
+  assert.ok(
+    events.some((event) => event.type === 'session.completed' && event.reason === 'model_error'),
+  );
 });
 
 test('short-circuits an exact repeat of a tool call that just failed', async () => {

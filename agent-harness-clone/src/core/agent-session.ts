@@ -338,6 +338,19 @@ class AgentSessionImpl implements AgentSession {
       await this.persist();
 
       let reactiveCompactionAttempts = 0;
+      // A model producing a tool call it cannot itself parse back into valid
+      // JSON is the provider catching its own output malformed mid-stream —
+      // observed in practice happening after many consecutive good tool
+      // calls, i.e. a one-off glitch, not a structural incompatibility. The
+      // transport-level retry (`RetryModelProvider`) already covers this when
+      // nothing streamed yet on that attempt; this covers the case it
+      // deliberately doesn't — some text already streamed before the bad tool
+      // call — by retrying the whole turn once here instead of ending the
+      // run outright. Nothing from the failed attempt reaches `this.history`
+      // (only pushed once a turn fully succeeds), so retrying loses no state;
+      // capped at one retry so a genuinely broken model still ends the run
+      // rather than looping.
+      let malformedToolCallRetries = 0;
       // Starts unset: the only input ceiling a run has is the one the context layer
       // derives from the model. This is filled in only by the reactive retry below,
       // after the provider has rejected a context the estimate thought would fit.
@@ -569,6 +582,20 @@ class AgentSessionImpl implements AgentSession {
               type: 'warning',
               code: 'REACTIVE_COMPACTION',
               message: 'Model rejected the context; compacting and retrying once',
+            });
+            turn -= 1;
+            continue;
+          }
+          if (
+            error instanceof AgentHarnessError &&
+            (error.code === 'MALFORMED_TOOL_CALL' || error.code === 'MALFORMED_TOOL_JSON') &&
+            malformedToolCallRetries < 1
+          ) {
+            malformedToolCallRetries += 1;
+            yield this.event({
+              type: 'warning',
+              code: 'MALFORMED_TOOL_CALL_RETRY',
+              message: 'Model produced an invalid tool call; retrying the turn once',
             });
             turn -= 1;
             continue;
