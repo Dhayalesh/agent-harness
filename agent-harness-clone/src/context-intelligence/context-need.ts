@@ -156,6 +156,9 @@ function explicitlyRequiresFileContent(request: string): boolean {
     ) ||
     /\b(?:read|open|inspect|review|summari[sz]e|use|find|extract|get|in|from|inside|within)\b.{0,60}\b(?:this|that|the|created|generated|attached|uploaded|local|workspace|source)\s+(?:artifact|document)\b/i.test(
       request,
+    ) ||
+    /\b(?:read|open|inspect|review|summari[sz]e|use|extract|get)\b.{0,60}\b(?:the\s+)?(?:created|generated|attached|uploaded|local|workspace|source)\s+report\b/i.test(
+      request,
     )
   );
 }
@@ -174,7 +177,9 @@ function extractFileReference(request: string): ExplicitFileReference | undefine
   const directive = stripAttachedContent(request).replace(/\b[A-Za-z]+:\/\/\S+/g, ' ');
   const candidates = dedupeStrings([
     ...(directive.match(/`([^`\r\n]+)`/g) ?? []).map((value) => value.slice(1, -1).trim()),
-    ...(directive.match(/(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g) ?? []),
+    ...(directive.match(
+      /(?<![A-Za-z0-9_\\/])(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g,
+    ) ?? []),
     ...(
       directive.match(
         /(?:^|\s)([\w.-]+(?:[\\/][\w .-]+)*\.[A-Za-z0-9]{1,12})(?=\s|$|[,.):;"'])/g,
@@ -195,12 +200,19 @@ function isConcreteFileReference(candidate: string, request: string): boolean {
   const fileLike = /\.[A-Za-z0-9]{1,12}$/.test(candidate);
   const explicitlyRelative = /^\.\.?[\\/]/.test(candidate);
   const windowsAbsolute = /^[A-Za-z]:[\\/]/.test(candidate);
-  if (quoted || fileLike || explicitlyRelative || windowsAbsolute) return true;
+  const unixAbsolute = /^\//.test(candidate);
+  if (fileLike || explicitlyRelative || windowsAbsolute || unixAbsolute) return true;
   const referenceCue = new RegExp(
-    `(?:\\b(?:file|path|attachment|artifact|document|read|open|inspect|review|from|in)\\b.{0,40}${escaped}|${escaped}.{0,40}\\b(?:file|path|attachment|artifact|document)\\b)`,
+    `(?:\\b(?:file|path|attachment|artifact|document|report)\\b.{0,40}${escaped}|${escaped}.{0,40}\\b(?:file|path|attachment|artifact|document|report)\\b)`,
     'i',
   );
-  return referenceCue.test(request);
+  const quotedReadTarget =
+    quoted &&
+    !/[\\/]/.test(candidate) &&
+    new RegExp(`\\b(?:read|open|inspect|review|summari[sz]e|use|extract|get)\\b.{0,40}${escaped}`, 'i').test(
+      request,
+    );
+  return referenceCue.test(request) || quotedReadTarget;
 }
 
 function stripAttachedContent(request: string): string {
