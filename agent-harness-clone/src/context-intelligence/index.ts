@@ -12,3 +12,4 @@ export * from './observation-intelligence.js';
 export * from './hygiene.js';
 export * from './synthesis.js';
 export * from './engine.js';
+export * from './report.js';

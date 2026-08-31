@@ -39,6 +39,7 @@ import { resolveInlineAgent } from './inline-agent.js';
 import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
 import type { ContextIntelligenceEngineOptions } from '../context-intelligence/engine.js';
 import { createContextArtifactReadTool } from '../context-intelligence/artifact-drilldown-tool.js';
+import type { ContextIntelligenceReport } from '../context-intelligence/contracts.js';
 
 /**
  * Runs one payload to completion, or streams the events of one payload.
@@ -204,6 +205,8 @@ export type HeadlessResult = {
    * manager with no model capabilities supplied.
    */
   context?: HeadlessContextUsage;
+  /** Content-free Context Intelligence decisions from the final model turn. */
+  contextIntelligence?: ContextIntelligenceReport;
   /** Present only when `payload.includeEvents` was set. */
   events?: readonly AgentEvent[];
   durationMs: number;
@@ -1146,6 +1149,7 @@ class RunTotals {
   private stopReason: StopReason | 'closed' | undefined;
   private failure: { code: string; message: string; recoverable: boolean } | undefined;
   private context: HeadlessContextUsage | undefined;
+  private contextIntelligence: ContextIntelligenceReport | undefined;
   private compactions = 0;
   private peakTokens: number | undefined;
   private peakPercent = 0;
@@ -1235,6 +1239,11 @@ class RunTotals {
       case 'context.compaction.completed':
         this.compactions += 1;
         break;
+      case 'context.intelligence':
+        // One report is emitted per model turn. The last report describes the
+        // context that produced the final answer and is the useful persisted view.
+        this.contextIntelligence = structuredClone(event.report);
+        break;
       case 'error':
         // First failure wins: a model error often produces a cascade, and the one
         // that started it is the one worth reporting.
@@ -1276,6 +1285,9 @@ class RunTotals {
       ...(this.context === undefined
         ? {}
         : { context: { ...this.context, compactions: this.compactions } }),
+      ...(this.contextIntelligence === undefined
+        ? {}
+        : { contextIntelligence: this.contextIntelligence }),
       durationMs,
       ...(this.failure === undefined ? {} : { error: this.failure }),
     };

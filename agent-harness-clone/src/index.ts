@@ -609,6 +609,7 @@ export type {
   ContextBudgetSnapshot,
   ContextConflict,
   ContextContract,
+  ContextIntelligenceReport,
   ContextItem as IntelligenceContextItem,
   ContextItemKind as IntelligenceContextItemKind,
   ContextQualityIssue,
@@ -650,6 +651,7 @@ export type {
   ToolOutcome,
   ToolPlan,
 } from './context-intelligence/contracts.js';
+export { contextIntelligenceReport } from './context-intelligence/report.js';
 export { IntentResolver, QueryIntelligence } from './context-intelligence/query-intelligence.js';
 export type { QueryTransformer } from './context-intelligence/query-intelligence.js';
 export {

@@ -18,6 +18,7 @@ export const AGENT_RUNTIME_SUPPORT = {
    * - builtin (`src/tools/builtin/index.ts`): `read_file`, `glob`, `grep`,
    *   `write_file`, `edit_file`, response artifact tools, `bash`, `powershell`, `todo_write`
    * - web (`src/tools/web/index.ts`): `web_search`, `web_fetch`
+   * - context infrastructure: `context_artifact_read` when an ArtifactStore exists
    *
    * The plan-mode and `ask_user_question` tools are deliberately absent. Both need
    * someone watching: plan mode is a review step before a human approves, and a
@@ -48,6 +49,7 @@ export const AGENT_RUNTIME_SUPPORT = {
     'todo_write',
     'web_search',
     'web_fetch',
+    'context_artifact_read',
   ] as const,
   /**
    * Every stored limit is acted on: the three become `AgentSessionConfig.limits`
@@ -70,6 +72,7 @@ export const AGENT_RUNTIME_SUPPORT = {
     'skills',
     'mcpServers',
     'limits',
+    'contextIntelligence',
   ] as const,
 } as const;
 

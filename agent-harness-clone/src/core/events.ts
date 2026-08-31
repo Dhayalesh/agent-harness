@@ -1,6 +1,7 @@
 import type { AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
 import type { Artifact } from '../artifacts/artifact-store.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
+import type { ContextIntelligenceReport } from '../context-intelligence/contracts.js';
 
 /**
  * The automatic context action a turn took.
@@ -265,6 +266,19 @@ export type AgentEvent = EventBase &
          * telemetry would put conversation content somewhere it does not belong.
          */
         state?: ContextStateCounts;
+      }
+    /**
+     * Content-free operational report from the Context Intelligence layer.
+     *
+     * The full Context Contract is intentionally not an event: it can contain the
+     * request, memories, evidence, and observations already present elsewhere. This
+     * bounded projection gives applications enough information to explain selection,
+     * quality, and budget decisions without duplicating model context over the wire.
+     */
+    | {
+        type: 'context.intelligence';
+        turnId: string;
+        report: ContextIntelligenceReport;
       }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**

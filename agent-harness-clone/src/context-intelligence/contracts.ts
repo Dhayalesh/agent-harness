@@ -220,7 +220,8 @@ export type MemoryAdmissionDecision = {
   existingId?: string;
 };
 
-export type QueryStatus = 'pending' | 'running' | 'sufficient' | 'insufficient' | 'failed' | 'skipped';
+export type QueryStatus =
+  'pending' | 'running' | 'sufficient' | 'insufficient' | 'failed' | 'skipped';
 export type QueryVariant = {
   id: string;
   parentId?: string;
@@ -245,13 +246,7 @@ export type QueryPlan = {
 };
 
 export type RetrievalMode =
-  | 'structured'
-  | 'document'
-  | 'vector'
-  | 'semantic'
-  | 'keyword'
-  | 'hybrid'
-  | 'external';
+  'structured' | 'document' | 'vector' | 'semantic' | 'keyword' | 'hybrid' | 'external';
 
 export type RetrievalProviderMetadata = {
   id: string;
@@ -512,6 +507,97 @@ export type ContextContract = {
   quality: ContextQualityReport;
   pendingDecisions: readonly string[];
   createdAt: ISODateTime;
+  updatedAt: ISODateTime;
+};
+
+/**
+ * Bounded, content-free view of a Context Contract for application consumers.
+ *
+ * The full contract can contain user text, retrieved evidence, memory, and tool
+ * observations. Shipping it on every event would duplicate model context over the
+ * wire and turn ordinary run telemetry into another content store. This report keeps
+ * the decisions an application needs to explain and monitor the layer: counts,
+ * statuses, bounded capability/provider names, and the exact budget allocation.
+ */
+export type ContextIntelligenceReport = {
+  version: 1;
+  requestId: string;
+  intent: {
+    operation: NormalizedIntent['operation'];
+    complexity: NormalizedIntent['complexity'];
+    confidence: number;
+    constraints: number;
+    requiredEntities: number;
+    ambiguities: number;
+  };
+  query: {
+    variants: number;
+    transformations: Readonly<Partial<Record<QueryVariant['kind'], number>>>;
+  };
+  retrieval: {
+    providers: readonly string[];
+    providerCount: number;
+    iterations: number;
+    results: number;
+    sufficient: boolean;
+    insufficiencies: number;
+    conflicts: number;
+  };
+  memory: {
+    recalled: number;
+    types: Readonly<Partial<Record<MemoryType, number>>>;
+  };
+  capabilities: {
+    available: number;
+    selected: number;
+    excluded: number;
+    names: readonly string[];
+  };
+  observations: {
+    total: number;
+    outcomes: Readonly<Partial<Record<ToolOutcome, number>>>;
+    facts: number;
+    identifiers: number;
+    followUps: number;
+    offloaded: number;
+  };
+  task: {
+    status: TaskState['status'];
+    steps: number;
+    completed: number;
+    pending: number;
+    retries: number;
+    unresolvedIssues: number;
+    pendingDecisions: number;
+  };
+  quality: {
+    status: ContextQualityStatus;
+    score: number;
+    sufficient: boolean;
+    conflicts: number;
+    issues: readonly {
+      code: QualityIssueCode;
+      severity: ContextQualityIssue['severity'];
+      remediation: ContextQualityIssue['remediation'];
+      items: number;
+    }[];
+  };
+  budget: ContextBudgetSnapshot;
+  finalContext: {
+    items: number;
+    evidence: number;
+    sources: number;
+    sections: number;
+    tools: number;
+    omittedItems: number;
+    offloadedArtifacts: number;
+    provenanceRecords: number;
+  };
+  reasoning: {
+    mode: ReasoningSupport['mode'];
+    alternatives: number;
+    planSteps: number;
+  };
   updatedAt: ISODateTime;
 };
 

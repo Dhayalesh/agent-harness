@@ -307,6 +307,8 @@ test('a payload runs a full turn with no database, no S3, and no env vars', asyn
   );
   assert.equal(result.usage.inputTokens, 120);
   assert.equal(result.usage.outputTokens, 30);
+  assert.equal(result.contextIntelligence?.version, 1);
+  assert.ok((result.contextIntelligence?.budget.usedInput ?? -1) >= 0);
 
   // The tool actually ran against the run's own workspace.
   assert.equal(await readFile(path.join(result.workingDirectory, 'hello.txt'), 'utf8'), 'hi');

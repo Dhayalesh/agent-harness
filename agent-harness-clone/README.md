@@ -398,7 +398,9 @@ should normally remain read-only; use a separate operator identity for uploads.
 
 `invokeHeadless` returns the answer with what it cost: the concatenated assistant text,
 the messages, per-tool call and error counts, the stop reason, token usage, and the
-workspace path. A failure _inside_ the turn comes back as `status: 'error'` on a result
+workspace path. When Context Intelligence is enabled, `contextIntelligence` contains a
+bounded content-free report of quality, budgets, retrieval, memory, capability selection,
+and final-context counts. A failure _inside_ the turn comes back as `status: 'error'` on a result
 that still carries the partial output, because a run that spent tokens and then hit a
 model error has produced something worth seeing. Only a payload the runner could not act
 on throws.
@@ -421,6 +423,7 @@ Enough to render a run as it happens rather than summarize it afterwards.
 | `tool.progress`             | Output from a running tool, **while it runs**                   |
 | `tool.completed`            | Its result                                                      |
 | `permission.requested`      | A tool is waiting on a decision (`permissionFallback: 'ask'`)   |
+| `context.intelligence`      | Bounded quality, budget, retrieval, memory, and selection report |
 | `usage.updated`             | Tokens so far, including `reasoningTokens`                      |
 | `warning`                   | A retried request, a compaction, a rate limit waited out        |
 

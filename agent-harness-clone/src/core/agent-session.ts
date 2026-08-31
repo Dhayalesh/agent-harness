@@ -55,6 +55,7 @@ import type {
   PersistedContextIntelligenceState,
 } from '../context-intelligence/contracts.js';
 import type { MemoryCandidate } from '../context-intelligence/memory.js';
+import { contextIntelligenceReport } from '../context-intelligence/report.js';
 
 export type AgentLimits = {
   maxTurns: number;
@@ -425,6 +426,13 @@ class AgentSessionImpl implements AgentSession {
                 error: describeError(error),
               });
             }
+          }
+          if (intelligentContext) {
+            yield this.event({
+              type: 'context.intelligence',
+              turnId,
+              report: contextIntelligenceReport(intelligentContext.contract),
+            });
           }
           const modelMessages = intelligentContext?.finalized.messages ?? prepared.messages;
           const modelTools = intelligentContext?.finalized.tools ?? this.registry.descriptors();
@@ -1654,6 +1662,14 @@ function agentEventLogFields(event: AgentEvent): Record<string, unknown> {
         ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
         ...(event.action === undefined ? {} : { contextAction: event.action }),
         ...(event.verification === undefined ? {} : { contextVerification: event.verification }),
+      };
+    case 'context.intelligence':
+      return {
+        quality: event.report.quality.status,
+        qualityScore: event.report.quality.score,
+        retrievalResults: event.report.retrieval.results,
+        selectedCapabilities: event.report.capabilities.selected,
+        contextInputTokens: event.report.budget.usedInput,
       };
     case 'context.selection':
       return {
