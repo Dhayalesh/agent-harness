@@ -132,10 +132,21 @@ function evidenceFromObservation(
 ): EvidenceItem {
   const matchingNeeds = needs.filter((need) => observation.needIds?.includes(need.id));
   const needMatch = matchingNeeds.length > 0;
-  const lexical = Math.max(
-    containmentScore(intent.normalizedRequest, observation.content),
-    ...intent.keywords.map((keyword) => containmentScore(keyword, observation.content)),
-  );
+  const requestContainment = containmentScore(intent.normalizedRequest, observation.content);
+  const requestSimilarity = lexicalSimilarity(intent.normalizedRequest, observation.content);
+  const normalizedContent = observation.content.toLowerCase();
+  const meaningfulKeywords = intent.keywords.filter((keyword) => keyword.length >= 3).slice(0, 20);
+  const keywordCoverage =
+    meaningfulKeywords.length === 0
+      ? 0
+      : meaningfulKeywords.filter((keyword) => normalizedContent.includes(keyword.toLowerCase()))
+          .length / meaningfulKeywords.length;
+  const entityCoverage =
+    intent.entities.length === 0
+      ? 0
+      : intent.entities.filter((entity) =>
+          normalizedContent.includes(entity.value.toLowerCase()),
+        ).length / intent.entities.length;
   const taskRelevance = taskState
     ? Math.max(
         ...taskState.plan
@@ -144,7 +155,21 @@ function evidenceFromObservation(
         0,
       )
     : 0;
-  const relevance = clamp(Math.max(needMatch ? 0.75 : 0, lexical, taskRelevance * 0.8));
+  const exactStoredResource = matchingNeeds.some(
+    (need) =>
+      (need.type === 'FILE_INFORMATION' || need.type === 'ARTIFACT_INFORMATION') &&
+      evidenceSourceMatchesNeed(need, observation.source),
+  );
+  const relevance = clamp(
+    Math.max(
+      exactStoredResource ? 0.85 : 0,
+      requestContainment * 0.3 +
+        requestSimilarity * 0.3 +
+        keywordCoverage * 0.2 +
+        entityCoverage * 0.15 +
+        taskRelevance * 0.05,
+    ),
+  );
   const freshness = freshnessScore(
     observation.source.sourceTimestamp ??
       observation.source.observedAt ??
@@ -152,6 +177,7 @@ function evidenceFromObservation(
       observation.createdAt,
     config.retrieval.freshnessHalfLifeMs,
   );
+  const authority = evaluatedAuthority(observation.source, intent);
   const claims = dedupeStrings(
     observation.facts.length > 0
       ? observation.facts
@@ -183,25 +209,34 @@ function evidenceFromObservation(
       observation.source.id &&
       observation.source.name &&
       observation.source.type &&
-      (observation.source.retrievedAt || observation.source.observedAt),
+      (observation.source.retrievedAt || observation.source.observedAt) &&
+      observation.provenance.steps.some((step) => step.operation === 'retrieved') &&
+      (!['file', 'document', 'web', 'external', 'artifact'].includes(observation.source.type) ||
+        observation.source.uri),
   );
-  const discovery = observation.capability === 'WEB_SEARCH';
+  const discovery =
+    observation.capability === 'WEB_SEARCH' ||
+    observation.capability === 'FILE_DISCOVERY' ||
+    observation.capability === 'ARTIFACT_DISCOVERY';
   const confidence =
     observation.outcome === 'partial' ? 0.62 : discovery ? 0.58 : observation.outcome === 'success' ? 0.9 : 0.5;
   const reasons = dedupeStrings([
     ...(relevance < config.retrieval.relevanceThreshold ? ['relevance below admission threshold'] : []),
-    ...(observation.source.authority < authorityRequired ? ['source authority below requirement'] : []),
+    ...(authority < authorityRequired ? ['source authority below requirement'] : []),
     ...(freshness < freshnessRequired ? ['source freshness below requirement'] : []),
     ...(!provenanceComplete ? ['provenance incomplete'] : []),
     ...(looksPoisoned(observation.content) ? ['untrusted content contains instruction-like poisoning'] : []),
-    ...(discovery ? ['search result excerpt is discovery evidence pending source fetch'] : []),
+    ...(discovery
+      ? ['discovery observations identify candidates but are not admissible source evidence']
+      : []),
   ]);
   const hardRejection =
     relevance < config.retrieval.relevanceThreshold ||
-    observation.source.authority < authorityRequired ||
+    authority < authorityRequired ||
     freshness < freshnessRequired ||
     !provenanceComplete ||
-    looksPoisoned(observation.content);
+    looksPoisoned(observation.content) ||
+    discovery;
   const evidenceIdentity =
     observation.source.evidenceIdentity ??
     stableHash({
@@ -210,26 +245,28 @@ function evidenceFromObservation(
       claims,
       content: observation.structured ?? observation.content,
     });
+  const evaluatedSource = {
+    ...observation.source,
+    authority,
+    evidenceIdentity,
+    extractionContext:
+      observation.source.extractionContext ?? `tool observation ${observation.id}`,
+  };
   return {
     id: `evidence:${observation.id}`,
     kind: 'evidence',
     title: `Evidence from ${observation.source.name}`,
     content: observation.content,
     ...(observation.structured === undefined ? {} : { structured: observation.structured }),
-    source: {
-      ...observation.source,
-      evidenceIdentity,
-      extractionContext:
-        observation.source.extractionContext ?? `tool observation ${observation.id}`,
-    },
+    source: evaluatedSource,
     provenance: appendProvenance(
-      observation.provenance,
+      { ...observation.provenance, source: evaluatedSource },
       'validated',
       'evidence-intelligence',
       [observation.id],
       {
         relevance,
-        authority: observation.source.authority,
+        authority,
         freshness,
         confidence,
         provenanceComplete,
@@ -239,7 +276,7 @@ function evidenceFromObservation(
     lifecycleState: 'evaluated',
     relevance,
     confidence,
-    authority: observation.source.authority,
+    authority,
     freshness,
     priority: matchingNeeds.some((need) => need.priority === 'critical')
       ? 'essential'
@@ -258,7 +295,7 @@ function evidenceFromObservation(
     relationship: discovery ? 'discovery' : needMatch ? 'supports' : 'context',
     evaluation: {
       relevance,
-      authority: observation.source.authority,
+      authority,
       freshness,
       confidence,
       provenanceComplete,
@@ -266,6 +303,61 @@ function evidenceFromObservation(
       reasons,
     },
   };
+}
+
+function evidenceSourceMatchesNeed(
+  need: ContextNeed,
+  source: ToolObservation['source'],
+): boolean {
+  const reference = [need.inputs.reference, need.inputs.path, need.inputs.artifactId].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
+  if (!reference) return false;
+  const basename = (value: string): string =>
+    value.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)?.toLowerCase() ??
+    value.toLowerCase();
+  const normalized = reference.toLowerCase();
+  return [source.id, source.name, source.uri]
+    .filter((value): value is string => typeof value === 'string')
+    .some(
+      (value) =>
+        value.toLowerCase() === normalized || basename(value) === basename(reference),
+    );
+}
+
+function evaluatedAuthority(
+  source: ToolObservation['source'],
+  intent: NormalizedIntent,
+): number {
+  if (
+    (source.sourceKind !== 'WEB' && source.type !== 'web' && source.type !== 'external') ||
+    !source.uri
+  ) {
+    return source.authority;
+  }
+  try {
+    const url = new URL(source.uri);
+    const host = url.hostname.toLowerCase().replace(/^www\./, '');
+    if (/\.(?:gov|edu)(?:\.[a-z]{2})?$/.test(host)) return Math.max(source.authority, 0.9);
+    const entityMatch = intent.entities.some((entity) => {
+      const normalized = entity.value.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return normalized.length >= 2 && host.replace(/[^a-z0-9]/g, '').includes(normalized);
+    });
+    const primaryPath = /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(
+      url.pathname,
+    );
+    const officialRequired = intent.instructionSegments.retrievalInstructions.some((entry) =>
+      /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(entry),
+    ) || /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(
+      intent.instructionSegments.userIntent,
+    );
+    if (officialRequired && entityMatch && primaryPath) return Math.max(source.authority, 0.88);
+    if (officialRequired && entityMatch) return Math.max(source.authority, 0.82);
+    if (entityMatch && primaryPath) return Math.max(source.authority, 0.8);
+    return source.authority;
+  } catch {
+    return source.authority;
+  }
 }
 
 export function groupEvidence(

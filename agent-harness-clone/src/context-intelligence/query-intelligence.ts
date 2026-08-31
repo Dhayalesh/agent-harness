@@ -335,7 +335,14 @@ function cleanInformationRequirement(value: string): string {
 function isSystemToolInstruction(value: string): boolean {
   return /\b(system prompt|developer instructions?|tool instructions?|available tools?|tool registry|permission mode|authorization policy|test harness|execution prompt|ignore previous|chain[- ]of[- ]thought)\b/i.test(
     value,
-  ) || /^(?:context entry|environment context|instructions?|rules?|non-negotiable|acceptance criteria)\s*:?$/i.test(value);
+  ) ||
+    /^(?:context entry|environment context|instructions?|rules?|non-negotiable|acceptance criteria)\s*:?$/i.test(
+      value,
+    ) ||
+    /^(?:scenario|test case|expected|actual|incorrect|correct|failure|invariant|validation|example)\s*\d*\s*:/i.test(
+      value,
+    ) ||
+    /^(?:expected|actual|never|must not)\s*(?:→|->|:)/i.test(value);
 }
 
 function isFormattingInstruction(value: string): boolean {

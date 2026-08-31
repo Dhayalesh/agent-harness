@@ -25,7 +25,7 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     contract.runtimeRetrieval.map((operation) => operation.iteration),
   ).size;
   const successfulRuntimeResults = contract.runtimeRetrieval.filter(
-    (operation) => operation.status === 'succeeded',
+    (operation) => operation.phase === 'retrieval' && operation.status === 'succeeded',
   ).length;
 
   return {
@@ -71,6 +71,10 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       operationOutcomes: countBy(
         contract.runtimeRetrieval.map((operation) => operation.status),
       ),
+      executionStates: countBy(
+        contract.runtimeRetrieval.map((operation) => operation.executionState),
+      ),
+      resourceStates: countBy(contract.resources.map((resource) => resource.state)),
       toolNames: unique(contract.runtimeRetrieval.map((operation) => operation.toolName)).slice(
         0,
         NAME_LIMIT,

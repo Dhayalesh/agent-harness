@@ -147,7 +147,9 @@ export function validateStoredSession(value: unknown): StoredSession {
 const EXECUTABLE_CONTEXT_CAPABILITIES = new Set([
   'WEB_SEARCH',
   'WEB_FETCH',
+  'FILE_DISCOVERY',
   'FILE_READ',
+  'ARTIFACT_DISCOVERY',
   'DATABASE_QUERY',
   'API_RETRIEVAL',
   'MCP_RETRIEVAL',
@@ -165,6 +167,16 @@ const RUNTIME_STRATEGIES = new Set([
   'alternate_capability',
 ]);
 const RUNTIME_STATUSES = new Set(['planned', 'succeeded', 'empty', 'failed', 'denied']);
+const RUNTIME_PHASES = new Set(['discovery', 'retrieval']);
+const EXECUTION_STATES = new Set(['SUCCESS', 'EMPTY', 'FAILED', 'BLOCKED', 'NOT_EXECUTED']);
+const RESOURCE_STATES = new Set([
+  'FOUND',
+  'VERIFIED_MISSING',
+  'NOT_CHECKED',
+  'RETRIEVAL_FAILED',
+  'RETRIEVED_EMPTY',
+  'RETRIEVED_SUCCESSFULLY',
+]);
 const FAILURE_CLASSIFICATIONS = new Set([
   'authorization_denied',
   'invalid_input',
@@ -295,7 +307,12 @@ function validateContextIntelligenceState(
   // persist its content-bearing full contract.
   const { lastContract: _legacyContract, ...contentBoundedState } = candidate;
   if (serializedBytes(contentBoundedState) > 5 * 1_024 * 1_024) return undefined;
-  return structuredClone(contentBoundedState as PersistedContextIntelligenceState);
+  return structuredClone({
+    ...contentBoundedState,
+    ...(candidate.recentOperations === undefined
+      ? {}
+      : { recentOperations: normalizeOperationSnapshots(candidate.recentOperations) }),
+  } as PersistedContextIntelligenceState);
 }
 
 function isValidOperationSnapshots(value: unknown): boolean {
@@ -306,11 +323,14 @@ function isValidOperationSnapshots(value: unknown): boolean {
     'requestId',
     'needId',
     'capability',
+    'phase',
     'toolName',
     'attemptKey',
     'strategy',
     'iteration',
     'status',
+    'executionState',
+    'resourceState',
     'failureClassification',
     'observationId',
     'startedAt',
@@ -329,12 +349,15 @@ function isValidOperationSnapshots(value: unknown): boolean {
       isBoundedString(operation.requestId, 300) &&
       isBoundedString(operation.needId, 300) &&
       isOneOf(operation.capability, EXECUTABLE_CONTEXT_CAPABILITIES) &&
+      isOptionalOneOf(operation.phase, RUNTIME_PHASES) &&
       isBoundedString(operation.toolName, 200) &&
       isBoundedString(operation.attemptKey, 300) &&
       isOneOf(operation.strategy, RUNTIME_STRATEGIES) &&
       Number.isInteger(operation.iteration) &&
       isFiniteNonNegative(operation.iteration) &&
       isOneOf(operation.status, RUNTIME_STATUSES) &&
+      isOptionalOneOf(operation.executionState, EXECUTION_STATES) &&
+      isOptionalOneOf(operation.resourceState, RESOURCE_STATES) &&
       isBoundedString(operation.startedAt, 100) &&
       isOptionalOneOf(operation.failureClassification, FAILURE_CLASSIFICATIONS) &&
       isOptionalBoundedString(operation.observationId, 300) &&
@@ -343,6 +366,44 @@ function isValidOperationSnapshots(value: unknown): boolean {
       isOptionalFiniteNonNegative(operation.executionDurationMs) &&
       isValidObservedCost(operation.observedCost)
     );
+  });
+}
+
+function normalizeOperationSnapshots(
+  operations: readonly Record<string, unknown>[],
+): PersistedContextIntelligenceState['recentOperations'] {
+  return operations.map((operation) => {
+    const status = String(operation.status);
+    const phase =
+      operation.phase ??
+      (operation.capability === 'WEB_SEARCH' ||
+      operation.capability === 'FILE_DISCOVERY' ||
+      operation.capability === 'ARTIFACT_DISCOVERY'
+        ? 'discovery'
+        : 'retrieval');
+    const executionState =
+      operation.executionState ??
+      (status === 'succeeded'
+        ? 'SUCCESS'
+        : status === 'empty'
+          ? 'EMPTY'
+          : status === 'denied'
+            ? 'BLOCKED'
+            : status === 'failed'
+              ? 'FAILED'
+              : 'NOT_EXECUTED');
+    const resourceState =
+      operation.resourceState ??
+      (executionState === 'SUCCESS'
+        ? 'RETRIEVED_SUCCESSFULLY'
+        : executionState === 'EMPTY'
+          ? 'RETRIEVED_EMPTY'
+          : executionState === 'NOT_EXECUTED'
+            ? 'NOT_CHECKED'
+            : 'RETRIEVAL_FAILED');
+    return { ...operation, phase, executionState, resourceState } as NonNullable<
+      PersistedContextIntelligenceState['recentOperations']
+    >[number];
   });
 }
 

@@ -89,7 +89,9 @@ export type ContextCapability =
   | 'WEB_RETRIEVAL'
   | 'WEB_SEARCH'
   | 'WEB_FETCH'
+  | 'FILE_DISCOVERY'
   | 'FILE_READ'
+  | 'ARTIFACT_DISCOVERY'
   | 'DATABASE_QUERY'
   | 'API_RETRIEVAL'
   | 'MCP_RETRIEVAL'
@@ -127,6 +129,10 @@ export type CapabilityRequirement = {
   id: string;
   needId: string;
   capability: ContextCapability;
+  /** Read-only capabilities that must run before acquisition can be planned safely. */
+  prerequisiteCapabilities?: readonly ExecutableContextCapability[];
+  /** Source-compatible acquisition capabilities; these are never cross-source fallbacks. */
+  alternativeCapabilities?: readonly ExecutableContextCapability[];
   sourceKinds: readonly ContextSourceKind[];
   readOnly: boolean;
   requiredInputs: readonly string[];
@@ -323,7 +329,7 @@ export type ContextConflict = {
   claimKey: string;
   itemIds: readonly string[];
   reason: 'value' | 'scope' | 'time' | 'version' | 'authority';
-  resolution: 'authority' | 'freshness' | 'scope' | 'unresolved';
+  resolution: 'authority' | 'freshness' | 'scope' | 'version' | 'unresolved';
   resolutionStatus: 'resolved' | 'unresolved' | 'requires_clarification';
   preferredItemId?: string;
   claims: readonly {
@@ -331,25 +337,91 @@ export type ContextConflict = {
     value: string;
     sourceId: string;
     sourceTimestamp?: ISODateTime;
+    sourceVersion?: string;
+    sourceScope?: readonly string[];
     authority: number;
   }[];
   explanation: string;
 };
 
+/** Truthful outcome of an attempted operation, independent of task completion. */
+export type ExecutionState = 'SUCCESS' | 'EMPTY' | 'FAILED' | 'BLOCKED' | 'NOT_EXECUTED';
+
+/** Resource state keeps discovery truth separate from acquisition failures. */
+export type ResourceState =
+  | 'FOUND'
+  | 'VERIFIED_MISSING'
+  | 'NOT_CHECKED'
+  | 'RETRIEVAL_FAILED'
+  | 'RETRIEVED_EMPTY'
+  | 'RETRIEVED_SUCCESSFULLY';
+
+export type ResourceCandidate = {
+  sourceKind: Extract<ContextSourceKind, 'FILE' | 'ARTIFACT'>;
+  identifier: string;
+  name?: string;
+  uri?: string;
+  path?: string;
+  artifactId?: string;
+  scope: readonly string[];
+  discoveredBy: 'runtime_tool' | 'conversation_metadata' | 'context_offload';
+  discoveredAt: ISODateTime;
+};
+
+export type ResourceRecord = {
+  id: string;
+  requestId: string;
+  needId: string;
+  reference: string;
+  sourceKind: Extract<ContextSourceKind, 'FILE' | 'ARTIFACT'>;
+  state: ResourceState;
+  candidates: readonly ResourceCandidate[];
+  discoveryOperationIds: readonly string[];
+  retrievalOperationIds: readonly string[];
+  checkedScope?: string;
+  reason: string;
+  updatedAt: ISODateTime;
+};
+
+export type TaskExecutionRecord = {
+  operationId?: string;
+  receiptId?: string;
+  stepId?: string;
+  state: ExecutionState;
+  disposition:
+    | 'COMPLETED'
+    | 'COMPLETED_WITH_NO_EVIDENCE'
+    | 'FAILED'
+    | 'BLOCKED'
+    | 'NOT_EXECUTED';
+  reason?: string;
+  at: ISODateTime;
+};
+
 export type TaskStep = {
   id: string;
   description: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed' | 'blocked';
+  status:
+    | 'pending'
+    | 'in_progress'
+    | 'completed'
+    | 'completed_with_no_evidence'
+    | 'failed'
+    | 'blocked'
+    | 'not_executed';
   dependencies: readonly string[];
   attempts: number;
   evidenceIds: readonly string[];
   receiptIds: readonly string[];
+  lastExecutionState?: ExecutionState;
   updatedAt: ISODateTime;
 };
 
 export type TaskFailureAttempt = {
+  operationId?: string;
   receiptId?: string;
   stepId?: string;
+  executionState?: Extract<ExecutionState, 'FAILED' | 'BLOCKED'>;
   reason: string;
   at: ISODateTime;
 };
@@ -379,6 +451,13 @@ export type TaskState = {
   unresolvedIssues: readonly string[];
   unresolvedQuestions: readonly string[];
   failedAttempts: readonly TaskFailureAttempt[];
+  executionHistory: readonly TaskExecutionRecord[];
+  successfulOperations: readonly string[];
+  emptyOperations: readonly string[];
+  failedOperations: readonly string[];
+  blockedOperations: readonly string[];
+  notExecutedOperations: readonly string[];
+  pendingOperation?: string;
   decisions: readonly string[];
   pendingDecisions: readonly string[];
   dependencies: readonly TaskDependency[];
@@ -572,6 +651,7 @@ export type CapabilityResolution = {
   needId: string;
   requested: ContextCapability;
   requiredCapabilities: readonly ContextCapability[];
+  permittedCapabilities?: readonly ExecutableContextCapability[];
   status: 'available' | 'unavailable';
   toolNames: readonly string[];
   alternatives: Readonly<Partial<Record<ExecutableContextCapability, readonly string[]>>>;
@@ -600,6 +680,7 @@ export type ContextRuntimeAction = {
   requestId: string;
   needId: string;
   capability: ExecutableContextCapability;
+  phase: 'discovery' | 'retrieval';
   toolName: string;
   input: Readonly<Record<string, unknown>>;
   /** Stable fingerprint used to prevent identical failed retries. */
@@ -634,12 +715,16 @@ export type RuntimeRetrievalOperation = {
   requestId: string;
   needId: string;
   capability: ExecutableContextCapability;
+  phase: ContextRuntimeAction['phase'];
   toolName: string;
   input: Readonly<Record<string, unknown>>;
   attemptKey: string;
   strategy: ContextRuntimeAction['strategy'];
   iteration: number;
   status: 'planned' | 'succeeded' | 'empty' | 'failed' | 'denied';
+  executionState: ExecutionState;
+  resourceState: ResourceState;
+  resourceCandidates?: readonly ResourceCandidate[];
   failureClassification?: ToolFailureClassification;
   observationId?: string;
   startedAt: ISODateTime;
@@ -1001,6 +1086,7 @@ export type ContextContract = {
   queryPlan: QueryPlan;
   retrieval: RetrievalOutcome;
   runtimeRetrieval: readonly RuntimeRetrievalOperation[];
+  resources: readonly ResourceRecord[];
   reasoning: ReasoningSupport;
   budget: ContextBudgetSnapshot;
   provenance: readonly Provenance[];
@@ -1078,6 +1164,8 @@ export type ContextIntelligenceReport = {
     operationOutcomes?: Readonly<
       Partial<Record<RuntimeRetrievalOperation['status'], number>>
     >;
+    executionStates?: Readonly<Partial<Record<ExecutionState, number>>>;
+    resourceStates?: Readonly<Partial<Record<ResourceState, number>>>;
     toolNames: readonly string[];
   };
   memory: {
@@ -1172,7 +1260,10 @@ export type ContextIntelligenceReport = {
   updatedAt: ISODateTime;
 };
 
-export type RuntimeOperationSnapshot = Omit<RuntimeRetrievalOperation, 'input'>;
+export type RuntimeOperationSnapshot = Omit<
+  RuntimeRetrievalOperation,
+  'input' | 'resourceCandidates'
+>;
 
 export type ContextLifecycleSnapshot = Omit<ContextLifecycleEvent, 'reason' | 'metadata'> & {
   reasonCode: string;

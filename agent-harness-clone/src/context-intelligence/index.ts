@@ -13,6 +13,7 @@ export * from './observation-intelligence.js';
 export * from './evidence-intelligence.js';
 export * from './quality-gate.js';
 export * from './runtime-retrieval.js';
+export * from './resource-intelligence.js';
 export * from './hygiene.js';
 export * from './synthesis.js';
 export * from './cross-document.js';

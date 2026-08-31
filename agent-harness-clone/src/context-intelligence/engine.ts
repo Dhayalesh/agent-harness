@@ -61,6 +61,7 @@ import { ContextFeedbackIntelligence } from './feedback.js';
 import { PredictiveContextIntelligence } from './predictive-context.js';
 import { RuntimePerformanceIntelligence } from './runtime-performance.js';
 import { ContextEvaluationIntelligence } from './evaluation.js';
+import { ResourceIntelligence, observeResourceOperation } from './resource-intelligence.js';
 import {
   deepClone,
   dedupeStrings,
@@ -153,6 +154,7 @@ export class ContextIntelligenceEngine {
   private readonly predictive: PredictiveContextIntelligence;
   private readonly performance: RuntimePerformanceIntelligence;
   private readonly evaluation: ContextEvaluationIntelligence;
+  private readonly resources = new ResourceIntelligence();
   private readonly onTelemetry: ((event: ContextIntelligenceTelemetryEvent) => void) | undefined;
   private taskState: ContextContract['taskState'] | undefined;
   private observationState: ToolObservation[];
@@ -509,14 +511,20 @@ export class ContextIntelligenceEngine {
     const availableSourceKinds = dedupeStrings([
       'TASK_STATE',
       ...(memories.length > 0 ? ['MEMORY'] : []),
-      ...(this.offloadedState.length > 0 ? ['ARTIFACT'] : []),
-      ...(input.scope.applicationId ? ['APPLICATION_CONTEXT'] : []),
     ]) as ContextContract['contextNeeds'][number]['sourceKinds'];
+    const assessedResources = this.resources.assess({
+      requestId: this.activeRequestId,
+      needs: initialNeeds,
+      messages: input.messages,
+      offloadedArtifacts: this.offloadedState,
+      operations: this.runtimeOperations,
+    });
     const contextNeeds = this.needs.assess(
       initialNeeds,
       admittedEvidence,
       toolPlan.resolutions,
       availableSourceKinds,
+      assessedResources,
     );
     const evidenceNeeds = contextNeeds.filter(
       (need) => need.required && need.evidenceRequirement === 'REQUIRED',
@@ -541,12 +549,21 @@ export class ContextIntelligenceEngine {
       toolPlan,
       observations: this.observationState,
       operations: this.runtimeOperations,
+      resources: assessedResources,
       ...(this.config.features.observedPerformanceOptimization
         ? { performanceProfiles: this.performance.snapshot() }
         : {}),
       elapsedMs: Date.now() - this.requestStartedAt,
     });
     this.registerRuntimeActions(runtimeActions);
+    taskState = this.taskState ?? taskState;
+    const resourceRecords = this.resources.assess({
+      requestId: this.activeRequestId,
+      needs: initialNeeds,
+      messages: input.messages,
+      offloadedArtifacts: this.offloadedState,
+      operations: this.runtimeOperations,
+    });
     const combinedConflicts = [...queryResult.outcome.conflicts, ...hygiene.conflicts];
     const qualityGate = this.qualityGate.evaluate({
       report: { ...hygiene.report, conflicts: combinedConflicts },
@@ -709,6 +726,7 @@ export class ContextIntelligenceEngine {
       queryPlan: queryResult.plan,
       retrieval: effectiveRetrieval,
       runtimeRetrieval: deepClone(this.runtimeOperations),
+      resources: deepClone(resourceRecords),
       reasoning,
       budget: activeFinalized.budget,
       provenance: dedupeProvenance([
@@ -802,12 +820,61 @@ export class ContextIntelligenceEngine {
             )
             .map((need) => need.id)
         : [action.needId];
-    const observation = {
+    let observation = {
       ...processed.observation,
       requestId: this.activeRequestId,
       ...(matchingNeeds.length === 0 ? {} : { needIds: matchingNeeds }),
       ...(capability === undefined ? {} : { capability }),
     };
+    const recalledArtifactId =
+      action?.capability === 'ARTIFACT_READ' && typeof action.input.artifactId === 'string'
+        ? action.input.artifactId
+        : undefined;
+    const recalledArtifact = this.offloadedState.find(
+      (artifact) => artifact.artifactId === recalledArtifactId,
+    );
+    if (
+      recalledArtifact &&
+      (observation.outcome === 'success' || observation.outcome === 'partial') &&
+      observation.content.trim().length > 0
+    ) {
+      observation = {
+        ...observation,
+        provenance: appendProvenance(
+          {
+            ...observation.provenance,
+            parentIds: dedupeStrings([
+              ...observation.provenance.parentIds,
+              recalledArtifact.provenance.id,
+            ]),
+          },
+          'recalled',
+          'context-intelligence-engine',
+          [recalledArtifact.provenance.id, observation.id],
+          { artifactId: recalledArtifact.artifactId },
+        ),
+      };
+      const wasOffloaded = recalledArtifact.lifecycleState === 'offloaded';
+      recalledArtifact.lifecycleState = 'recalled';
+      recalledArtifact.provenance = appendProvenance(
+        recalledArtifact.provenance,
+        'recalled',
+        'context-intelligence-engine',
+        [observation.id],
+        { artifactId: recalledArtifact.artifactId },
+      );
+      if (wasOffloaded) {
+        this.lifecycle.transition({
+          requestId: this.activeRequestId,
+          itemId: recalledArtifact.originalItemId ?? recalledArtifact.id,
+          from: 'offloaded',
+          to: 'recalled',
+          reason: 'The actual offloaded artifact was retrieved and verified through the runtime.',
+          component: 'context-intelligence-engine',
+          metadata: { artifactId: recalledArtifact.artifactId },
+        });
+      }
+    }
     this.observationState.push(observation);
     this.lifecycle.transition({
       requestId: this.activeRequestId,
@@ -829,10 +896,17 @@ export class ContextIntelligenceEngine {
     if (action) {
       const operation = this.runtimeOperations.find((entry) => entry.id === action.id);
       if (operation) {
-        operation.status =
-          observation.requiresFollowUp && observation.outcome === 'success'
-            ? 'empty'
-            : runtimeOperationStatus(observation.outcome);
+        const resourceOutcome = observeResourceOperation({
+          action,
+          observation,
+          ...(input.output.metadata === undefined ? {} : { metadata: input.output.metadata }),
+        });
+        operation.status = runtimeOperationStatus(observation.outcome);
+        operation.executionState = resourceOutcome.executionState;
+        operation.resourceState = resourceOutcome.resourceState;
+        if (resourceOutcome.resourceCandidates.length > 0) {
+          operation.resourceCandidates = resourceOutcome.resourceCandidates;
+        }
         operation.observationId = observation.id;
         const failureClassification =
           observation.failureClassification ??
@@ -856,11 +930,14 @@ export class ContextIntelligenceEngine {
         if (observedCost) operation.observedCost = observedCost;
       }
     }
-    if (this.taskState && action) {
+    if (this.taskState && (action || matchingNeeds.length > 0)) {
       this.taskState = this.tasks.recordObservation(this.taskState, {
+        operationId: action?.id ?? input.toolCallId,
         receiptId: observation.id,
-        successful: observation.outcome === 'success' || observation.outcome === 'partial',
-        requiresFollowUp: observation.requiresFollowUp,
+        executionState:
+          (action
+            ? this.runtimeOperations.find((operation) => operation.id === action.id)?.executionState
+            : executionStateForOutcome(observation.outcome)) ?? 'NOT_EXECUTED',
         ...(observation.followUpReason === undefined ? {} : { issue: observation.followUpReason }),
       });
     }
@@ -917,12 +994,36 @@ export class ContextIntelligenceEngine {
       .map((block) => block.text)
       .join('\n');
     if (this.taskState && !input.message.content.some((block) => block.type === 'tool_call')) {
+      const requestOperations = this.runtimeOperations.filter(
+        (operation) => operation.requestId === this.activeRequestId,
+      );
+      const unresolvedOperations = requestOperations.filter(
+        (operation, index) =>
+          operation.executionState !== 'SUCCESS' &&
+          !requestOperations.some(
+            (retry, retryIndex) =>
+              retryIndex > index &&
+              retry.needId === operation.needId &&
+              retry.phase === 'retrieval' &&
+              retry.executionState === 'SUCCESS',
+          ),
+      );
+      const qualityAccepted =
+        this.lastContract?.directive.decision === 'ACCEPT' &&
+        this.lastContract.quality.sufficient;
+      const unresolved = dedupeStrings([
+        ...(this.lastContract?.quality.sufficient === false
+          ? ['Context quality gate reported insufficiency.']
+          : []),
+        ...unresolvedOperations.map(
+          (operation) =>
+            `Operation ${operation.id} remained ${operation.executionState.toLowerCase()}.`,
+        ),
+      ]);
       this.taskState = this.tasks.complete(
         this.taskState,
-        input.stopReason === 'end_turn',
-        this.lastContract?.quality.sufficient === false
-          ? ['Context quality gate reported insufficiency.']
-          : [],
+        input.stopReason === 'end_turn' && qualityAccepted && unresolvedOperations.length === 0,
+        unresolved,
       );
     }
     if (this.config.features.memory) {
@@ -1089,6 +1190,11 @@ export class ContextIntelligenceEngine {
     const evidenceRequired = needs.some(
       (need) => need.required && need.evidenceRequirement === 'REQUIRED',
     );
+    const allowedSourceKinds = dedupeStrings(
+      needs
+        .filter((need) => need.required && need.evidenceRequirement === 'REQUIRED')
+        .flatMap((need) => need.sourceKinds),
+    ) as ContextContract['contextNeeds'][number]['sourceKinds'];
     const providerCount = this.retrievalRegistry
       .list()
       .filter((provider) => provider.metadata.executionBoundary !== 'runtime_tool').length;
@@ -1097,7 +1203,13 @@ export class ContextIntelligenceEngine {
       providerCount > 0 &&
       (evidenceRequired || shouldRetrieve(intent, this.observationState, providerCount));
     const retrievedOutcome = retrieve
-      ? await this.retrieval.retrieve({ plan, intent, scope, signal })
+      ? await this.retrieval.retrieve({
+          plan,
+          intent,
+          scope,
+          signal,
+          ...(allowedSourceKinds.length === 0 ? {} : { allowedSourceKinds }),
+        })
       : {
           results: [],
           iterations: [],
@@ -1225,14 +1337,20 @@ export class ContextIntelligenceEngine {
         requestId: action.requestId,
         needId: action.needId,
         capability: action.capability,
+        phase: action.phase,
         toolName: action.toolName,
         input: deepClone(action.input),
         attemptKey: action.attemptKey,
         strategy: action.strategy,
         iteration: action.iteration,
         status: 'planned',
+        executionState: 'NOT_EXECUTED',
+        resourceState: 'NOT_CHECKED',
         startedAt: now(),
       });
+      if (this.taskState) {
+        this.taskState = this.tasks.recordPlanned(this.taskState, action.id);
+      }
     }
   }
 
@@ -1332,7 +1450,11 @@ function shouldRetrieve(
 function runtimeOperationSnapshot(
   operation: RuntimeRetrievalOperation,
 ): RuntimeOperationSnapshot {
-  const { input: _contentBearingInput, ...snapshot } = operation;
+  const {
+    input: _contentBearingInput,
+    resourceCandidates: _contentBearingCandidates,
+    ...snapshot
+  } = operation;
   return deepClone(snapshot);
 }
 
@@ -1395,6 +1517,15 @@ function runtimeOperationStatus(
   if (outcome === 'empty') return 'empty';
   if (outcome === 'denied') return 'denied';
   return 'failed';
+}
+
+function executionStateForOutcome(
+  outcome: ToolObservation['outcome'],
+): NonNullable<ContextContract['taskState']['executionHistory'][number]['state']> {
+  if (outcome === 'success' || outcome === 'partial') return 'SUCCESS';
+  if (outcome === 'empty') return 'EMPTY';
+  if (outcome === 'denied') return 'BLOCKED';
+  return 'FAILED';
 }
 
 export function insufficientQualityReport(reason: string): ContextQualityReport {

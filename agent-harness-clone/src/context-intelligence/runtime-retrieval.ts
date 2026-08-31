@@ -7,6 +7,7 @@ import type {
   NormalizedIntent,
   RuntimePerformanceProfile,
   RuntimeRetrievalOperation,
+  ResourceRecord,
   SelectedCapability,
   ToolObservation,
   ToolPlan,
@@ -25,6 +26,7 @@ export class RuntimeRetrievalPlanner {
     toolPlan: ToolPlan;
     observations: readonly ToolObservation[];
     operations: readonly RuntimeRetrievalOperation[];
+    resources?: readonly ResourceRecord[];
     performanceProfiles?: readonly RuntimePerformanceProfile[];
     elapsedMs: number;
   }): ContextRuntimeAction[] {
@@ -60,6 +62,7 @@ export class RuntimeRetrievalPlanner {
         toolPlan: input.toolPlan,
         observations,
         operations: needOperations,
+        resources: (input.resources ?? []).filter((resource) => resource.needId === need.id),
         performanceProfiles: input.performanceProfiles ?? [],
         minimumComparableSamples: this.config.p3.minimumComparableSamples,
         iteration: iterations + 1,
@@ -76,6 +79,7 @@ export class RuntimeRetrievalPlanner {
     toolPlan: ToolPlan;
     observations: readonly ToolObservation[];
     operations: readonly RuntimeRetrievalOperation[];
+    resources: readonly ResourceRecord[];
     performanceProfiles: readonly RuntimePerformanceProfile[];
     minimumComparableSamples: number;
     iteration: number;
@@ -83,7 +87,7 @@ export class RuntimeRetrievalPlanner {
     const base =
       input.need.type === 'CURRENT_EXTERNAL_INFORMATION'
         ? planWebAction(input)
-        : input.need.type === 'FILE_INFORMATION'
+        : input.need.type === 'FILE_INFORMATION' || input.need.type === 'ARTIFACT_INFORMATION'
           ? planFileAction(input)
           : planGenericReadAction(input);
     if (!base) return undefined;
@@ -107,6 +111,7 @@ type PlannerInput = {
   toolPlan: ToolPlan;
   observations: readonly ToolObservation[];
   operations: readonly RuntimeRetrievalOperation[];
+  resources: readonly ResourceRecord[];
   performanceProfiles: readonly RuntimePerformanceProfile[];
   minimumComparableSamples: number;
   iteration: number;
@@ -142,6 +147,7 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
     return {
       needId: need.id,
       capability: 'WEB_FETCH',
+      phase: 'retrieval',
       toolName: fetchTool.capability.name,
       input: mapped,
       reason: 'Fetch the supplied URL as source evidence.',
@@ -163,13 +169,17 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       .map((operation) => operation.input.url)
       .filter((url): url is string => typeof url === 'string'),
   );
-  const nextUrl = successfulSearch?.links?.find((url) => !attemptedUrls.has(url));
+  const nextUrl = successfulSearch
+    ? rankedWebCandidates(successfulSearch.links ?? [], intent)
+        .find((url) => !hasCanonicalUrl(attemptedUrls, url))
+    : undefined;
   if (nextUrl) {
     const mapped = actionInput(fetchTool, { url: nextUrl, query: intent.normalizedRequest });
     if (!mapped) return undefined;
     return {
       needId: need.id,
       capability: 'WEB_FETCH',
+      phase: 'retrieval',
       toolName: fetchTool.capability.name,
       input: mapped,
       reason: 'Fetch the highest-ranked unexamined search result as source evidence.',
@@ -186,6 +196,7 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
   return {
     needId: need.id,
     capability: 'WEB_SEARCH',
+    phase: 'discovery',
     toolName: searchTool.capability.name,
     input: mapped,
     reason:
@@ -197,40 +208,119 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
 }
 
 function planFileAction(input: PlannerInput): PlannedAction | undefined {
-  const { need, toolPlan, observations, operations } = input;
+  const { need, toolPlan, observations, operations, resources } = input;
   const path = need.inputs.path;
+  const reference = need.inputs.reference;
+  const referenceKind = need.inputs.referenceKind;
   const referenceOrigin = need.inputs.referenceOrigin;
-  const selected = toolForCapability(
-    toolPlan,
-    'FILE_READ',
-    input.performanceProfiles,
-    input.minimumComparableSamples,
-  );
   if (
-    !need.sourceKinds.includes('FILE') ||
-    typeof path !== 'string' ||
     referenceOrigin !== 'explicit_user_reference' ||
-    !selected
+    (typeof path !== 'string' && typeof reference !== 'string')
   ) {
     return undefined;
   }
   const alreadySucceeded = observations.some(
     (observation) =>
-      observation.capability === 'FILE_READ' &&
+      (observation.capability === 'FILE_READ' || observation.capability === 'ARTIFACT_READ') &&
       observation.needIds?.includes(need.id) &&
       (observation.outcome === 'success' || observation.outcome === 'partial'),
   );
   if (alreadySucceeded) return undefined;
-  const mapped = actionInput(selected, { path });
-  if (!mapped) return undefined;
-  const previousTools = new Set(operations.map((operation) => operation.toolName));
+  const artifactResource = resources.find(
+    (resource) => resource.sourceKind === 'ARTIFACT' && resource.state === 'FOUND',
+  );
+  const artifactCandidate = artifactResource?.candidates.length === 1
+    ? artifactResource.candidates[0]
+    : undefined;
+  const explicitArtifactId =
+    typeof need.inputs.artifactId === 'string' ? need.inputs.artifactId : undefined;
+  const artifactId = explicitArtifactId ?? artifactCandidate?.artifactId;
+  if (need.sourceKinds.includes('ARTIFACT') && artifactId) {
+    const generic = {
+      artifactId,
+      referenceOrigin:
+        artifactCandidate?.discoveredBy === 'context_offload'
+          ? 'context_offload'
+          : 'explicit_user_reference',
+    };
+    const selected = unattemptedTool(
+      toolPlan,
+      'ARTIFACT_READ',
+      generic,
+      operations,
+      input.performanceProfiles,
+      input.minimumComparableSamples,
+    );
+    if (!selected) return undefined;
+    return {
+      needId: need.id,
+      capability: 'ARTIFACT_READ',
+      phase: 'retrieval',
+      toolName: selected.tool.capability.name,
+      input: selected.input,
+      reason: 'Retrieve the exact same-session artifact discovered from canonical metadata.',
+      strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+    };
+  }
+
+  const fileResource = resources.find((resource) => resource.sourceKind === 'FILE');
+  const discoveredPath =
+    (fileResource?.state === 'FOUND' || fileResource?.state === 'RETRIEVAL_FAILED') &&
+    fileResource.candidates.length === 1
+      ? fileResource.candidates[0]?.path
+      : undefined;
+  const resolvedPath = typeof path === 'string' ? path : discoveredPath;
+  if (need.sourceKinds.includes('FILE') && resolvedPath) {
+    const selected = unattemptedTool(
+      toolPlan,
+      'FILE_READ',
+      { path: resolvedPath },
+      operations,
+      input.performanceProfiles,
+      input.minimumComparableSamples,
+    );
+    if (!selected) return undefined;
+    return {
+      needId: need.id,
+      capability: 'FILE_READ',
+      phase: 'retrieval',
+      toolName: selected.tool.capability.name,
+      input: selected.input,
+      reason:
+        typeof path === 'string'
+          ? 'Read the exact path explicitly supplied by the user.'
+          : 'Read the unique workspace path returned by resource discovery.',
+      strategy: operations.length === 0 ? 'initial' : 'alternate_capability',
+    };
+  }
+
+  if (
+    !need.sourceKinds.includes('FILE') ||
+    referenceKind !== 'name' ||
+    typeof reference !== 'string' ||
+    fileResource?.state === 'VERIFIED_MISSING' ||
+    (fileResource?.state === 'FOUND' && fileResource.candidates.length !== 1)
+  ) {
+    return undefined;
+  }
+  const discoveryInput = { pattern: exactFilenamePattern(reference), path: '.', maxResults: 20 };
+  const discovery = unattemptedTool(
+    toolPlan,
+    'FILE_DISCOVERY',
+    discoveryInput,
+    operations,
+    input.performanceProfiles,
+    input.minimumComparableSamples,
+  );
+  if (!discovery) return undefined;
   return {
     needId: need.id,
-    capability: 'FILE_READ',
-    toolName: selected.capability.name,
-    input: mapped,
-    reason: 'Read the explicitly identified workspace file through a registered file capability.',
-    strategy: previousTools.size === 0 ? 'initial' : 'alternate_capability',
+    capability: 'FILE_DISCOVERY',
+    phase: 'discovery',
+    toolName: discovery.tool.capability.name,
+    input: discovery.input,
+    reason: 'Discover the actual workspace resource before attempting file retrieval.',
+    strategy: operations.length === 0 ? 'initial' : 'alternate_capability',
   };
 }
 
@@ -261,6 +351,7 @@ function planGenericReadAction(input: PlannerInput): PlannedAction | undefined {
   return {
     needId: input.need.id,
     capability,
+    phase: 'retrieval',
     toolName: selected.capability.name,
     input: mapped,
     reason:
@@ -306,6 +397,60 @@ function toolForCapability(
     performanceProfiles,
     minimumComparableSamples,
   ).candidates[0];
+}
+
+function unattemptedTool(
+  toolPlan: ToolPlan,
+  capability: ExecutableContextCapability,
+  genericInput: Readonly<Record<string, unknown>>,
+  operations: readonly RuntimeRetrievalOperation[],
+  performanceProfiles: readonly RuntimePerformanceProfile[],
+  minimumComparableSamples: number,
+): { tool: SelectedCapability; input: Record<string, unknown> } | undefined {
+  const candidates = toolsForCapability(
+    toolPlan,
+    capability,
+    performanceProfiles,
+    minimumComparableSamples,
+  );
+  for (const tool of candidates) {
+    const mapped = actionInput(tool, genericInput);
+    if (!mapped) continue;
+    const attemptKey = stableHash({ toolName: tool.capability.name, input: mapped });
+    if (operations.some((operation) => operation.attemptKey === attemptKey)) continue;
+    return { tool, input: mapped };
+  }
+  return undefined;
+}
+
+function toolsForCapability(
+  toolPlan: ToolPlan,
+  capability: ExecutableContextCapability,
+  performanceProfiles: readonly RuntimePerformanceProfile[],
+  minimumComparableSamples: number,
+): SelectedCapability[] {
+  const resolutionNames = new Set(
+    toolPlan.resolutions
+      .filter((resolution) =>
+        (resolution.permittedCapabilities ?? resolution.requiredCapabilities).includes(capability),
+      )
+      .flatMap((resolution) => resolution.toolNames),
+  );
+  const matching = toolPlan.selected.filter((entry) =>
+    entry.capability.provides?.includes(capability),
+  );
+  const ordered = [
+    ...matching.filter((entry) => resolutionNames.has(entry.capability.name)),
+    ...matching.filter((entry) => !resolutionNames.has(entry.capability.name)),
+  ];
+  return [
+    ...rankRuntimeCandidates(
+      ordered,
+      capability,
+      performanceProfiles,
+      minimumComparableSamples,
+    ).candidates,
+  ];
 }
 
 function isReadOnly(selected: SelectedCapability): boolean {
@@ -357,7 +502,9 @@ function matchingProperty(genericName: string, properties: readonly string[]): s
     query: ['query', 'search', 'searchQuery', 'term', 'question', 'text', 'prompt', 'filter'],
     url: ['url', 'uri', 'endpoint'],
     path: ['path', 'file', 'filePath', 'filename'],
+    pattern: ['pattern', 'glob', 'filePattern', 'searchPattern'],
     artifactId: ['artifactId', 'artifact', 'id', 'reference'],
+    referenceOrigin: ['referenceOrigin', 'origin'],
     maxResults: ['maxResults', 'limit', 'count', 'pageSize'],
   };
   return aliases[genericName]?.find((candidate) =>
@@ -367,6 +514,63 @@ function matchingProperty(genericName: string, properties: readonly string[]): s
         aliases[genericName]?.some((candidate) => candidate.toLowerCase() === property.toLowerCase()),
       )
     : undefined;
+}
+
+function exactFilenamePattern(reference: string): string {
+  const filename = reference.replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? reference;
+  return `**/${filename.replace(/[?*]/g, '')}`.slice(0, 4_096);
+}
+
+function rankedWebCandidates(urls: readonly string[], intent: NormalizedIntent): string[] {
+  const terms = new Set(uniqueTerms(intent.normalizedRequest));
+  return dedupeCanonicalUrls(urls)
+    .map((url, index) => ({ url, score: webAuthorityScore(url, terms) - index * 0.002 }))
+    .sort((left, right) => right.score - left.score)
+    .map((entry) => entry.url);
+}
+
+function webAuthorityScore(url: string, terms: ReadonlySet<string>): number {
+  try {
+    const parsed = new URL(url);
+    const hostTerms = uniqueTerms(parsed.hostname.replace(/^www\./i, '').replaceAll('.', ' '));
+    const hostMatch = hostTerms.filter((term) => terms.has(term)).length / Math.max(1, hostTerms.length);
+    const institutional = /\.(?:gov|edu)(?:\.[a-z]{2})?$/i.test(parsed.hostname) ? 0.35 : 0;
+    const primaryPath = /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(parsed.pathname)
+      ? 0.15
+      : 0;
+    const insecure = parsed.protocol === 'https:' ? 0 : 0.1;
+    return hostMatch * 0.5 + institutional + primaryPath - insecure;
+  } catch {
+    return -1;
+  }
+}
+
+function dedupeCanonicalUrls(urls: readonly string[]): string[] {
+  const values = new Map<string, string>();
+  for (const url of urls) {
+    const canonical = canonicalUrl(url);
+    if (canonical && !values.has(canonical)) values.set(canonical, url);
+  }
+  return [...values.values()];
+}
+
+function hasCanonicalUrl(attempted: ReadonlySet<string>, candidate: string): boolean {
+  const canonical = canonicalUrl(candidate);
+  return [...attempted].some((url) => canonicalUrl(url) === canonical);
+}
+
+function canonicalUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    url.hash = '';
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(?:utm_|gclid|fbclid)/i.test(key)) url.searchParams.delete(key);
+    }
+    if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/, '');
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function refinedQuery(

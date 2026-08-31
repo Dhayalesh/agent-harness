@@ -191,9 +191,23 @@ export class MemoryIntelligence {
         need.sourceKinds.includes('MEMORY') &&
         !['ANY', 'NONE', 'HISTORICAL'].includes(need.freshnessRequirement),
     );
+    const requiresCurrentEvidence = needs.some((need) =>
+      ['CURRENT', 'LATEST', 'RECENT', 'TODAY', 'THIS_WEEK'].includes(
+        need.freshnessRequirement,
+      ),
+    );
     for (const memory of memories) {
       const recency = freshnessScore(memory.updatedAt, 90 * 24 * 60 * 60 * 1_000);
-      if (requiresFreshMemory && recency < 0.6) {
+      const overlappingCurrentEvidence = evidence.some(
+        (item) =>
+          lexicalSimilarity(memory.content, item.content) >= 0.25 &&
+          item.authority >= memory.authority &&
+          item.freshness >= recency,
+      );
+      if (
+        (requiresFreshMemory && recency < 0.6) ||
+        (requiresCurrentEvidence && recency < 0.6 && overlappingCurrentEvidence)
+      ) {
         ignoredIds.push(memory.id);
         staleIds.push(memory.id);
         continue;
@@ -337,7 +351,7 @@ export class TaskStateManager {
         currentPhase: currentPhase(recovered.plan),
         constraints: dedupeStrings([...recovered.constraints, ...intent.constraints]),
         pendingWork: recovered.plan
-          .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+          .filter((step) => step.status !== 'completed')
           .map((step) => step.description),
         ...(nextAction === undefined ? {} : { nextAction }),
         updatedAt: now(),
@@ -364,6 +378,12 @@ export class TaskStateManager {
       unresolvedIssues: [...intent.ambiguity],
       unresolvedQuestions: [...intent.ambiguity],
       failedAttempts: [],
+      executionHistory: [],
+      successfulOperations: [],
+      emptyOperations: [],
+      failedOperations: [],
+      blockedOperations: [],
+      notExecutedOperations: [],
       decisions: [],
       pendingDecisions: [],
       dependencies: steps.map((step) => ({
@@ -380,27 +400,34 @@ export class TaskStateManager {
 
   recordObservation(
     state: TaskState,
-    input: { receiptId?: string; successful: boolean; requiresFollowUp: boolean; issue?: string },
+    input: {
+      operationId?: string;
+      receiptId?: string;
+      executionState: TaskState['executionHistory'][number]['state'];
+      issue?: string;
+    },
   ): TaskState {
     const normalized = normalizeTaskState(state);
-    const plan = normalized.plan.map((step, index) => {
-      if (
-        step.status !== 'in_progress' &&
-        !(index === 0 && normalized.completedSteps.length === 0)
-      )
-        return step;
+    const { pendingOperation: _previousPendingOperation, ...stateWithoutPendingOperation } =
+      normalized;
+    const targetStep =
+      normalized.plan.find((step) => step.status === 'in_progress') ??
+      normalized.plan.find((step) =>
+        ['pending', 'failed', 'blocked', 'not_executed', 'completed_with_no_evidence'].includes(
+          step.status,
+        ),
+      ) ?? normalized.plan.at(-1);
+    const disposition = taskDisposition(input.executionState);
+    const plan = normalized.plan.map((step) => {
+      if (step.id !== targetStep?.id) return step;
       return {
         ...step,
-        status:
-          input.successful && !input.requiresFollowUp
-            ? ('completed' as const)
-            : input.successful
-              ? ('in_progress' as const)
-              : ('failed' as const),
+        status: taskStepStatus(input.executionState),
         attempts: step.attempts + 1,
         ...(input.receiptId === undefined
           ? {}
           : { receiptIds: dedupeStrings([...step.receiptIds, input.receiptId]) }),
+        lastExecutionState: input.executionState,
         updatedAt: now(),
       };
     });
@@ -408,11 +435,11 @@ export class TaskStateManager {
       .filter((step) => step.status === 'completed')
       .map((step) => step.id);
     const pendingSteps = plan
-      .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+      .filter((step) => step.status !== 'completed')
       .map((step) => step.id);
     const nextAction = nextPendingAction(plan);
     return {
-      ...normalized,
+      ...stateWithoutPendingOperation,
       plan,
       currentPhase: currentPhase(plan),
       completedSteps,
@@ -421,9 +448,11 @@ export class TaskStateManager {
         .filter((step) => step.status === 'completed')
         .map((step) => step.description),
       pendingWork: plan
-        .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+        .filter((step) => step.status !== 'completed')
         .map((step) => step.description),
-      retries: normalized.retries + (input.successful ? 0 : 1),
+      retries:
+        normalized.retries +
+        (input.executionState === 'FAILED' || input.executionState === 'BLOCKED' ? 1 : 0),
       receipts: input.receiptId
         ? dedupeStrings([...normalized.receipts, input.receiptId])
         : normalized.receipts,
@@ -434,16 +463,51 @@ export class TaskStateManager {
         input.issue && /\?|clarif|missing|unknown/i.test(input.issue)
           ? dedupeStrings([...normalized.unresolvedQuestions, input.issue])
           : normalized.unresolvedQuestions,
-      failedAttempts: input.successful
-        ? normalized.failedAttempts
+      failedAttempts:
+        input.executionState !== 'FAILED' && input.executionState !== 'BLOCKED'
+          ? normalized.failedAttempts
         : [
             ...normalized.failedAttempts,
             {
+              ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
               ...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
+              ...(targetStep === undefined ? {} : { stepId: targetStep.id }),
+              executionState: input.executionState,
               reason: input.issue ?? 'Context retrieval attempt failed.',
               at: now(),
             },
           ].slice(-100),
+      executionHistory: [
+        ...normalized.executionHistory,
+        {
+          ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
+          ...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
+          ...(targetStep === undefined ? {} : { stepId: targetStep.id }),
+          state: input.executionState,
+          disposition,
+          ...(input.issue === undefined ? {} : { reason: input.issue }),
+          at: now(),
+        },
+      ].slice(-200),
+      successfulOperations: appendOperation(
+        normalized.successfulOperations,
+        input,
+        'SUCCESS',
+      ),
+      emptyOperations: appendOperation(normalized.emptyOperations, input, 'EMPTY'),
+      failedOperations: appendOperation(normalized.failedOperations, input, 'FAILED'),
+      blockedOperations: appendOperation(normalized.blockedOperations, input, 'BLOCKED'),
+      notExecutedOperations:
+        input.executionState === 'NOT_EXECUTED'
+          ? appendOperation(normalized.notExecutedOperations, input, 'NOT_EXECUTED')
+          : input.operationId
+            ? normalized.notExecutedOperations.filter(
+                (operationId) => operationId !== input.operationId,
+              )
+            : normalized.notExecutedOperations,
+      ...(input.executionState === 'NOT_EXECUTED' && input.operationId
+        ? { pendingOperation: input.operationId }
+        : {}),
       dependencies: plan.map((step) => ({
         id: step.id,
         dependsOn: step.dependencies,
@@ -459,13 +523,46 @@ export class TaskStateManager {
     };
   }
 
+  recordPlanned(state: TaskState, operationId: string): TaskState {
+    const normalized = normalizeTaskState(state);
+    if (normalized.notExecutedOperations.includes(operationId)) {
+      return {
+        ...normalized,
+        pendingOperation: operationId,
+        updatedAt: now(),
+      };
+    }
+    const timestamp = now();
+    return {
+      ...normalized,
+      pendingOperation: operationId,
+      notExecutedOperations: dedupeStrings([
+        ...normalized.notExecutedOperations,
+        operationId,
+      ]),
+      executionHistory: [
+        ...normalized.executionHistory,
+        {
+          operationId,
+          state: 'NOT_EXECUTED' as const,
+          disposition: 'NOT_EXECUTED' as const,
+          reason: 'The operation is planned and has not produced a runtime receipt.',
+          at: timestamp,
+        },
+      ].slice(-200),
+      updatedAt: timestamp,
+    };
+  }
+
   recordEvidence(state: TaskState, evidenceIds: readonly string[]): TaskState {
     const normalized = normalizeTaskState(state);
     return {
       ...normalized,
       retrievedEvidence: dedupeStrings([...normalized.retrievedEvidence, ...evidenceIds]),
       plan: normalized.plan.map((step) =>
-        step.status === 'in_progress'
+        step.status === 'in_progress' ||
+        (step.status === 'completed' &&
+          !normalized.plan.some((candidate) => candidate.status === 'in_progress'))
           ? { ...step, evidenceIds: dedupeStrings([...step.evidenceIds, ...evidenceIds]) }
           : step,
       ),
@@ -489,18 +586,33 @@ export class TaskStateManager {
     unresolvedIssues: readonly string[] = [],
   ): TaskState {
     const normalized = normalizeTaskState(state);
+    const blockingStep = normalized.plan.find((step) =>
+      ['failed', 'blocked', 'completed_with_no_evidence', 'not_executed'].includes(step.status),
+    );
+    const canComplete = successful && blockingStep === undefined;
+    const plan = canComplete
+      ? normalized.plan.map((step) => ({
+          ...step,
+          status: 'completed' as const,
+          updatedAt: now(),
+        }))
+      : normalized.plan;
+    const failed = blockingStep?.status === 'failed' || blockingStep?.status === 'completed_with_no_evidence';
     return {
       ...normalized,
-      status: successful ? 'completed' : unresolvedIssues.length ? 'blocked' : 'failed',
-      currentPhase: successful ? 'completed' : 'blocked',
+      plan,
+      status: canComplete ? 'completed' : failed ? 'failed' : unresolvedIssues.length ? 'blocked' : 'failed',
+      currentPhase: canComplete ? 'completed' : failed ? 'failed' : 'blocked',
       unresolvedIssues: dedupeStrings([...normalized.unresolvedIssues, ...unresolvedIssues]),
       unresolvedQuestions: dedupeStrings([
         ...normalized.unresolvedQuestions,
         ...unresolvedIssues,
       ]),
-      pendingSteps: successful ? [] : normalized.pendingSteps,
-      pendingWork: successful ? [] : normalized.pendingWork,
-      ...(successful
+      completedSteps: canComplete ? plan.map((step) => step.id) : normalized.completedSteps,
+      completedWork: canComplete ? plan.map((step) => step.description) : normalized.completedWork,
+      pendingSteps: canComplete ? [] : normalized.pendingSteps,
+      pendingWork: canComplete ? [] : normalized.pendingWork,
+      ...(canComplete
         ? { nextAction: 'none' }
         : normalized.nextAction === undefined
           ? {}
@@ -524,11 +636,17 @@ function normalizeTaskState(state: TaskState): TaskState {
     pendingWork:
       candidate.pendingWork ??
       plan
-        .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+        .filter((step) => step.status !== 'completed')
         .map((step) => step.description),
     retrievedEvidence: candidate.retrievedEvidence ?? [],
     unresolvedQuestions: candidate.unresolvedQuestions ?? candidate.unresolvedIssues ?? [],
     failedAttempts: candidate.failedAttempts ?? [],
+    executionHistory: candidate.executionHistory ?? [],
+    successfulOperations: candidate.successfulOperations ?? [],
+    emptyOperations: candidate.emptyOperations ?? [],
+    failedOperations: candidate.failedOperations ?? [],
+    blockedOperations: candidate.blockedOperations ?? [],
+    notExecutedOperations: candidate.notExecutedOperations ?? [],
     decisions: candidate.decisions ?? [],
     dependencies:
       candidate.dependencies ??
@@ -544,13 +662,51 @@ function normalizeTaskState(state: TaskState): TaskState {
 function currentPhase(plan: readonly TaskStep[]): string {
   return (
     plan.find((step) => step.status === 'in_progress')?.description ??
-    plan.find((step) => step.status === 'pending')?.description ??
+    plan.find((step) =>
+      ['pending', 'not_executed', 'completed_with_no_evidence', 'failed', 'blocked'].includes(
+        step.status,
+      ),
+    )?.description ??
     (plan.every((step) => step.status === 'completed') ? 'completed' : 'planning')
   );
 }
 
 function nextPendingAction(plan: readonly TaskStep[]): string | undefined {
-  return plan.find((step) => step.status === 'in_progress' || step.status === 'pending')?.description;
+  return plan.find((step) =>
+    ['in_progress', 'pending', 'not_executed', 'completed_with_no_evidence', 'failed', 'blocked'].includes(
+      step.status,
+    ),
+  )?.description;
+}
+
+function taskStepStatus(
+  state: TaskState['executionHistory'][number]['state'],
+): TaskStep['status'] {
+  if (state === 'SUCCESS') return 'completed';
+  if (state === 'EMPTY') return 'completed_with_no_evidence';
+  if (state === 'FAILED') return 'failed';
+  if (state === 'BLOCKED') return 'blocked';
+  return 'not_executed';
+}
+
+function taskDisposition(
+  state: TaskState['executionHistory'][number]['state'],
+): TaskState['executionHistory'][number]['disposition'] {
+  if (state === 'SUCCESS') return 'COMPLETED';
+  if (state === 'EMPTY') return 'COMPLETED_WITH_NO_EVIDENCE';
+  if (state === 'FAILED') return 'FAILED';
+  if (state === 'BLOCKED') return 'BLOCKED';
+  return 'NOT_EXECUTED';
+}
+
+function appendOperation(
+  current: readonly string[],
+  input: { operationId?: string; executionState: TaskState['executionHistory'][number]['state'] },
+  expected: TaskState['executionHistory'][number]['state'],
+): readonly string[] {
+  return input.executionState === expected && input.operationId
+    ? dedupeStrings([...current, input.operationId])
+    : current;
 }
 
 function candidateToItem(

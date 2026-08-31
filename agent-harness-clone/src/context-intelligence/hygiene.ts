@@ -589,16 +589,24 @@ export function detectContextConflicts(items: readonly ContextItem[]): ContextCo
     const runnerUp = sorted[1]!;
     const authorityGap = preferred.authority - runnerUp.authority;
     const freshnessGap = preferred.freshness - runnerUp.freshness;
+    const versionPreferred = preferredContextByVersion(group);
     const resolution =
-      authorityGap >= 0.2 ? 'authority' : freshnessGap >= 0.2 ? 'freshness' : 'unresolved';
+      authorityGap >= 0.2
+        ? 'authority'
+        : freshnessGap >= 0.2
+          ? 'freshness'
+          : versionPreferred
+            ? 'version'
+            : 'unresolved';
+    const resolvedPreferred = resolution === 'version' ? versionPreferred! : preferred;
     conflicts.push({
       id: id('conflict'),
       claimKey,
       itemIds: group.map((item) => item.id),
-      reason: 'value',
+      reason: versionPreferred ? 'version' : 'value',
       resolution,
       resolutionStatus: resolution === 'unresolved' ? 'requires_clarification' : 'resolved',
-      ...(resolution === 'unresolved' ? {} : { preferredItemId: preferred.id }),
+      ...(resolution === 'unresolved' ? {} : { preferredItemId: resolvedPreferred.id }),
       claims: group.map((item) => ({
         itemId: item.id,
         value: conflictValue(item, claimKey),
@@ -607,14 +615,29 @@ export function detectContextConflicts(items: readonly ContextItem[]): ContextCo
           ? {}
           : { sourceTimestamp: item.source.sourceTimestamp ?? item.source.observedAt! }),
         authority: item.authority,
+        ...(item.source.version === undefined ? {} : { sourceVersion: item.source.version }),
+        ...(item.source.scope === undefined ? {} : { sourceScope: item.source.scope }),
       })),
       explanation:
         resolution === 'unresolved'
           ? `Conflicting evidence for ${claimKey} remains unresolved; all evidence references were retained.`
-          : `${preferred.source.name} is preferred for ${claimKey} by ${resolution}; contrary evidence remains linked.`,
+          : `${resolvedPreferred.source.name} is preferred for ${claimKey} by ${resolution}; contrary evidence remains linked.`,
     });
   }
   return conflicts;
+}
+
+function preferredContextByVersion(group: readonly ContextItem[]): ContextItem | undefined {
+  const versioned = group.filter((item) => item.source.version !== undefined);
+  if (versioned.length !== group.length || new Set(versioned.map((item) => item.source.version)).size < 2) {
+    return undefined;
+  }
+  return [...versioned].sort((left, right) =>
+    right.source.version!.localeCompare(left.source.version!, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    }),
+  )[0];
 }
 
 function conflictValue(item: ContextItem, claimKey: string): string {
@@ -799,7 +822,10 @@ function qualityReport(
 ): ContextQualityReport {
   const hardErrors = issues.filter((entry) => entry.severity === 'error');
   const warnings = issues.filter((entry) => entry.severity === 'warning');
-  const hasEvidence = items.some((item) => item.kind === 'evidence' || item.kind === 'observation');
+  // Operational observations are receipts, not admitted evidence. Counting them
+  // here would allow a successful invocation with unusable output to satisfy the
+  // secondary hygiene sufficiency check.
+  const hasEvidence = items.some((item) => item.kind === 'evidence');
   const requestedEvidence = items.some(
     (item) =>
       item.kind === 'request' && /\b(current|latest|verify|evidence|source)\b/i.test(item.content),

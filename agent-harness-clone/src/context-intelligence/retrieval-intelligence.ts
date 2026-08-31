@@ -2,6 +2,7 @@ import type { ContextIntelligenceConfig } from './config.js';
 import type {
   ContextConflict,
   ContextScope,
+  ContextSourceKind,
   NormalizedIntent,
   QueryPlan,
   QueryVariant,
@@ -24,6 +25,8 @@ import {
   now,
   stableHash,
   uniqueTerms,
+  appendProvenance,
+  dedupeStrings,
 } from './utils.js';
 
 export class RetrievalProviderRegistry {
@@ -99,6 +102,7 @@ export class RetrievalIntelligence {
     intent: NormalizedIntent;
     scope: ContextScope;
     signal: AbortSignal;
+    allowedSourceKinds?: readonly ContextSourceKind[];
   }): Promise<RetrievalOutcome> {
     const started = Date.now();
     const iterations: RetrievalIteration[] = [];
@@ -107,7 +111,11 @@ export class RetrievalIntelligence {
     let pending = executableQueries(input.plan);
     const passiveProviders = this.registry
       .list()
-      .filter((provider) => provider.metadata.executionBoundary !== 'runtime_tool');
+      .filter(
+        (provider) =>
+          provider.metadata.executionBoundary !== 'runtime_tool' &&
+          sourceKindAllowed(provider.metadata.source, input.allowedSourceKinds),
+      );
 
     if (passiveProviders.length === 0 || pending.length === 0) {
       return {
@@ -207,13 +215,14 @@ export class RetrievalIntelligence {
           lexicalSimilarity(candidate.content, result.content) >=
             this.config.retrieval.deduplicationThreshold,
       );
+      if (!admissibleResult(result, this.config)) continue;
       if (!duplicate) {
         unique.push(result);
         continue;
       }
       if (resultScore(result) > resultScore(duplicate)) {
-        unique.splice(unique.indexOf(duplicate), 1, result);
-      }
+        unique.splice(unique.indexOf(duplicate), 1, mergeRetrievalResults(result, duplicate));
+      } else unique.splice(unique.indexOf(duplicate), 1, mergeRetrievalResults(duplicate, result));
     }
     const ranked = unique.sort((left, right) => resultScore(right) - resultScore(left));
     if (!this.config.retrieval.rerank || !this.reranker || ranked.length < 2) return ranked;
@@ -347,6 +356,13 @@ function normalizeResult(
         config.retrieval.freshnessHalfLifeMs,
       ),
   );
+  const source = {
+    ...result.source,
+    provider: provider.name,
+    authority,
+    retrievedAt: result.source.retrievedAt ?? now(),
+    contentHash: result.source.contentHash ?? stableHash(result.structured ?? result.content),
+  };
   return {
     ...result,
     id: result.id || id('retrieval'),
@@ -355,13 +371,84 @@ function normalizeResult(
     relevance,
     authority,
     freshness,
-    source: {
-      ...result.source,
-      provider: provider.name,
-      authority,
-      retrievedAt: result.source.retrievedAt ?? now(),
-    },
+    source,
+    provenance: appendProvenance(
+      { ...result.provenance, source },
+      'validated',
+      'retrieval-intelligence',
+      [result.id],
+      { providerId: provider.id, queryId: query.id, relevance, authority, freshness },
+    ),
   };
+}
+
+function admissibleResult(
+  result: RetrievalResult,
+  config: ContextIntelligenceConfig,
+): boolean {
+  const locationRequired = ['file', 'document', 'web', 'external', 'artifact'].includes(
+    result.source.type,
+  );
+  return Boolean(
+    result.content.trim() &&
+      result.relevance >= config.retrieval.relevanceThreshold &&
+      result.provenance.id &&
+      result.source.id &&
+      result.source.name &&
+      result.source.type &&
+      (result.source.retrievedAt || result.source.observedAt) &&
+      result.provenance.steps.some((step) => step.operation === 'retrieved') &&
+      (!locationRequired || result.source.uri),
+  );
+}
+
+function mergeRetrievalResults(
+  strongest: RetrievalResult,
+  duplicate: RetrievalResult,
+): RetrievalResult {
+  return {
+    ...strongest,
+    claims: dedupeStrings([...strongest.claims, ...duplicate.claims]),
+    claimKeys: dedupeStrings([...strongest.claimKeys, ...duplicate.claimKeys]),
+    provenance: appendProvenance(
+      {
+        ...strongest.provenance,
+        parentIds: dedupeStrings([
+          ...strongest.provenance.parentIds,
+          duplicate.provenance.id,
+          ...duplicate.provenance.parentIds,
+        ]),
+      },
+      'validated',
+      'retrieval-deduplication',
+      [strongest.id, duplicate.id],
+      { retained: strongest.id, duplicate: duplicate.id },
+    ),
+  };
+}
+
+function sourceKindAllowed(
+  source: RetrievalProviderMetadata['source'],
+  allowed: readonly ContextSourceKind[] | undefined,
+): boolean {
+  if (!allowed || allowed.length === 0) return true;
+  const kind = source.sourceKind ?? sourceKindForType(source.type);
+  return kind !== undefined && allowed.includes(kind);
+}
+
+function sourceKindForType(
+  type: RetrievalProviderMetadata['source']['type'],
+): ContextSourceKind | undefined {
+  if (type === 'file' || type === 'document') return 'FILE';
+  if (type === 'web' || type === 'external') return 'WEB';
+  if (type === 'memory') return 'MEMORY';
+  if (type === 'mcp') return 'MCP';
+  if (type === 'database' || type === 'structured') return 'DATABASE';
+  if (type === 'api') return 'API';
+  if (type === 'task-state') return 'TASK_STATE';
+  if (type === 'artifact') return 'ARTIFACT';
+  if (type === 'application-context') return 'APPLICATION_CONTEXT';
+  return undefined;
 }
 
 function resultScore(result: RetrievalResult): number {
@@ -414,15 +501,23 @@ export function detectRetrievalConflicts(results: readonly RetrievalResult[]): C
     if (!first || !second) continue;
     const authorityGap = first.authority - second.authority;
     const freshnessGap = first.freshness - second.freshness;
-    const resolution = authorityGap >= 0.2 ? 'authority' : freshnessGap >= 0.2 ? 'freshness' : 'unresolved';
+    const versionPreferred = preferredByVersion(group);
+    const resolution = authorityGap >= 0.2
+      ? 'authority'
+      : freshnessGap >= 0.2
+        ? 'freshness'
+        : versionPreferred
+          ? 'version'
+          : 'unresolved';
+    const preferred = resolution === 'version' ? versionPreferred! : first;
     conflicts.push({
       id: id('conflict'),
       claimKey,
       itemIds: group.map((entry) => entry.id),
-      reason: values.size > 1 ? 'value' : 'scope',
+      reason: versionPreferred ? 'version' : values.size > 1 ? 'value' : 'scope',
       resolution,
       resolutionStatus: resolution === 'unresolved' ? 'requires_clarification' : 'resolved',
-      ...(resolution === 'unresolved' ? {} : { preferredItemId: first.id }),
+      ...(resolution === 'unresolved' ? {} : { preferredItemId: preferred.id }),
       claims: group.map((entry) => ({
         itemId: entry.id,
         value: entry.content.slice(0, 500),
@@ -431,14 +526,32 @@ export function detectRetrievalConflicts(results: readonly RetrievalResult[]): C
           ? {}
           : { sourceTimestamp: entry.source.sourceTimestamp ?? entry.source.observedAt! }),
         authority: entry.authority,
+        ...(entry.source.version === undefined ? {} : { sourceVersion: entry.source.version }),
+        ...(entry.source.scope === undefined ? {} : { sourceScope: entry.source.scope }),
       })),
       explanation:
         resolution === 'unresolved'
           ? `Sources disagree about ${claimKey}; authority and freshness do not resolve the conflict.`
-          : `${first.source.name} is preferred for ${claimKey} by ${resolution}.`,
+          : `${preferred.source.name} is preferred for ${claimKey} by ${resolution}.`,
     });
   }
   return conflicts;
+}
+
+function preferredByVersion(
+  group: readonly RetrievalResult[],
+): RetrievalResult | undefined {
+  const versioned = group.filter((entry) => entry.source.version !== undefined);
+  if (versioned.length !== group.length || new Set(versioned.map((entry) => entry.source.version)).size < 2) {
+    return undefined;
+  }
+  return [...versioned].sort((left, right) =>
+    compareVersions(right.source.version!, left.source.version!),
+  )[0];
+}
+
+function compareVersions(left: string, right: string): number {
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: 'base' });
 }
 
 export function retrievalKeywords(results: readonly RetrievalResult[]): string[] {

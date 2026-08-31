@@ -8,8 +8,9 @@ import type {
   ContextSourceKind,
   EvidenceItem,
   NormalizedIntent,
+  ResourceRecord,
 } from './contracts.js';
-import { dedupeStrings, id } from './utils.js';
+import { dedupeStrings, id, stableHash } from './utils.js';
 
 /** Identifies concrete information gaps before retrieval or tool selection occurs. */
 export class ContextNeedIntelligence {
@@ -52,35 +53,58 @@ export class ContextNeedIntelligence {
       );
     }
 
-    const fileReference = extractFileReference(request);
+    const fileReferences = extractFileReferences(request);
+    const fileReference = fileReferences[0];
     const requiresFileContent = explicitlyRequiresFileContent(informationRequest) && !suppliedUrl;
-    if ((fileReference && intent.operation !== 'create') || requiresFileContent) {
-      needs.push(
-        createNeed({
+    if (
+      ((fileReferences.length > 0 && intent.operation !== 'create') || requiresFileContent) &&
+      explicitSource !== 'ARTIFACT'
+    ) {
+      const references = fileReferences.length > 0 ? fileReferences : [undefined];
+      for (const referenceEntry of references) {
+        const storedContextReference =
+          referenceEntry?.kind === 'name' && explicitSource !== 'FILE';
+        needs.push(createNeed({
           requestId,
           type: 'FILE_INFORMATION',
           requiredInformation: ['workspace file contents'],
-          missingInformation: [fileReference ? 'file evidence' : 'file path'],
-          reason: fileReference
+          missingInformation: [referenceEntry ? 'file evidence' : 'file path'],
+          reason: referenceEntry
             ? 'The requested answer depends on the contents of a user-identified workspace file.'
             : 'The request asks for file contents but does not identify the file to read.',
-          sourceRequirement: 'workspace',
-          sourceKinds: ['FILE'],
+          sourceRequirement: storedContextReference ? 'any' : 'workspace',
+          sourceKinds: storedContextReference ? ['FILE', 'ARTIFACT'] : ['FILE'],
           freshnessRequirement: freshnessRequirement(intent),
           authorityRequirement: 'AUTHORITATIVE',
           evidenceRequirement: 'REQUIRED',
           requiredCapability: 'FILE_READ',
           priority: 'high',
           scope,
-          status: fileReference ? 'missing' : 'clarification_required',
-          inputs: fileReference
-            ? { path: fileReference.path, referenceOrigin: fileReference.origin }
+          status: referenceEntry ? 'missing' : 'clarification_required',
+          inputs: referenceEntry
+            ? {
+                reference: referenceEntry.reference,
+                referenceKind: referenceEntry.kind,
+                referenceOrigin: referenceEntry.origin,
+                ...(referenceEntry.kind === 'path' ? { path: referenceEntry.reference } : {}),
+              }
             : {},
-        }),
-      );
+          prerequisiteCapabilities:
+            referenceEntry?.kind === 'name' ? ['FILE_DISCOVERY'] : [],
+          alternativeCapabilities: storedContextReference ? ['ARTIFACT_READ'] : [],
+          ...(referenceEntry === undefined ? {} : { identity: referenceEntry.reference }),
+        }));
+      }
     }
 
-    const genericNeed = identifyGenericSourceNeed(intent, scope, requestId, explicitSource, suppliedUrl);
+    const genericNeed = identifyGenericSourceNeed(
+      intent,
+      scope,
+      requestId,
+      explicitSource,
+      suppliedUrl,
+      fileReference,
+    );
     if (genericNeed) needs.push(genericNeed);
 
     if (
@@ -121,10 +145,12 @@ export class ContextNeedIntelligence {
     evidence: readonly EvidenceItem[],
     resolutions: readonly CapabilityResolution[],
     availableSourceKinds: readonly ContextSourceKind[] = [],
+    resources: readonly ResourceRecord[] = [],
   ): ContextNeed[] {
     return needs.map((need) => {
       if (need.status === 'clarification_required') return need;
       const resolution = resolutions.find((entry) => entry.needId === need.id);
+      const needResources = resources.filter((resource) => resource.needId === need.id);
       if (
         need.evidenceRequirement !== 'NONE' &&
         needSatisfied(need, evidence, resolution, availableSourceKinds)
@@ -133,6 +159,45 @@ export class ContextNeedIntelligence {
       }
       if (need.evidenceRequirement === 'NONE' && resolution?.status === 'available') {
         return { ...need, status: 'satisfied' as const, missingInformation: [] };
+      }
+      const matchingCandidateCount = new Set(
+        needResources
+          .filter((resource) => resource.state === 'FOUND')
+          .flatMap((resource) =>
+            resource.candidates.map(
+              (candidate) => `${candidate.sourceKind}:${candidate.identifier.toLowerCase()}`,
+            ),
+          ),
+      ).size;
+      if (matchingCandidateCount > 1) {
+        return {
+          ...need,
+          status: 'clarification_required' as const,
+          missingInformation: dedupeStrings([
+            ...need.missingInformation,
+            'multiple matching stored resources require disambiguation',
+          ]),
+        };
+      }
+      const checkedKinds = new Set(needResources.map((resource) => resource.sourceKind));
+      if (
+        need.sourceKinds.every(
+          (kind) =>
+            checkedKinds.has(kind as ResourceRecord['sourceKind']) &&
+            needResources.some(
+              (resource) =>
+                resource.sourceKind === kind && resource.state === 'VERIFIED_MISSING',
+            ),
+        )
+      ) {
+        return {
+          ...need,
+          status: 'clarification_required' as const,
+          missingInformation: dedupeStrings([
+            ...need.missingInformation,
+            'the requested resource was verified missing in the checked scope',
+          ]),
+        };
       }
       if (!resolution || resolution.status === 'unavailable') {
         return {
@@ -170,10 +235,15 @@ type NeedInput = {
   inputs: Readonly<Record<string, unknown>>;
   status?: ContextNeed['status'];
   readOnly?: boolean;
+  prerequisiteCapabilities?: ContextNeed['capabilityRequirement']['prerequisiteCapabilities'];
+  alternativeCapabilities?: ContextNeed['capabilityRequirement']['alternativeCapabilities'];
+  identity?: string;
 };
 
 function createNeed(input: NeedInput): ContextNeed {
-  const needId = `${input.requestId}:${input.type}`;
+  const needId = `${input.requestId}:${input.type}${
+    input.identity === undefined ? '' : `:${stableHash(input.identity).slice(0, 16)}`
+  }`;
   return {
     id: needId,
     type: input.type,
@@ -192,6 +262,8 @@ function createNeed(input: NeedInput): ContextNeed {
       id: `${needId}:capability`,
       needId,
       capability: input.requiredCapability,
+      prerequisiteCapabilities: [...(input.prerequisiteCapabilities ?? [])],
+      alternativeCapabilities: [...(input.alternativeCapabilities ?? [])],
       sourceKinds: input.sourceKinds,
       readOnly: input.readOnly ?? true,
       requiredInputs: Object.keys(input.inputs),
@@ -210,6 +282,7 @@ function identifyGenericSourceNeed(
   requestId: string,
   source: ContextSourceKind | undefined,
   suppliedUrl: string | undefined,
+  fileReference: ExplicitFileReference | undefined,
 ): ContextNeed | undefined {
   if (!source || source === 'WEB' || source === 'FILE' || intent.operation === 'create') {
     return undefined;
@@ -280,17 +353,25 @@ function identifyGenericSourceNeed(
       });
     case 'ARTIFACT': {
       const artifactId = extractArtifactReference(intent.originalRequest);
+      const reference = artifactId ?? fileReference?.reference;
       return createNeed({
         ...common,
         type: 'ARTIFACT_INFORMATION',
-        reason: artifactId
+        reason: reference
           ? 'The request explicitly references a generated artifact.'
           : 'The request references an artifact but does not identify it.',
         sourceRequirement: 'artifact',
         sourceKinds: ['ARTIFACT'],
         requiredCapability: 'ARTIFACT_READ',
-        inputs: artifactId ? { artifactId, referenceOrigin: 'explicit_user_reference' } : {},
-        status: artifactId ? 'missing' : 'clarification_required',
+        inputs: reference
+          ? {
+              reference,
+              referenceKind: artifactId ? 'artifact_id' : 'name',
+              referenceOrigin: 'explicit_user_reference',
+              ...(artifactId ? { artifactId } : {}),
+            }
+          : {},
+        status: reference ? 'missing' : 'clarification_required',
       });
     }
     case 'APPLICATION_CONTEXT':
@@ -338,7 +419,11 @@ function requiresCurrentExternalInformation(
       request,
     );
   const evidenceRequested = /\b(sources?|evidence|verify|look up)\b/i.test(request);
-  const explicitlyLocal = Boolean(extractFileReference(intent.originalRequest));
+  const explicitlyLocal =
+    Boolean(extractFileReference(intent.originalRequest)) ||
+    /\b(?:project|workspace|repository|repo|codebase|task|conversation|session)\b/i.test(
+      request,
+    );
   return (
     hasExternalUri ||
     stronglyExternal ||
@@ -362,7 +447,8 @@ function explicitlyRequiresFileContent(request: string): boolean {
 }
 
 type ExplicitFileReference = {
-  path: string;
+  reference: string;
+  kind: 'name' | 'path';
   origin: 'explicit_user_reference';
 };
 
@@ -372,7 +458,12 @@ type ExplicitFileReference = {
  * treated as a workspace location unless the request gives it file/path semantics.
  */
 function extractFileReference(request: string): ExplicitFileReference | undefined {
+  return extractFileReferences(request)[0];
+}
+
+function extractFileReferences(request: string): ExplicitFileReference[] {
   const directive = stripAttachedContent(request).replace(/\b[A-Za-z]+:\/\/\S+/g, ' ');
+  const references: ExplicitFileReference[] = [];
   const candidates = dedupeStrings([
     ...(directive.match(/`([^`\r\n]+)`/g) ?? []).map((value) => value.slice(1, -1).trim()),
     ...(directive.match(
@@ -386,9 +477,14 @@ function extractFileReference(request: string): ExplicitFileReference | undefine
   ]);
   for (const candidate of candidates) {
     if (!isConcreteFileReference(candidate, directive)) continue;
-    return { path: candidate, origin: 'explicit_user_reference' };
+    references.push({
+      reference: candidate,
+      kind:
+        /^[A-Za-z]:[\\/]|^\.\.?[\\/]|^\/|[\\/]/.test(candidate) ? 'path' : 'name',
+      origin: 'explicit_user_reference',
+    });
   }
-  return undefined;
+  return references;
 }
 
 function isConcreteFileReference(candidate: string, request: string): boolean {
@@ -414,7 +510,10 @@ function isConcreteFileReference(candidate: string, request: string): boolean {
 }
 
 function extractArtifactReference(request: string): string | undefined {
-  return request.match(/\bartifact(?:\s+(?:id|reference))?\s*[:#]?\s*([A-Za-z0-9][A-Za-z0-9_.:-]{2,200})\b/i)?.[1];
+  return (
+    request.match(/\bartifact:\/\/([A-Za-z0-9_-]{3,200})\b/i)?.[1] ??
+    request.match(/\bartifact\s+(?:id|reference)\s*[:#]?\s*([A-Za-z0-9_-]{3,200})\b/i)?.[1]
+  );
 }
 
 function stripAttachedContent(request: string): string {
@@ -455,7 +554,12 @@ function needSatisfied(
   availableSourceKinds: readonly ContextSourceKind[],
 ): boolean {
   if (need.evidenceRequirement === 'NONE') return resolution?.status === 'available';
-  if (need.sourceKinds.some((kind) => availableSourceKinds.includes(kind))) return true;
+  if (
+    (need.sourceKinds.includes('TASK_STATE') && availableSourceKinds.includes('TASK_STATE')) ||
+    (need.sourceKinds.includes('MEMORY') && availableSourceKinds.includes('MEMORY'))
+  ) {
+    return true;
+  }
   const authorityRequired =
     need.authorityRequirement === 'AUTHORITATIVE'
       ? 0.8
@@ -467,6 +571,7 @@ function needSatisfied(
   return evidence.some((item) => {
     const sourceKind = item.source.sourceKind ?? sourceKindForType(item.source.type);
     if (!need.sourceKinds.includes(sourceKind)) return false;
+    if (!evidenceMatchesResourceReference(need, item)) return false;
     if (item.authority < authorityRequired || item.freshness < freshnessRequired) return false;
     if (item.confidence < (item.capability === undefined ? 0.6 : 0.75)) return false;
     if (
@@ -476,12 +581,35 @@ function needSatisfied(
     ) {
       return false;
     }
+    if (item.capability === undefined) return true;
+    if (item.capability === 'WEB_RETRIEVAL') {
+      return need.requiredCapability === 'WEB_RETRIEVAL';
+    }
     return (
-      item.capability === undefined ||
       item.capability === need.requiredCapability ||
-      resolution?.requiredCapabilities.includes(item.capability) === true
+      (resolution?.permittedCapabilities ?? resolution?.requiredCapabilities)?.includes(
+        item.capability,
+      ) === true
     );
   });
+}
+
+function evidenceMatchesResourceReference(need: ContextNeed, item: EvidenceItem): boolean {
+  if (need.type !== 'FILE_INFORMATION' && need.type !== 'ARTIFACT_INFORMATION') return true;
+  const reference = [need.inputs.reference, need.inputs.path, need.inputs.artifactId].find(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0,
+  );
+  if (!reference) return false;
+  const normalized = reference.toLowerCase();
+  const basename = (value: string): string =>
+    value.replaceAll('\\', '/').split('/').filter(Boolean).at(-1)?.toLowerCase() ??
+    value.toLowerCase();
+  return [item.source.id, item.source.name, item.source.uri]
+    .filter((value): value is string => typeof value === 'string')
+    .some(
+      (value) =>
+        value.toLowerCase() === normalized || basename(value) === basename(reference),
+    );
 }
 
 function minimumFreshness(requirement: ContextFreshnessRequirement): number {
@@ -528,7 +656,7 @@ function sourceKindForType(type: EvidenceItem['source']['type']): ContextSourceK
 }
 
 function dedupeNeeds(needs: readonly ContextNeed[]): ContextNeed[] {
-  const byType = new Map<ContextNeedType, ContextNeed>();
-  for (const need of needs) if (!byType.has(need.type)) byType.set(need.type, need);
-  return [...byType.values()];
+  const values = new Map<string, ContextNeed>();
+  for (const need of needs) if (!values.has(need.id)) values.set(need.id, need);
+  return [...values.values()];
 }

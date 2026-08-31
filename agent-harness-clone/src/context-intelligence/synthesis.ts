@@ -184,16 +184,23 @@ export class MultiSourceSynthesizer {
     const observations = input.observations.slice(-12).map((observation) =>
       contextItem({
         kind: 'observation',
-        title: `Observation from ${observation.toolName}`,
-        content: observation.content,
-        structured: observation.structured,
+        title: `Operational receipt from ${observation.toolName}`,
+        content: [
+          `Tool: ${observation.toolName}`,
+          `Outcome: ${observation.outcome}`,
+          `Receipt: ${observation.id}`,
+          ...(observation.requiresFollowUp
+            ? [`Follow-up required: ${observation.followUpReason ?? 'yes'}`]
+            : []),
+          ...(observation.errors.length > 0 ? ['Errors were recorded in canonical task state.'] : []),
+          'This operational receipt is not evidence. Only separately admitted evidence may support claims.',
+        ].join('\n'),
         source: observation.source,
-        relevance: observation.requiresFollowUp ? 0.65 : 0.85,
-        confidence: observation.outcome === 'success' ? 0.9 : 0.55,
+        relevance: observation.requiresFollowUp ? 0.65 : 0.75,
+        confidence: 1,
         authority: observation.source.authority,
         freshness: 1,
         priority: observation.outcome === 'error' ? 'high' : 'normal',
-        claimKeys: observation.identifiers,
         ...(observation.needIds === undefined ? {} : { dependencyIds: observation.needIds }),
         provenanceValue: observation.provenance,
       }),

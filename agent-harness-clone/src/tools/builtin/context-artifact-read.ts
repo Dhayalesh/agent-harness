@@ -21,9 +21,9 @@ const schema = z.object({
 type ContextArtifactReadInput = z.infer<typeof schema>;
 
 /**
- * Recalls a bounded range from a Context Intelligence offload through the normal
- * tool validation, permission, execution, and observation path. The intelligence
- * layer plans this operation but never reads the ArtifactStore itself.
+ * Recalls a bounded range from a same-session Context Intelligence offload or
+ * response artifact through the normal validation, permission, execution, and
+ * observation path. The intelligence layer plans but never performs the read.
  */
 export function createContextArtifactReadTool(
   store: ArtifactStore,
@@ -33,8 +33,8 @@ export function createContextArtifactReadTool(
   return {
     name: 'context_artifact_read',
     description:
-      'Read a bounded text range from a same-session artifact created by Context Intelligence offloading. ' +
-      'Use the artifact ID from an artifact:// reference; this cannot read unrelated response artifacts.',
+      'Read a bounded text range from a same-session context offload or response artifact. ' +
+      'Use only an artifact ID discovered from canonical same-session metadata.',
     inputSchema: schema,
     jsonSchema: {
       type: 'object',
@@ -94,6 +94,11 @@ export function createContextArtifactReadTool(
       const content = text.slice(offset, offset + limit);
       const nextOffset = offset + content.length;
       const hasMore = nextOffset < text.length;
+      const filename =
+        typeof artifact.metadata.filename === 'string'
+          ? artifact.metadata.filename
+          : `artifact://${artifact.id}`;
+      const offload = artifact.metadata.purpose === 'context-intelligence-offload';
       return {
         content,
         metadata: {
@@ -106,7 +111,7 @@ export function createContextArtifactReadTool(
           ...(hasMore ? { nextOffset } : {}),
           source: {
             id: `artifact:${artifact.id}`,
-            name: `artifact://${artifact.id}`,
+            name: filename,
             type: 'artifact',
             sourceKind: 'ARTIFACT',
             provider: 'artifact-store',
@@ -114,7 +119,7 @@ export function createContextArtifactReadTool(
             sourceTimestamp: artifact.createdAt,
             uri: `artifact://${artifact.id}`,
             evidenceIdentity: `artifact:${artifact.id}:${offset}:${content.length}`,
-            policyLabels: ['same-session', 'context-offload'],
+            policyLabels: ['same-session', offload ? 'context-offload' : 'response-artifact'],
           },
         },
       };
@@ -134,7 +139,8 @@ async function permissionFor(
   } catch {
     return {
       decision: 'deny',
-      reason: 'Artifact recall is limited to bounded Context Intelligence offloads owned by this session.',
+      reason:
+        'Artifact recall is limited to bounded context offloads and response artifacts owned by this session.',
     };
   }
 }
@@ -146,10 +152,15 @@ async function accessibleArtifact(
   maxArtifactBytes: number,
 ): Promise<Artifact> {
   const artifact = await store.describe(artifactId);
+  const sameSession = artifact?.metadata.sessionId === context.sessionId;
+  const contextOffload = artifact?.metadata.purpose === 'context-intelligence-offload';
+  const responseArtifact =
+    artifact?.metadata.presentation === 'file' &&
+    typeof artifact.metadata.filename === 'string';
   if (
     artifact === undefined ||
-    artifact.metadata.sessionId !== context.sessionId ||
-    artifact.metadata.purpose !== 'context-intelligence-offload'
+    !sameSession ||
+    (!contextOffload && !responseArtifact)
   ) {
     throw new AgentHarnessError('Context artifact access denied', 'ARTIFACT_ACCESS_DENIED');
   }

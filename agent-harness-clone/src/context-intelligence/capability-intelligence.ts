@@ -219,7 +219,14 @@ export function inferGenericCapabilities(tool: Tool): ExecutableContextCapabilit
   ) {
     capabilities.push('WEB_FETCH');
   }
-  if (tool.kind === 'read' && properties.includes('path')) capabilities.push('FILE_READ');
+  const fileDiscovery =
+    readLike &&
+    properties.includes('pattern') &&
+    /\b(glob|find files?|list files?|file discovery)\b/.test(searchable);
+  if (fileDiscovery) capabilities.push('FILE_DISCOVERY');
+  if (tool.kind === 'read' && properties.includes('path') && !fileDiscovery) {
+    capabilities.push('FILE_READ');
+  }
   if (
     readLike &&
     /\b(database|data warehouse|sql|table|record query|repository query)\b/.test(searchable)
@@ -240,6 +247,13 @@ export function inferGenericCapabilities(tool: Tool): ExecutableContextCapabilit
   }
   if (readLike && /\b(artifact|generated document|generated report)\b/.test(searchable)) {
     capabilities.push('ARTIFACT_READ');
+  }
+  if (
+    readLike &&
+    /\b(artifact|generated document|generated report)\b/.test(searchable) &&
+    operations.some((operation) => operation.includes('search') || operation.includes('list'))
+  ) {
+    capabilities.push('ARTIFACT_DISCOVERY');
   }
   if (readLike && /\b(application context|project context|workspace context)\b/.test(searchable)) {
     capabilities.push('APPLICATION_CONTEXT_READ');
@@ -267,12 +281,18 @@ function resolveCapabilities(
   minimumComparableSamples = 3,
 ): CapabilityResolution[] {
   return needs.map((need) => {
-    const requiredCapabilities = expandCapability(need.requiredCapability);
-    const toolNames: string[] = [];
-    const missing: ExecutableContextCapability[] = [];
+    const primaryCapabilities = expandCapability(need.requiredCapability);
+    const prerequisiteCapabilities = need.capabilityRequirement.prerequisiteCapabilities ?? [];
+    const alternativeCapabilities = need.capabilityRequirement.alternativeCapabilities ?? [];
+    const permittedCapabilities = dedupeStrings([
+      ...primaryCapabilities,
+      ...alternativeCapabilities,
+    ]) as ExecutableContextCapability[];
     const alternatives: Partial<Record<ExecutableContextCapability, readonly string[]>> = {};
     let observedSelection = false;
-    for (const capability of requiredCapabilities) {
+    const candidatesFor = (
+      capability: ExecutableContextCapability,
+    ): readonly CapabilityMetadata[] => {
       const declaredOrder = metadata
         .filter((entry) => entry.enabled && (entry.provides ?? []).includes(capability))
         .sort((left, right) =>
@@ -304,19 +324,62 @@ function resolveCapabilities(
       const candidates = ranking.candidates.map((entry) => entry.capability);
       if (ranking.reordered) observedSelection = true;
       alternatives[capability] = candidates.map((candidate) => candidate.name);
-      const selected = candidates[0];
-      if (selected) toolNames.push(selected.name);
-      else missing.push(capability);
-    }
-    const available = missing.length === 0;
+      return candidates;
+    };
+    const prerequisiteCandidates = prerequisiteCapabilities.map((capability) => ({
+      capability,
+      candidates: candidatesFor(capability),
+    }));
+    const primaryCandidates = primaryCapabilities.map((capability) => ({
+      capability,
+      candidates: candidatesFor(capability),
+    }));
+    const alternativeCandidates = alternativeCapabilities.map((capability) => ({
+      capability,
+      candidates: candidatesFor(capability),
+    }));
+    const prerequisitesAvailable = prerequisiteCandidates.every(
+      (entry) => entry.candidates.length > 0,
+    );
+    const primaryAvailable = primaryCandidates.every((entry) => entry.candidates.length > 0);
+    const primaryRouteAvailable = prerequisitesAvailable && primaryAvailable;
+    const selectedAlternative = primaryRouteAvailable
+      ? undefined
+      : alternativeCandidates.find((entry) => entry.candidates.length > 0);
+    const available = primaryRouteAvailable || selectedAlternative !== undefined;
+    const selectedAcquisitionCapabilities = primaryRouteAvailable
+      ? primaryCapabilities
+      : selectedAlternative
+        ? [selectedAlternative.capability]
+        : [];
+    const requiredCapabilities = dedupeStrings([
+      ...(primaryRouteAvailable ? prerequisiteCapabilities : []),
+      ...selectedAcquisitionCapabilities,
+    ]) as ExecutableContextCapability[];
+    const toolNames = dedupeStrings([
+      ...prerequisiteCandidates.flatMap((entry) =>
+        entry.candidates.slice(0, 1).map((candidate) => candidate.name),
+      ),
+      ...primaryCandidates.flatMap((entry) => entry.candidates.map((candidate) => candidate.name)),
+      ...alternativeCandidates.flatMap((entry) =>
+        entry.candidates.map((candidate) => candidate.name),
+      ),
+    ]);
+    const missing = dedupeStrings([
+      ...prerequisiteCandidates
+        .filter((entry) => entry.candidates.length === 0)
+        .map((entry) => entry.capability),
+      ...(!available ? [...primaryCapabilities, ...alternativeCapabilities] : []),
+    ]);
     return {
       needId: need.id,
       requested: need.requiredCapability,
       requiredCapabilities,
+      permittedCapabilities,
       status: available ? 'available' : 'unavailable',
-      // Composite capabilities are atomic at resolution time. Exposing a partial
-      // implementation invites unrelated fallback even though the chain cannot run.
-      toolNames: available ? dedupeStrings(toolNames) : [],
+      // A primary route is atomic with its prerequisites. A declared alternative
+      // is an independent source-compatible route, never an unrelated fallback.
+      toolNames: available ? toolNames : [],
       alternatives,
       selectionBasis: observedSelection ? 'observed_performance' : 'declared_order',
       reason: available
@@ -336,13 +399,14 @@ function sourceKindsFor(capabilities: readonly ContextCapability[]): ContextSour
   const kinds: ContextSourceKind[] = [];
   for (const capability of capabilities) {
     if (capability === 'WEB_SEARCH' || capability === 'WEB_FETCH') kinds.push('WEB');
-    else if (capability === 'FILE_READ') kinds.push('FILE');
+    else if (capability === 'FILE_DISCOVERY' || capability === 'FILE_READ') kinds.push('FILE');
     else if (capability === 'DATABASE_QUERY') kinds.push('DATABASE');
     else if (capability === 'API_RETRIEVAL') kinds.push('API');
     else if (capability === 'MCP_RETRIEVAL') kinds.push('MCP');
     else if (capability === 'MEMORY_RECALL') kinds.push('MEMORY');
     else if (capability === 'TASK_STATE_READ') kinds.push('TASK_STATE');
     else if (
+      capability === 'ARTIFACT_DISCOVERY' ||
       capability === 'ARTIFACT_READ' ||
       capability === 'MARKDOWN_ARTIFACT_CREATE' ||
       capability === 'DOCUMENT_ARTIFACT_CREATE'

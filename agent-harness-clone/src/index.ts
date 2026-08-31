@@ -645,6 +645,7 @@ export type {
   CrossDocumentSynthesis,
   EvidenceGroup,
   EvidenceItem,
+  ExecutionState,
   FinalContextSection,
   FinalizedContext,
   IntentEntity,
@@ -667,6 +668,9 @@ export type {
   QueryVariant,
   ReasoningSupport,
   RequestInstructionSegments,
+  ResourceCandidate,
+  ResourceRecord,
+  ResourceState,
   RetrievalIteration,
   RetrievalMode,
   RetrievalObservation,
@@ -686,6 +690,7 @@ export type {
   SourceType,
   TaskDependency,
   TaskFailureAttempt,
+  TaskExecutionRecord,
   TaskState,
   TaskStep,
   TemporalRequirement,
@@ -759,6 +764,10 @@ export { ObservationIntelligence } from './context-intelligence/observation-inte
 export { EvidenceIntelligence } from './context-intelligence/evidence-intelligence.js';
 export { ContextQualityGate } from './context-intelligence/quality-gate.js';
 export { RuntimeRetrievalPlanner } from './context-intelligence/runtime-retrieval.js';
+export {
+  observeResourceOperation,
+  ResourceIntelligence,
+} from './context-intelligence/resource-intelligence.js';
 export type { ProcessedObservation } from './context-intelligence/observation-intelligence.js';
 export {
   ContextBudgetEngine,

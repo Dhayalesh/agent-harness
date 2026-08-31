@@ -183,6 +183,13 @@ function classifyOutcome(output: ToolExecutionResult, parsed: unknown): ToolOutc
   if (output.isError) {
     return /permission|denied|forbidden|unauthori[sz]ed/i.test(output.content) ? 'denied' : 'error';
   }
+  if (
+    output.metadata?.returnedChars === 0 ||
+    (output.metadata?.returnedLines === 1 &&
+      output.content.replace(/^\s*\d+\t/gm, '').trim().length === 0)
+  ) {
+    return 'empty';
+  }
   if (!output.content.trim() || output.content.trim() === '[]' || output.content.trim() === '{}')
     return 'empty';
   if (
@@ -238,6 +245,9 @@ function sourceFor(
   const inferred = inferredSource(genericCapabilities);
   const outputProvider =
     typeof output.metadata?.provider === 'string' ? output.metadata.provider : undefined;
+  const observedExtractionContext = extractionContextFrom(output.metadata);
+  const extractionContext =
+    metadata.extractionContext ?? configured?.extractionContext ?? observedExtractionContext;
   const authority =
     config.sourceAuthority[sourceId] ??
     config.sourceAuthority[tool.name] ??
@@ -259,9 +269,7 @@ function sourceFor(
     ...((metadata.sourceTimestamp ?? configured?.sourceTimestamp)
       ? { sourceTimestamp: metadata.sourceTimestamp ?? configured!.sourceTimestamp }
       : {}),
-    ...((metadata.extractionContext ?? configured?.extractionContext)
-      ? { extractionContext: metadata.extractionContext ?? configured!.extractionContext }
-      : {}),
+    ...(extractionContext === undefined ? {} : { extractionContext }),
     evidenceIdentity:
       metadata.evidenceIdentity ?? configured?.evidenceIdentity ?? `${sourceId}:${inputIdentity(output)}`,
     ...((metadata.version ?? configured?.version)
@@ -271,10 +279,37 @@ function sourceFor(
       ? { scope: metadata.scope ?? configured!.scope }
       : {}),
     ...((metadata.uri ?? configured?.uri) ? { uri: metadata.uri ?? configured!.uri } : {}),
+    contentHash: metadata.contentHash ?? configured?.contentHash ?? stableHash(output.content),
     ...((metadata.policyLabels ?? configured?.policyLabels)
       ? { policyLabels: metadata.policyLabels ?? configured!.policyLabels }
       : {}),
   });
+}
+
+function extractionContextFrom(
+  metadata: ToolExecutionResult['metadata'],
+): string | undefined {
+  if (!metadata) return undefined;
+  if (
+    typeof metadata.offset === 'number' &&
+    Number.isInteger(metadata.offset) &&
+    typeof metadata.returnedLines === 'number' &&
+    Number.isInteger(metadata.returnedLines)
+  ) {
+    const first = metadata.offset + 1;
+    const last = metadata.offset + Math.max(1, metadata.returnedLines);
+    return `lines ${first}-${last}`;
+  }
+  if (
+    typeof metadata.offset === 'number' &&
+    Number.isInteger(metadata.offset) &&
+    typeof metadata.returnedChars === 'number' &&
+    Number.isInteger(metadata.returnedChars)
+  ) {
+    const last = metadata.offset + Math.max(0, metadata.returnedChars);
+    return `characters ${metadata.offset}-${last}`;
+  }
+  return undefined;
 }
 
 function inferredSource(
@@ -282,14 +317,18 @@ function inferredSource(
 ): { type: SourceMetadata['type']; sourceKind?: SourceMetadata['sourceKind'] } {
   if (capabilities.some((capability) => capability === 'WEB_SEARCH' || capability === 'WEB_FETCH'))
     return { type: 'external', sourceKind: 'WEB' };
-  if (capabilities.includes('FILE_READ')) return { type: 'file', sourceKind: 'FILE' };
+  if (capabilities.includes('FILE_DISCOVERY') || capabilities.includes('FILE_READ')) {
+    return { type: 'file', sourceKind: 'FILE' };
+  }
   if (capabilities.includes('DATABASE_QUERY')) return { type: 'database', sourceKind: 'DATABASE' };
   if (capabilities.includes('API_RETRIEVAL')) return { type: 'api', sourceKind: 'API' };
   if (capabilities.includes('MCP_RETRIEVAL')) return { type: 'mcp', sourceKind: 'MCP' };
   if (capabilities.includes('MEMORY_RECALL')) return { type: 'memory', sourceKind: 'MEMORY' };
   if (capabilities.includes('TASK_STATE_READ'))
     return { type: 'task-state', sourceKind: 'TASK_STATE' };
-  if (capabilities.includes('ARTIFACT_READ')) return { type: 'artifact', sourceKind: 'ARTIFACT' };
+  if (capabilities.includes('ARTIFACT_DISCOVERY') || capabilities.includes('ARTIFACT_READ')) {
+    return { type: 'artifact', sourceKind: 'ARTIFACT' };
+  }
   if (capabilities.includes('APPLICATION_CONTEXT_READ'))
     return { type: 'application-context', sourceKind: 'APPLICATION_CONTEXT' };
   return { type: 'tool' };
