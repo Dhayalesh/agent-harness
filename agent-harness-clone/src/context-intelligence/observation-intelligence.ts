@@ -5,6 +5,7 @@ import type {
   NormalizedIntent,
   OffloadedArtifact,
   SourceMetadata,
+  ToolFailureClassification,
   ToolObservation,
   ToolOutcome,
 } from './contracts.js';
@@ -19,6 +20,7 @@ import {
   preview,
   provenance,
   sourceMetadata,
+  stableHash,
 } from './utils.js';
 
 export type ProcessedObservation = {
@@ -46,6 +48,7 @@ export class ObservationIntelligence {
     const rawContent = input.output.content ?? '';
     const parsed = parseJson(rawContent);
     const outcome = classifyOutcome(input.output, parsed);
+    const failureClassification = classifyFailure(outcome, rawContent);
     const source = sourceFor(input.tool, input.output, createdAt, this.config);
     const sourceProvenance = provenance(
       source,
@@ -87,16 +90,32 @@ export class ObservationIntelligence {
         },
       });
       const summary = observationSummary(content, parsed);
+      const reference = `artifact://${artifact.id}`;
       content = `${summary}\n\n[Full result offloaded as artifact ${artifact.id}; request drill-down when needed.]`;
       offloaded = {
         id: id('offload'),
         artifactId: artifact.id,
+        originalItemId: input.toolCallId,
         kind: 'tool-result',
         summary,
         size: artifact.size,
         contentType: artifact.contentType,
+        reference,
+        recall: {
+          capability: 'ARTIFACT_READ',
+          inputs: { artifactId: artifact.id, referenceOrigin: 'context_offload' },
+        },
+        source,
         provenance: sourceProvenance,
+        lifecycleState: 'offloaded',
         createdAt,
+      };
+      structured = {
+        artifactId: artifact.id,
+        reference,
+        summary,
+        originalContentType: artifact.contentType,
+        originalSize: artifact.size,
       };
     } else if (content.length > this.config.hygiene.offloadThresholdChars) {
       content = compressText(content, this.config.hygiene.offloadThresholdChars);
@@ -134,6 +153,7 @@ export class ObservationIntelligence {
       ...(offloaded === undefined ? {} : { artifactId: offloaded.artifactId }),
       requiresFollowUp,
       ...(followUpReason === undefined ? {} : { followUpReason }),
+      ...(failureClassification === undefined ? {} : { failureClassification }),
       ...(links.length === 0 ? {} : { links }),
       createdAt,
     };
@@ -176,6 +196,26 @@ function classifyOutcome(output: ToolExecutionResult, parsed: unknown): ToolOutc
   return 'success';
 }
 
+function classifyFailure(
+  outcome: ToolOutcome,
+  content: string,
+): ToolFailureClassification | undefined {
+  if (outcome === 'success' || outcome === 'partial') return undefined;
+  if (outcome === 'empty') return 'empty';
+  if (outcome === 'malformed') return 'malformed';
+  if (outcome === 'denied') return 'authorization_denied';
+  if (/\b(?:timed?\s*out|timeout|deadline exceeded)\b/i.test(content)) return 'timeout';
+  if (/\b(?:rate limit|too many requests|quota|429)\b/i.test(content)) return 'rate_limited';
+  if (/\b(?:not found|does not exist|enoent|404)\b/i.test(content)) return 'not_found';
+  if (/\b(?:invalid (?:input|argument)|validation|schema|required)\b/i.test(content))
+    return 'invalid_input';
+  if (/\b(?:unsupported|not implemented|unknown tool|capability unavailable)\b/i.test(content))
+    return 'unsupported';
+  if (/\b(?:network|connection|dns|socket|econn|gateway|service unavailable|502|503|504)\b/i.test(content))
+    return 'network';
+  return 'unknown';
+}
+
 function sourceFor(
   tool: Tool,
   output: ToolExecutionResult,
@@ -195,13 +235,7 @@ function sourceFor(
   );
   const sourceId = metadata.id ?? configured?.id ?? `tool:${tool.name}`;
   const genericCapabilities = inferGenericCapabilities(tool);
-  const inferredType = genericCapabilities.some(
-    (capability) => capability === 'WEB_SEARCH' || capability === 'WEB_FETCH',
-  )
-    ? 'external'
-    : genericCapabilities.includes('FILE_READ')
-      ? 'document'
-      : 'tool';
+  const inferred = inferredSource(genericCapabilities);
   const outputProvider =
     typeof output.metadata?.provider === 'string' ? output.metadata.provider : undefined;
   const authority =
@@ -210,15 +244,26 @@ function sourceFor(
     metadata.authority ??
     configured?.authority ??
     tool.contextMetadata?.authority ??
-    (genericCapabilities.includes('FILE_READ') ? 0.9 : inferredType === 'external' ? 0.65 : 0.6);
+    (genericCapabilities.includes('FILE_READ') ? 0.9 : inferred.type === 'external' ? 0.65 : 0.6);
   return sourceMetadata({
     id: sourceId,
     name: metadata.name ?? configured?.name ?? tool.name,
-    type: metadata.type ?? configured?.type ?? inferredType,
+    type: metadata.type ?? configured?.type ?? inferred.type,
+    ...((metadata.sourceKind ?? configured?.sourceKind ?? inferred.sourceKind) === undefined
+      ? {}
+      : { sourceKind: metadata.sourceKind ?? configured?.sourceKind ?? inferred.sourceKind! }),
     provider: metadata.provider ?? outputProvider ?? tool.name,
     authority,
     observedAt: metadata.observedAt ?? timestamp,
     retrievedAt: timestamp,
+    ...((metadata.sourceTimestamp ?? configured?.sourceTimestamp)
+      ? { sourceTimestamp: metadata.sourceTimestamp ?? configured!.sourceTimestamp }
+      : {}),
+    ...((metadata.extractionContext ?? configured?.extractionContext)
+      ? { extractionContext: metadata.extractionContext ?? configured!.extractionContext }
+      : {}),
+    evidenceIdentity:
+      metadata.evidenceIdentity ?? configured?.evidenceIdentity ?? `${sourceId}:${inputIdentity(output)}`,
     ...((metadata.version ?? configured?.version)
       ? { version: metadata.version ?? configured!.version }
       : {}),
@@ -230,6 +275,28 @@ function sourceFor(
       ? { policyLabels: metadata.policyLabels ?? configured!.policyLabels }
       : {}),
   });
+}
+
+function inferredSource(
+  capabilities: readonly string[],
+): { type: SourceMetadata['type']; sourceKind?: SourceMetadata['sourceKind'] } {
+  if (capabilities.some((capability) => capability === 'WEB_SEARCH' || capability === 'WEB_FETCH'))
+    return { type: 'external', sourceKind: 'WEB' };
+  if (capabilities.includes('FILE_READ')) return { type: 'file', sourceKind: 'FILE' };
+  if (capabilities.includes('DATABASE_QUERY')) return { type: 'database', sourceKind: 'DATABASE' };
+  if (capabilities.includes('API_RETRIEVAL')) return { type: 'api', sourceKind: 'API' };
+  if (capabilities.includes('MCP_RETRIEVAL')) return { type: 'mcp', sourceKind: 'MCP' };
+  if (capabilities.includes('MEMORY_RECALL')) return { type: 'memory', sourceKind: 'MEMORY' };
+  if (capabilities.includes('TASK_STATE_READ'))
+    return { type: 'task-state', sourceKind: 'TASK_STATE' };
+  if (capabilities.includes('ARTIFACT_READ')) return { type: 'artifact', sourceKind: 'ARTIFACT' };
+  if (capabilities.includes('APPLICATION_CONTEXT_READ'))
+    return { type: 'application-context', sourceKind: 'APPLICATION_CONTEXT' };
+  return { type: 'tool' };
+}
+
+function inputIdentity(output: ToolExecutionResult): string {
+  return stableHash({ content: output.content, source: output.metadata?.source });
 }
 
 function hasPagination(value: unknown): boolean {

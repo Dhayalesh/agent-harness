@@ -4,11 +4,15 @@ import type {
   CapabilityMetadata,
   ContextCapability,
   ContextNeed,
+  ContextSourceKind,
+  ExecutableContextCapability,
   NormalizedIntent,
+  RuntimePerformanceProfile,
   SelectedCapability,
   ToolPlan,
 } from './contracts.js';
 import type { Tool, ToolDescriptor } from '../tools/tool.js';
+import { rankRuntimeCandidates } from './runtime-performance.js';
 import { clamp, containmentScore, dedupeStrings, lexicalSimilarity, uniqueTerms } from './utils.js';
 
 export interface CapabilityMetadataProvider {
@@ -43,6 +47,8 @@ export class CapabilityIntelligence {
     private readonly config: ContextIntelligenceConfig['capability'],
     initial: readonly CapabilityMetadata[] = [],
     private readonly providers: readonly CapabilityMetadataProvider[] = [],
+    private readonly observedPerformanceOptimization = false,
+    private readonly minimumComparableSamples = 3,
   ) {
     this.registry = new CapabilityRegistry(initial);
   }
@@ -52,8 +58,13 @@ export class CapabilityIntelligence {
     for (const tool of tools) {
       let metadata = this.registry.get(tool.name) ?? tool.contextMetadata;
       for (const provider of this.providers) metadata ??= await provider.metadata(tool);
+      const provides = metadata?.provides ?? inferGenericCapabilities(tool);
       const resolved = metadata
-        ? { ...metadata, provides: metadata.provides ?? inferGenericCapabilities(tool) }
+        ? {
+            ...metadata,
+            provides,
+            sourceKinds: metadata.sourceKinds ?? sourceKindsFor(provides),
+          }
         : inferCapability(tool);
       this.registry.register(resolved);
       output.push(resolved);
@@ -65,14 +76,34 @@ export class CapabilityIntelligence {
     intent: NormalizedIntent,
     tools: readonly Tool[],
     needs: readonly ContextNeed[] = [],
+    options: {
+      excludeToolNames?: readonly string[];
+      performanceProfiles?: readonly RuntimePerformanceProfile[];
+    } = {},
   ): Promise<ToolPlan> {
     const metadata = await this.catalog(tools);
+    const excludedTools = new Set(options.excludeToolNames ?? []);
     const descriptors = new Map(tools.map((tool) => [tool.name, descriptorOf(tool)]));
-    const scored = metadata
-      .filter((capability) => capability.enabled)
-      .map((capability) => scoreCapability(capability, intent, descriptors.get(capability.name)))
+    const usableMetadata = metadata.filter(
+      (capability) => capability.enabled && !excludedTools.has(capability.name),
+    );
+    const scored = usableMetadata
+      .map((capability) =>
+        scoreCapability(
+          capability,
+          intent,
+          descriptors.get(capability.name),
+          !this.observedPerformanceOptimization,
+        ),
+      )
       .sort((left, right) => right.score - left.score);
-    const resolutions = resolveCapabilities(needs, metadata);
+    const resolutions = resolveCapabilities(
+      needs,
+      usableMetadata,
+      this.observedPerformanceOptimization,
+      options.performanceProfiles ?? [],
+      this.minimumComparableSamples,
+    );
     const resolvedToolNames = resolutions
       .filter((resolution) => resolution.status === 'available')
       .flatMap((resolution) => {
@@ -100,20 +131,27 @@ export class CapabilityIntelligence {
     return {
       goal: intent.goal,
       selected,
-      excluded: scored
-        .filter((entry) => !names.has(entry.capability.name))
-        .map((entry) => ({
-          name: entry.capability.name,
-          reason: entry.capability.enabled
-            ? `relevance score ${entry.score.toFixed(3)} below selection`
-            : 'disabled',
-        })),
+      excluded: [
+        ...metadata
+          .filter((entry) => excludedTools.has(entry.name))
+          .map((entry) => ({
+            name: entry.name,
+            reason: 'excluded after a non-recoverable or capability-mismatch failure in this request',
+          })),
+        ...scored
+          .filter((entry) => !names.has(entry.capability.name))
+          .map((entry) => ({
+            name: entry.capability.name,
+            reason: `relevance score ${entry.score.toFixed(3)} below selection`,
+          })),
+      ],
       argumentRequirements: Object.fromEntries(
         selected.map((entry) => [
           entry.capability.name,
           requiredArguments(entry.descriptor?.inputSchema),
         ]),
       ),
+      requirements: needs.map((need) => structuredClone(need.capabilityRequirement)),
       resolutions,
     };
   }
@@ -130,6 +168,7 @@ export function inferCapability(tool: Tool): CapabilityMetadata {
     entityTypes: [],
     operations: inferOperations(tool),
     sourceIds: [],
+    sourceKinds: sourceKindsFor(inferGenericCapabilities(tool)),
     authority: tool.kind === 'read' ? 0.65 : 0.5,
     cost: tool.kind === 'network' ? 0.6 : tool.kind === 'execute' ? 0.5 : 0.25,
     latency: tool.kind === 'network' ? 0.7 : tool.kind === 'interactive' ? 0.8 : 0.3,
@@ -149,9 +188,7 @@ export function inferCapability(tool: Tool): CapabilityMetadata {
   };
 }
 
-export function inferGenericCapabilities(
-  tool: Tool,
-): Exclude<ContextCapability, 'WEB_RETRIEVAL'>[] {
+export function inferGenericCapabilities(tool: Tool): ExecutableContextCapability[] {
   const operations = inferOperations(tool).map((operation) => operation.toLowerCase());
   const properties = Object.keys(
     tool.jsonSchema.properties && typeof tool.jsonSchema.properties === 'object'
@@ -159,21 +196,54 @@ export function inferGenericCapabilities(
       : {},
   ).map((property) => property.toLowerCase());
   const searchable =
-    `${tool.description} ${operations.join(' ')} ${properties.join(' ')}`.toLowerCase();
-  const capabilities: Exclude<ContextCapability, 'WEB_RETRIEVAL'>[] = [];
-
+    `${tool.name} ${tool.description} ${operations.join(' ')} ${properties.join(' ')}`.toLowerCase();
+  const capabilities: ExecutableContextCapability[] = [];
+  const readLike =
+    !tool.destructive &&
+    (tool.kind === 'read' ||
+      tool.kind === 'network' ||
+      operations.some((operation) =>
+        ['read', 'get', 'list', 'search', 'fetch', 'query', 'retrieve', 'lookup', 'recall'].some(
+          (candidate) => operation.includes(candidate),
+        ),
+      ));
   const external =
-    tool.kind === 'network' || /\b(web|internet|online|external|url)\b/.test(searchable);
+    tool.kind === 'network' || /\b(web|internet|online|external|url|http)\b/.test(searchable);
   if (external && operations.some((operation) => operation.includes('search'))) {
     capabilities.push('WEB_SEARCH');
   }
   if (
     external &&
+    !/\b(api|graphql|endpoint|web service)\b/.test(searchable) &&
     (operations.some((operation) => operation.includes('fetch')) || properties.includes('url'))
   ) {
     capabilities.push('WEB_FETCH');
   }
   if (tool.kind === 'read' && properties.includes('path')) capabilities.push('FILE_READ');
+  if (
+    readLike &&
+    /\b(database|data warehouse|sql|table|record query|repository query)\b/.test(searchable)
+  ) {
+    capabilities.push('DATABASE_QUERY');
+  }
+  if (readLike && /\b(api|graphql|endpoint|web service)\b/.test(searchable)) {
+    capabilities.push('API_RETRIEVAL');
+  }
+  if (readLike && (tool.name.startsWith('mcp__') || /\bmcp\b/.test(searchable))) {
+    capabilities.push('MCP_RETRIEVAL');
+  }
+  if (readLike && /\b(memory|recall|remembered)\b/.test(searchable)) {
+    capabilities.push('MEMORY_RECALL');
+  }
+  if (readLike && /\b(task state|task status|workflow state|pending work)\b/.test(searchable)) {
+    capabilities.push('TASK_STATE_READ');
+  }
+  if (readLike && /\b(artifact|generated document|generated report)\b/.test(searchable)) {
+    capabilities.push('ARTIFACT_READ');
+  }
+  if (readLike && /\b(application context|project context|workspace context)\b/.test(searchable)) {
+    capabilities.push('APPLICATION_CONTEXT_READ');
+  }
   if (
     (tool.kind === 'write' || operations.some((operation) => operation.includes('create'))) &&
     /markdown|\.md\b/.test(searchable)
@@ -186,25 +256,54 @@ export function inferGenericCapabilities(
   ) {
     capabilities.push('DOCUMENT_ARTIFACT_CREATE');
   }
-  return dedupeStrings(capabilities) as Exclude<ContextCapability, 'WEB_RETRIEVAL'>[];
+  return dedupeStrings(capabilities) as ExecutableContextCapability[];
 }
 
 function resolveCapabilities(
   needs: readonly ContextNeed[],
   metadata: readonly CapabilityMetadata[],
+  observedPerformanceOptimization = false,
+  performanceProfiles: readonly RuntimePerformanceProfile[] = [],
+  minimumComparableSamples = 3,
 ): CapabilityResolution[] {
   return needs.map((need) => {
     const requiredCapabilities = expandCapability(need.requiredCapability);
     const toolNames: string[] = [];
-    const missing: ContextCapability[] = [];
+    const missing: ExecutableContextCapability[] = [];
+    const alternatives: Partial<Record<ExecutableContextCapability, readonly string[]>> = {};
+    let observedSelection = false;
     for (const capability of requiredCapabilities) {
-      const candidates = metadata
+      const declaredOrder = metadata
         .filter((entry) => entry.enabled && (entry.provides ?? []).includes(capability))
-        .sort(
-          (left, right) =>
-            right.authority - left.authority ||
-            left.cost + left.latency - (right.cost + right.latency),
+        .sort((left, right) =>
+          observedPerformanceOptimization
+            ? right.authority - left.authority
+            : right.authority - left.authority ||
+              left.cost + left.latency - (right.cost + right.latency),
         );
+      const ranking = observedPerformanceOptimization
+        ? rankRuntimeCandidates(
+            declaredOrder.map((candidate) => ({
+              capability: candidate,
+              score: 0,
+              reasons: [],
+            })),
+            capability,
+            performanceProfiles,
+            minimumComparableSamples,
+          )
+        : {
+            candidates: declaredOrder.map((candidate) => ({
+              capability: candidate,
+              score: 0,
+              reasons: [],
+            })),
+            eligibleProfiles: 0,
+            reordered: false,
+          };
+      const candidates = ranking.candidates.map((entry) => entry.capability);
+      if (ranking.reordered) observedSelection = true;
+      alternatives[capability] = candidates.map((candidate) => candidate.name);
       const selected = candidates[0];
       if (selected) toolNames.push(selected.name);
       else missing.push(capability);
@@ -216,18 +315,42 @@ function resolveCapabilities(
       requiredCapabilities,
       status: available ? 'available' : 'unavailable',
       // Composite capabilities are atomic at resolution time. Exposing a partial
-      // implementation (for example fetch without search) invites unrelated model
-      // fallback even though the required retrieval chain cannot run.
+      // implementation invites unrelated fallback even though the chain cannot run.
       toolNames: available ? dedupeStrings(toolNames) : [],
+      alternatives,
+      selectionBasis: observedSelection ? 'observed_performance' : 'declared_order',
       reason: available
-        ? `Resolved ${need.requiredCapability} through registered runtime capabilities.`
+        ? observedSelection
+          ? `Resolved ${need.requiredCapability} through registered runtime capabilities using comparable observed performance.`
+          : `Resolved ${need.requiredCapability} through registered runtime capabilities.`
         : `No registered runtime capability provides: ${missing.join(', ')}.`,
     };
   });
 }
 
-function expandCapability(capability: ContextCapability): ContextCapability[] {
+function expandCapability(capability: ContextCapability): ExecutableContextCapability[] {
   return capability === 'WEB_RETRIEVAL' ? ['WEB_SEARCH', 'WEB_FETCH'] : [capability];
+}
+
+function sourceKindsFor(capabilities: readonly ContextCapability[]): ContextSourceKind[] {
+  const kinds: ContextSourceKind[] = [];
+  for (const capability of capabilities) {
+    if (capability === 'WEB_SEARCH' || capability === 'WEB_FETCH') kinds.push('WEB');
+    else if (capability === 'FILE_READ') kinds.push('FILE');
+    else if (capability === 'DATABASE_QUERY') kinds.push('DATABASE');
+    else if (capability === 'API_RETRIEVAL') kinds.push('API');
+    else if (capability === 'MCP_RETRIEVAL') kinds.push('MCP');
+    else if (capability === 'MEMORY_RECALL') kinds.push('MEMORY');
+    else if (capability === 'TASK_STATE_READ') kinds.push('TASK_STATE');
+    else if (
+      capability === 'ARTIFACT_READ' ||
+      capability === 'MARKDOWN_ARTIFACT_CREATE' ||
+      capability === 'DOCUMENT_ARTIFACT_CREATE'
+    )
+      kinds.push('ARTIFACT');
+    else if (capability === 'APPLICATION_CONTEXT_READ') kinds.push('APPLICATION_CONTEXT');
+  }
+  return dedupeStrings(kinds) as ContextSourceKind[];
 }
 
 function inferOperations(tool: Tool): string[] {
@@ -256,6 +379,7 @@ function scoreCapability(
   capability: CapabilityMetadata,
   intent: NormalizedIntent,
   descriptor: ToolDescriptor | undefined,
+  useDeclaredPerformance = true,
 ): SelectedCapability {
   const searchable = [
     capability.name,
@@ -279,7 +403,10 @@ function scoreCapability(
         ).length / intent.entities.length;
   const efficiency = 1 - clamp(capability.cost * 0.55 + capability.latency * 0.45);
   const semanticFit = lexical * 0.65 + operation * 0.2 + entities * 0.15;
-  const score = clamp(semanticFit * (0.8 + capability.authority * 0.15 + efficiency * 0.05));
+  const efficiencyContribution = useDeclaredPerformance ? efficiency * 0.05 : 0.05;
+  const score = clamp(
+    semanticFit * (0.8 + capability.authority * 0.15 + efficiencyContribution),
+  );
   return {
     capability,
     score,

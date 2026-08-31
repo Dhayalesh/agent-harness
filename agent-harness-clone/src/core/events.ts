@@ -293,7 +293,12 @@ export type AgentEvent = EventBase &
         message: string;
         data?: Record<string, unknown>;
       }
-    | { type: 'warning'; code: string; message: string }
+    | {
+        type: 'warning';
+        code: string;
+        message: string;
+        intervention?: import('../context-intelligence/contracts.js').ContextIntelligenceIntervention;
+      }
     | { type: 'error'; code: string; message: string; recoverable: boolean }
   );
 

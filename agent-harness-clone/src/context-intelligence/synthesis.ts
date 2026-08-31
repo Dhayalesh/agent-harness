@@ -19,6 +19,7 @@ import {
   now,
   provenance,
   sourceMetadata,
+  stableHash,
 } from './utils.js';
 
 export class MultiSourceSynthesizer {
@@ -86,7 +87,8 @@ export class MultiSourceSynthesizer {
     const taskSource = sourceMetadata({
       id: `task:${input.taskState.taskId}`,
       name: 'Canonical task state',
-      type: 'derived',
+      type: 'task-state',
+      sourceKind: 'TASK_STATE',
       authority: 0.9,
       observedAt: input.taskState.updatedAt,
     });
@@ -132,12 +134,28 @@ export class MultiSourceSynthesizer {
         freshness: result.freshness,
         priority: result.authority >= 0.8 && result.relevance >= 0.6 ? 'high' : 'normal',
         claimKeys: result.claimKeys,
+        dependencyIds: [result.queryId],
         provenanceValue: result.provenance,
       });
+      const evidenceIdentity =
+        result.source.evidenceIdentity ??
+        stableHash({
+          source: result.source.id,
+          reference: result.source.uri,
+          content: result.structured ?? result.content,
+        });
+      const provenanceComplete = Boolean(
+        result.provenance.id &&
+          result.source.id &&
+          (result.source.retrievedAt || result.source.observedAt),
+      );
       return {
         ...base,
         kind: 'evidence',
+        source: { ...base.source, evidenceIdentity },
+        lifecycleState: 'admitted',
         claims: result.claims,
+        retrievalResultId: result.id,
         ...(input.queryPlan.variants.find((query) => query.id === result.queryId)?.query ===
         undefined
           ? {}
@@ -146,6 +164,17 @@ export class MultiSourceSynthesizer {
                 .query,
             }),
         rank: index + 1,
+        evidenceIdentity,
+        relationship: 'supports' as const,
+        evaluation: {
+          relevance: result.relevance,
+          authority: result.authority,
+          freshness: result.freshness,
+          confidence: result.confidence,
+          provenanceComplete,
+          admitted: true,
+          reasons: [],
+        },
       };
     });
     const evidence = [...retrievedEvidence, ...input.observationEvidence].map((item, index) => ({
@@ -165,6 +194,7 @@ export class MultiSourceSynthesizer {
         freshness: 1,
         priority: observation.outcome === 'error' ? 'high' : 'normal',
         claimKeys: observation.identifiers,
+        ...(observation.needIds === undefined ? {} : { dependencyIds: observation.needIds }),
         provenanceValue: observation.provenance,
       }),
     );
@@ -230,6 +260,7 @@ function contextItem(input: {
   freshness: number;
   priority: ContextItem['priority'];
   claimKeys?: readonly string[];
+  dependencyIds?: readonly string[];
   expiresAt?: string;
   provenanceValue?: ContextItem['provenance'];
 }): ContextItem {
@@ -243,6 +274,8 @@ function contextItem(input: {
     source: input.source,
     provenance:
       input.provenanceValue ?? provenance(input.source, 'received', 'multi-source-synthesizer'),
+    lifecycleState: input.kind === 'evidence' ? 'admitted' : 'discovered',
+    ...(input.dependencyIds === undefined ? {} : { dependencyIds: input.dependencyIds }),
     relevance: clamp(input.relevance),
     confidence: clamp(input.confidence),
     authority: clamp(input.authority),
@@ -259,9 +292,17 @@ function contextItem(input: {
 
 function renderTaskState(state: TaskState): string {
   return [
+    `Objective: ${state.objective}`,
     `Goal: ${state.goal}`,
     `Status: ${state.status}`,
+    `Current phase: ${state.currentPhase}`,
+    ...(state.nextAction ? [`Next action: ${state.nextAction}`] : []),
     ...(state.constraints.length ? [`Constraints: ${state.constraints.join('; ')}`] : []),
+    ...(state.completedWork.length ? [`Completed work: ${state.completedWork.join('; ')}`] : []),
+    ...(state.pendingWork.length ? [`Pending work: ${state.pendingWork.join('; ')}`] : []),
+    ...(state.retrievedEvidence.length
+      ? [`Retrieved evidence: ${state.retrievedEvidence.join(', ')}`]
+      : []),
     ...(state.plan.length
       ? [
           'Plan:',
@@ -272,6 +313,13 @@ function renderTaskState(state: TaskState): string {
       : []),
     ...(state.pendingDecisions.length
       ? [`Pending decisions: ${state.pendingDecisions.join('; ')}`]
+      : []),
+    ...(state.decisions.length ? [`Decisions: ${state.decisions.join('; ')}`] : []),
+    ...(state.unresolvedQuestions.length
+      ? [`Unresolved questions: ${state.unresolvedQuestions.join('; ')}`]
+      : []),
+    ...(state.failedAttempts.length
+      ? [`Failed attempts: ${state.failedAttempts.map((attempt) => attempt.reason).join('; ')}`]
       : []),
     ...(state.unresolvedIssues.length
       ? [`Unresolved issues: ${state.unresolvedIssues.join('; ')}`]

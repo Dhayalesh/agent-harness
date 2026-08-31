@@ -12,6 +12,7 @@ import type {
   ContextBudgetSnapshot,
   ContextConflict,
   ContextItem,
+  ContextNeed,
   ContextQualityIssue,
   ContextQualityReport,
   ContextScope,
@@ -78,13 +79,17 @@ export class ContextCompressor {
     } else {
       content = deterministicCompression(item.content, maximumTokens * 4, preserve);
     }
+    const compressedContent = `${content}\n\n${compressionEnvelope(item)}`;
     return {
       ...item,
-      content,
-      tokenEstimate: estimateTokens(content),
+      content: compressedContent,
+      tokenEstimate: estimateTokens(compressedContent),
+      lifecycleState: 'compressed',
       provenance: appendProvenance(item.provenance, 'compressed', 'context-compressor', [item.id], {
         originalTokens: item.tokenEstimate,
-        compressedTokens: estimateTokens(content),
+        compressedTokens: estimateTokens(compressedContent),
+        sourcePreserved: true,
+        uncertaintyPreserved: true,
       }),
     };
   }
@@ -111,13 +116,21 @@ export class ContextOffloader {
     const record: OffloadedArtifact = {
       id: id('offload'),
       artifactId: artifact.id,
+      originalItemId: item.id,
       kind,
       summary: preview(item.content, 1_000),
       size: artifact.size,
       contentType: artifact.contentType,
+      reference: `artifact://${artifact.id}`,
+      recall: {
+        capability: 'ARTIFACT_READ',
+        inputs: { artifactId: artifact.id, referenceOrigin: 'context_offload' },
+      },
+      source: item.source,
       provenance: appendProvenance(item.provenance, 'offloaded', 'context-offloader', [item.id], {
         artifactId: artifact.id,
       }),
+      lifecycleState: 'offloaded',
       createdAt: now(),
     };
     const content = `${record.summary}\n[Details: artifact ${artifact.id}]`;
@@ -149,6 +162,7 @@ export class ContextHygieneEngine {
     items: readonly ContextItem[],
     signal: AbortSignal,
     scope?: ContextScope,
+    needs: readonly ContextNeed[] = [],
   ): Promise<HygieneResult> {
     const issues: ContextQualityIssue[] = [];
     const pruned: string[] = [];
@@ -196,10 +210,12 @@ export class ContextHygieneEngine {
           return false;
         }
       }
-      if (
-        item.freshness < this.config.hygiene.freshnessThreshold &&
-        item.priority !== 'essential'
-      ) {
+      const requiredFreshness = freshnessThresholdFor(
+        item,
+        needs,
+        this.config.hygiene.freshnessThreshold,
+      );
+      if (item.freshness < requiredFreshness && item.priority !== 'essential') {
         issues.push(
           issue(
             'stale',
@@ -284,12 +300,15 @@ export class ContextHygieneEngine {
             'duplicate',
             'info',
             item.id,
-            `Duplicate of ${duplicate.id} was detected.`,
+            `Duplicate of ${duplicate.id} was detected; its provenance was linked to the retained representation.`,
             this.config.features.pruning ? 'prune' : 'retain',
           ),
         );
-        if (this.config.features.pruning) pruned.push(item.id);
-        else unique.push(item);
+        if (this.config.features.pruning) {
+          const index = unique.indexOf(duplicate);
+          unique[index] = mergeDuplicateContext(duplicate, item);
+          pruned.push(item.id);
+        } else unique.push(item);
       } else unique.push(item);
     }
 
@@ -357,6 +376,7 @@ export class ContextBudgetEngine {
     systemInstructionTokens: number;
     messageTokens: number;
     toolTokens: number;
+    categoryDemand?: Readonly<Partial<Record<ContextBudgetCategory, number>>>;
   }): ContextBudgetSnapshot {
     const inputLimit = Math.max(1, this.config.budgets.maxInputTokens ?? input.inputLimit);
     const outputReservation = Math.max(
@@ -369,9 +389,12 @@ export class ContextBudgetEngine {
       0,
       availableInput - input.systemInstructionTokens - input.messageTokens - input.toolTokens,
     );
-    const allocations = (
-      Object.entries(this.config.budgets.categoryShares) as [ContextBudgetCategory, number][]
-    ).map(([category, share]) => ({
+    const shares = dynamicCategoryShares(
+      this.config.budgets.categoryShares,
+      input.categoryDemand ?? {},
+    );
+    const allocations = (Object.entries(shares) as [ContextBudgetCategory, number][]).map(
+      ([category, share]) => ({
       category,
       maximumTokens: Math.floor(distributable * share),
       usedTokens:
@@ -416,12 +439,14 @@ export class ContextFinalizer {
   }): FinalizedContext {
     const systemTokens = estimateTokens(input.systemPrompt);
     const toolTokens = estimateTokens(JSON.stringify(input.tools));
+    const categoryDemand = categoryDemandFor(input.items);
     const preliminaryBudget = this.budgets.create({
       inputLimit: input.inputLimit,
       outputReservation: input.outputReservation,
       systemInstructionTokens: systemTokens,
       messageTokens: 0,
       toolTokens,
+      categoryDemand,
     });
     const historyTarget =
       preliminaryBudget.allocations.find(
@@ -443,8 +468,10 @@ export class ContextFinalizer {
       systemInstructionTokens: systemTokens,
       messageTokens,
       toolTokens,
+      categoryDemand,
     });
     const grouped = groupByCategory(input.items);
+    const criticalEvidenceIds = identifyCriticalEvidence(input.items);
     const selectedSections: FinalContextSection[] = [];
     const omitted = new Set<string>();
     let remaining = Math.max(0, baseBudget.availableInput - baseBudget.usedInput);
@@ -458,7 +485,8 @@ export class ContextFinalizer {
         Math.max(0, allocation.maximumTokens - allocation.usedTokens),
       );
       for (const item of candidates) {
-        const essential = item.priority === 'essential';
+        const essential =
+          item.priority === 'essential' || criticalEvidenceIds.includes(item.id);
         if (!essential && item.tokenEstimate > categoryRemaining) {
           omitted.add(item.id);
           continue;
@@ -494,18 +522,45 @@ export class ContextFinalizer {
       allocations,
       exceeded: usedInput > baseBudget.availableInput,
     };
-    const systemPromptAddition = renderSections(selectedSections, input.quality);
+    const omittedCriticalEvidence = criticalEvidenceIds.filter(
+      (itemId) => !selectedSections.some((section) => section.itemIds.includes(itemId)),
+    );
+    const finalQuality: ContextQualityReport =
+      omittedCriticalEvidence.length === 0
+        ? input.quality
+        : {
+            ...input.quality,
+            status: 'insufficient',
+            decision: 'ABSTAIN',
+            score: clamp(Math.min(input.quality.score, 0.35)),
+            sufficient: false,
+            issues: [
+              ...input.quality.issues,
+              {
+                code: 'budget',
+                severity: 'error',
+                itemIds: omittedCriticalEvidence,
+                message: 'The active model context could not retain all critical evidence within its input budget.',
+                remediation: 'compress',
+              },
+            ],
+            checkedAt: now(),
+          };
+    const systemPromptAddition = renderSections(selectedSections, finalQuality);
     return {
       systemPromptAddition,
       messages: activeMessages.messages,
       tools: input.tools,
       sections: selectedSections,
       budget,
-      quality: input.quality,
+      quality: finalQuality,
+      canonicalItemIds: input.items.map((item) => item.id),
+      activeItemIds: dedupeStrings(selectedSections.flatMap((section) => section.itemIds)),
+      criticalEvidenceIds,
       provenanceIds: dedupeStrings(
         input.items
           .filter((item) => selectedSections.some((section) => section.itemIds.includes(item.id)))
-          .map((item) => item.provenance.id),
+          .flatMap((item) => [item.provenance.id, ...(item.supportingProvenanceIds ?? [])]),
       ),
       omittedItemIds: [...omitted],
       omittedMessageIds: activeMessages.droppedIndices
@@ -542,7 +597,17 @@ export function detectContextConflicts(items: readonly ContextItem[]): ContextCo
       itemIds: group.map((item) => item.id),
       reason: 'value',
       resolution,
+      resolutionStatus: resolution === 'unresolved' ? 'requires_clarification' : 'resolved',
       ...(resolution === 'unresolved' ? {} : { preferredItemId: preferred.id }),
+      claims: group.map((item) => ({
+        itemId: item.id,
+        value: conflictValue(item, claimKey),
+        sourceId: item.source.id,
+        ...((item.source.sourceTimestamp ?? item.source.observedAt) === undefined
+          ? {}
+          : { sourceTimestamp: item.source.sourceTimestamp ?? item.source.observedAt! }),
+        authority: item.authority,
+      })),
       explanation:
         resolution === 'unresolved'
           ? `Conflicting evidence for ${claimKey} remains unresolved; all evidence references were retained.`
@@ -550,6 +615,55 @@ export function detectContextConflicts(items: readonly ContextItem[]): ContextCo
     });
   }
   return conflicts;
+}
+
+function conflictValue(item: ContextItem, claimKey: string): string {
+  if (item.structured !== undefined) {
+    const serialized = JSON.stringify(item.structured);
+    if (serialized.length <= 500) return serialized;
+  }
+  const matching = item.content
+    .split(/(?<=[.!?])\s+|\n+/)
+    .find((line) => line.toLowerCase().includes(claimKey.toLowerCase()));
+  return preview(matching ?? item.content, 500);
+}
+
+function mergeDuplicateContext(strongest: ContextItem, duplicate: ContextItem): ContextItem {
+  return {
+    ...strongest,
+    supportingProvenanceIds: dedupeStrings([
+      ...(strongest.supportingProvenanceIds ?? []),
+      strongest.provenance.id,
+      duplicate.provenance.id,
+      ...(duplicate.supportingProvenanceIds ?? []),
+    ]),
+    claimKeys: dedupeStrings([...(strongest.claimKeys ?? []), ...(duplicate.claimKeys ?? [])]),
+    provenance: appendProvenance(
+      {
+        ...strongest.provenance,
+        parentIds: dedupeStrings([
+          ...strongest.provenance.parentIds,
+          duplicate.provenance.id,
+          ...duplicate.provenance.parentIds,
+        ]),
+      },
+      'validated',
+      'context-hygiene-deduplication',
+      [strongest.id, duplicate.id],
+      { retained: strongest.id, duplicate: duplicate.id },
+    ),
+  };
+}
+
+function compressionEnvelope(item: ContextItem): string {
+  const reference = item.source.uri ?? item.source.id;
+  const sourceTime = item.source.sourceTimestamp ?? item.source.observedAt ?? 'unknown';
+  const retrieved = item.source.retrievedAt ?? 'not recorded';
+  return [
+    `[Evidence metadata: source=${item.source.name}; reference=${reference}; sourceTime=${sourceTime}; retrieved=${retrieved}; provenance=${item.provenance.id}]`,
+    `[Quality: confidence=${item.confidence.toFixed(2)}; authority=${item.authority.toFixed(2)}; freshness=${item.freshness.toFixed(2)}]`,
+    ...(item.claimKeys?.length ? [`[Claims: ${item.claimKeys.slice(0, 20).join(', ')}]`] : []),
+  ].join('\n');
 }
 
 function exactStructuredCompression(
@@ -601,6 +715,41 @@ function issue(
   return { code, severity, itemIds: [itemId], message, remediation };
 }
 
+function freshnessThresholdFor(
+  item: ContextItem,
+  needs: readonly ContextNeed[],
+  configuredFloor: number,
+): number {
+  const sourceKind = item.source.sourceKind ?? sourceKindFromType(item.source.type);
+  const requirements = needs
+    .filter((need) => need.sourceKinds.includes(sourceKind))
+    .map((need) => need.freshnessRequirement);
+  if (requirements.length === 0 || requirements.every((value) => value === 'ANY' || value === 'NONE' || value === 'HISTORICAL'))
+    return 0;
+  const requested = requirements.reduce((maximum, requirement) => {
+    const threshold =
+      requirement === 'CURRENT' || requirement === 'LATEST' || requirement === 'TODAY'
+        ? 0.8
+        : requirement === 'RECENT' || requirement === 'THIS_WEEK'
+          ? 0.6
+          : 0;
+    return Math.max(maximum, threshold);
+  }, 0);
+  return Math.max(configuredFloor, requested);
+}
+
+function sourceKindFromType(type: ContextItem['source']['type']): ContextNeed['sourceKinds'][number] {
+  if (type === 'file' || type === 'document') return 'FILE';
+  if (type === 'web' || type === 'external') return 'WEB';
+  if (type === 'memory') return 'MEMORY';
+  if (type === 'mcp') return 'MCP';
+  if (type === 'database') return 'DATABASE';
+  if (type === 'api') return 'API';
+  if (type === 'task-state') return 'TASK_STATE';
+  if (type === 'artifact') return 'ARTIFACT';
+  return 'APPLICATION_CONTEXT';
+}
+
 function isExpired(item: ContextItem): boolean {
   return item.expiresAt !== undefined && Date.parse(item.expiresAt) <= Date.now();
 }
@@ -618,12 +767,18 @@ function byUtility(left: ContextItem, right: ContextItem): number {
 }
 
 function itemUtility(item: ContextItem): number {
+  const taskStateWeight = item.kind === 'task-state' || item.kind === 'finding' ? 1 : 0;
+  const memoryWeight = item.kind === 'memory' ? item.relevance : 0;
+  const dependencyWeight = item.dependencyIds?.length ? Math.min(1, item.dependencyIds.length / 4) : 0;
   return (
-    itemPriority(item) * 0.35 +
-    item.relevance * 0.25 +
-    item.authority * 0.2 +
+    itemPriority(item) * 0.3 +
+    item.relevance * 0.23 +
+    item.authority * 0.17 +
     item.freshness * 0.1 +
-    item.confidence * 0.1
+    item.confidence * 0.1 +
+    taskStateWeight * 0.04 +
+    memoryWeight * 0.03 +
+    dependencyWeight * 0.03
   );
 }
 
@@ -671,6 +826,36 @@ function qualityReport(
   };
 }
 
+function identifyCriticalEvidence(items: readonly ContextItem[]): string[] {
+  const evidence = items.filter((item) => item.kind === 'evidence');
+  const selected = new Set<string>();
+  const byClaim = new Map<string, ContextItem[]>();
+  for (const item of evidence) {
+    for (const claimKey of item.claimKeys ?? []) {
+      const entries = byClaim.get(claimKey) ?? [];
+      entries.push(item);
+      byClaim.set(claimKey, entries);
+    }
+  }
+  for (const entries of byClaim.values()) {
+    const strongest = [...entries].sort(byUtility)[0];
+    if (strongest) selected.add(strongest.id);
+  }
+  const bySourceKind = new Map<string, ContextItem[]>();
+  for (const item of evidence) {
+    const sourceKind = item.source.sourceKind ?? item.source.type;
+    const entries = bySourceKind.get(sourceKind) ?? [];
+    entries.push(item);
+    bySourceKind.set(sourceKind, entries);
+  }
+  for (const entries of bySourceKind.values()) {
+    const strongest = [...entries].sort(byUtility)[0];
+    if (strongest) selected.add(strongest.id);
+  }
+  for (const item of evidence.filter((entry) => entry.priority === 'essential')) selected.add(item.id);
+  return [...selected];
+}
+
 function groupByCategory(items: readonly ContextItem[]): Map<ContextBudgetCategory, ContextItem[]> {
   const groups = new Map<ContextBudgetCategory, ContextItem[]>();
   for (const item of items) {
@@ -680,6 +865,41 @@ function groupByCategory(items: readonly ContextItem[]): Map<ContextBudgetCatego
     groups.set(category, group);
   }
   return groups;
+}
+
+function categoryDemandFor(
+  items: readonly ContextItem[],
+): Readonly<Partial<Record<ContextBudgetCategory, number>>> {
+  const demand: Partial<Record<ContextBudgetCategory, number>> = {};
+  for (const item of items) {
+    const category = categoryFor(item);
+    demand[category] = (demand[category] ?? 0) + item.tokenEstimate;
+  }
+  return demand;
+}
+
+function dynamicCategoryShares(
+  configured: Readonly<Record<ContextBudgetCategory, number>>,
+  demand: Readonly<Partial<Record<ContextBudgetCategory, number>>>,
+): Readonly<Record<ContextBudgetCategory, number>> {
+  const protectedCategories = new Set<ContextBudgetCategory>([
+    'systemInstructions',
+    'safetyPolicy',
+    'userRequest',
+    'toolDefinitions',
+  ]);
+  const weighted = (Object.entries(configured) as [ContextBudgetCategory, number][]).map(
+    ([category, share]) => {
+      if (protectedCategories.has(category)) return [category, share] as const;
+      const tokens = demand[category] ?? 0;
+      const multiplier = tokens === 0 ? 0.35 : Math.min(2.25, 1 + Math.log10(1 + tokens) / 4);
+      return [category, share * multiplier] as const;
+    },
+  );
+  const total = weighted.reduce((sum, [, value]) => sum + value, 0) || 1;
+  return Object.fromEntries(
+    weighted.map(([category, value]) => [category, value / total]),
+  ) as Record<ContextBudgetCategory, number>;
 }
 
 function categoryFor(item: ContextItem): ContextBudgetCategory {
@@ -700,7 +920,7 @@ function categoryPriority(category: ContextBudgetCategory): number {
     userRequest: 90,
     taskInstructions: 85,
     taskState: 80,
-    retrievalEvidence: 75,
+    retrievalEvidence: 88,
     toolObservations: 70,
     toolDefinitions: 82,
     memory: 60,

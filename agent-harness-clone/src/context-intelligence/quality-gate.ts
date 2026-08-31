@@ -27,10 +27,37 @@ export class ContextQualityGate {
         issue.severity === 'error' &&
         (issue.code === 'policy' || issue.code === 'poisoning' || issue.code === 'out_of_scope'),
     );
-    const clarification = missing.filter((need) => need.status === 'clarification_required');
+    const explicitClarification = missing.filter(
+      (need) => need.status === 'clarification_required',
+    );
+    const invalidInputNeedIds = new Set(
+      input.operations
+        .filter(
+          (operation) =>
+            operation.failureClassification === 'not_found' ||
+            operation.failureClassification === 'invalid_input',
+        )
+        .map((operation) => operation.needId),
+    );
+    const clarification = [
+      ...explicitClarification,
+      ...missing.filter(
+        (need) =>
+          invalidInputNeedIds.has(need.id) &&
+          !explicitClarification.some((candidate) => candidate.id === need.id),
+      ),
+    ];
     const unavailable = missing.filter((need) => need.status === 'unavailable');
     const unresolvedConflict = input.report.conflicts.some(
       (conflict) => conflict.resolution === 'unresolved',
+    );
+    const hardBudgetFailure = issues.some(
+      (issue) => issue.severity === 'error' && issue.code === 'budget',
+    );
+    const authorizationDenied = input.operations.some(
+      (operation) =>
+        operation.status === 'denied' ||
+        operation.failureClassification === 'authorization_denied',
     );
     const exhausted =
       input.elapsedMs >= this.config.budgets.maxLoopMilliseconds ||
@@ -39,10 +66,14 @@ export class ContextQualityGate {
       input.operations.reduce((maximum, operation) => Math.max(maximum, operation.iteration), 0) >=
         this.config.budgets.maxRetrievalIterations;
 
-    const decision = hardPolicyFailure
+    const decision = hardPolicyFailure || authorizationDenied
       ? ('DENY' as const)
-      : input.actions.length > 0
-        ? ('RETRIEVE' as const)
+      : hardBudgetFailure
+        ? ('ABSTAIN' as const)
+        : input.actions.length > 0
+        ? input.operations.length > 0
+          ? ('RETRIEVE_AGAIN' as const)
+          : ('RETRIEVE' as const)
         : clarification.length > 0
           ? ('CLARIFY' as const)
           : unavailable.length > 0
@@ -80,8 +111,13 @@ export class ContextQualityGate {
     };
     const reasonCodes = dedupeStrings([
       ...(hardPolicyFailure ? ['policy_denied'] : []),
-      ...(input.actions.length > 0 ? ['retrieval_available'] : []),
+      ...(authorizationDenied ? ['authorization_denied'] : []),
+      ...(hardBudgetFailure ? ['critical_evidence_budget_exceeded'] : []),
+      ...(input.actions.length > 0
+        ? [input.operations.length > 0 ? 'adaptive_retrieval_available' : 'retrieval_available']
+        : []),
       ...(clarification.length > 0 ? ['clarification_required'] : []),
+      ...(invalidInputNeedIds.size > 0 ? ['retrieval_input_invalid'] : []),
       ...(unavailable.length > 0 ? ['capability_unavailable'] : []),
       ...(unresolvedConflict ? ['unresolved_conflict'] : []),
       ...(exhausted && missing.length > 0 ? ['retrieval_budget_exhausted'] : []),

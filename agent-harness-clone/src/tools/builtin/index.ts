@@ -11,6 +11,7 @@ import { createReadFileTool } from './read-file.js';
 import { createTodoWriteTool, TodoStore } from './todo-write.js';
 import { createWriteFileTool } from './write-file.js';
 import { createCodeArtifactTool } from './create-code-artifact.js';
+import { createContextArtifactReadTool } from './context-artifact-read.js';
 import { createCsvArtifactTool } from './create-csv-artifact.js';
 import { createDocumentArtifactTool } from './create-document-artifact.js';
 import { createHtmlArtifactTool } from './create-html-artifact.js';
@@ -34,9 +35,11 @@ export type BuiltinToolOptions = {
   autoApproveReadOnlyCommands?: boolean;
   /**
    * Response artifact store. When supplied, offers the format-specific artifact
-   * tools so the model can choose file presentation from user intent.
+   * tools and a same-session Context Intelligence offload recall tool.
    */
   artifactStore?: ArtifactStore;
+  /** Maximum stored artifact size accepted by context_artifact_read. Defaults to 10 MB. */
+  maxArtifactReadBytes?: number;
 };
 
 export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOptions = {}): Tool[] {
@@ -54,6 +57,10 @@ export function createBuiltinTools(runtime: RuntimeHost, options: BuiltinToolOpt
     createEditFileTool(runtime, snapshots),
     ...(options.artifactStore
       ? [
+          createContextArtifactReadTool(
+            options.artifactStore,
+            options.maxArtifactReadBytes,
+          ),
           createMarkdownArtifactTool(options.artifactStore),
           createHtmlArtifactTool(options.artifactStore),
           createDocumentArtifactTool(options.artifactStore),
@@ -83,6 +90,7 @@ export { createReadFileTool } from './read-file.js';
 export { createTodoWriteTool, formatTodos, TodoStore } from './todo-write.js';
 export type { TodoItem, TodoStatus } from './todo-write.js';
 export { createWriteFileTool } from './write-file.js';
+export { createContextArtifactReadTool } from './context-artifact-read.js';
 export { createMarkdownArtifactTool } from './create-markdown-artifact.js';
 export { createHtmlArtifactTool } from './create-html-artifact.js';
 export { createDocumentArtifactTool } from './create-document-artifact.js';

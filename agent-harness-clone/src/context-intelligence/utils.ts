@@ -128,15 +128,25 @@ export function sourceMetadata(
     name: partial.name,
     type: partial.type,
     authority: clamp(partial.authority ?? 0.5),
+    ...(partial.sourceKind === undefined ? {} : { sourceKind: partial.sourceKind }),
     ...(partial.provider === undefined ? {} : { provider: partial.provider }),
     ...(partial.retrievedAt === undefined ? {} : { retrievedAt: partial.retrievedAt }),
     ...(partial.observedAt === undefined ? {} : { observedAt: partial.observedAt }),
+    ...(partial.sourceTimestamp === undefined
+      ? {}
+      : { sourceTimestamp: partial.sourceTimestamp }),
     ...(partial.validFrom === undefined ? {} : { validFrom: partial.validFrom }),
     ...(partial.validUntil === undefined ? {} : { validUntil: partial.validUntil }),
     ...(partial.version === undefined ? {} : { version: partial.version }),
     ...(partial.scope === undefined ? {} : { scope: partial.scope }),
     ...(partial.uri === undefined ? {} : { uri: partial.uri }),
     ...(partial.contentHash === undefined ? {} : { contentHash: partial.contentHash }),
+    ...(partial.extractionContext === undefined
+      ? {}
+      : { extractionContext: partial.extractionContext }),
+    ...(partial.evidenceIdentity === undefined
+      ? {}
+      : { evidenceIdentity: partial.evidenceIdentity }),
     ...(partial.policyLabels === undefined ? {} : { policyLabels: partial.policyLabels }),
   };
 }

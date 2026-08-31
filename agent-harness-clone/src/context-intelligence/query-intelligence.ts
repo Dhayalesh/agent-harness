@@ -14,17 +14,24 @@ export interface QueryTransformer {
 export class IntentResolver {
   resolve(rawRequest: string): NormalizedIntent {
     const originalRequest = rawRequest.trim();
-    const normalizedRequest = normalizeQuery(originalRequest);
-    const entities = extractEntities(originalRequest);
-    const constraints = extractConstraints(originalRequest);
-    const temporal = extractTemporal(originalRequest);
-    const clauses = splitClauses(originalRequest);
+    const instructionSegments = segmentRequest(originalRequest);
+    const informationText = instructionSegments.informationRequirements.join(' ').trim();
+    const normalizedRequest = normalizeQuery(informationText || instructionSegments.userIntent);
+    const entities = extractEntities(normalizedRequest);
+    const constraints = extractConstraints(
+      [...instructionSegments.taskInstructions, originalRequest].join('\n'),
+    );
+    const temporal = extractTemporal(normalizedRequest);
+    const clauses = splitClauses(normalizedRequest);
     const ambiguity: string[] = [];
-    if (originalRequest.length < 4) ambiguity.push('The request is too short to establish intent.');
-    if (/\b(it|that|this|they|them|there)\b/i.test(originalRequest) && entities.length === 0) {
+    if (normalizedRequest.length < 4)
+      ambiguity.push('The request is too short to establish intent.');
+    if (/\b(it|that|this|they|them|there)\b/i.test(normalizedRequest) && entities.length === 0) {
       ambiguity.push('The request contains an unresolved reference.');
     }
-    const requestedOutput = extractRequestedOutput(originalRequest);
+    const requestedOutput = extractRequestedOutput(
+      instructionSegments.formattingInstructions.join(' ') || originalRequest,
+    );
     const confidence = Math.max(
       0.2,
       Math.min(
@@ -36,7 +43,7 @@ export class IntentResolver {
       originalRequest,
       normalizedRequest,
       goal: firstGoalClause(normalizedRequest),
-      operation: detectOperation(originalRequest),
+      operation: detectOperation(instructionSegments.userIntent || originalRequest),
       ...(requestedOutput === undefined ? {} : { requestedOutput }),
       entities,
       constraints,
@@ -45,6 +52,7 @@ export class IntentResolver {
       keywords: uniqueTerms(normalizedRequest).slice(0, 40),
       complexity: clauses.length >= 4 ? 'complex' : clauses.length >= 2 ? 'compound' : 'simple',
       confidence,
+      instructionSegments,
     };
   }
 }
@@ -160,15 +168,17 @@ export class QueryIntelligence {
   private async rewrite(intent: NormalizedIntent, signal: AbortSignal): Promise<readonly string[]> {
     const external = await this.transformer?.transform(
       'rewrite',
-      intent.originalRequest,
+      intent.instructionSegments.userIntent,
       intent,
       signal,
     );
-    if (external?.length) return external.filter((entry) => preservesLockedValues(entry, intent));
+    if (external?.length)
+      return external
+        .map(cleanInformationRequirement)
+        .filter((entry) => entry.length > 0 && preservesLockedValues(entry, intent));
     if (intent.normalizedRequest.length < this.config.minimumRewriteLength)
       return [intent.normalizedRequest];
-    const prefix = intent.operation === 'unknown' ? '' : `${intent.operation} `;
-    return [normalizeQuery(`${prefix}${intent.goal} ${intent.constraints.join(' ')}`)];
+    return [normalizeQuery(`${intent.goal} ${intent.constraints.join(' ')}`)];
   }
 
   private async expand(
@@ -195,15 +205,19 @@ export class QueryIntelligence {
   ): Promise<readonly string[]> {
     const external = await this.transformer?.transform(
       'decompose',
-      intent.originalRequest,
+      intent.instructionSegments.informationRequirements.join('; '),
       intent,
       signal,
     );
     if (external?.length) {
-      return external.filter((entry) => preservesLockedValues(entry, intent));
+      return external
+        .map(cleanInformationRequirement)
+        .filter((entry) => entry.length > 0 && preservesLockedValues(entry, intent));
     }
     if (intent.complexity === 'simple') return [];
-    return splitClauses(intent.originalRequest).filter((entry) => uniqueTerms(entry).length >= 2);
+    return intent.instructionSegments.informationRequirements
+      .flatMap(splitClauses)
+      .filter((entry) => uniqueTerms(entry).length >= 2);
   }
 }
 
@@ -236,6 +250,110 @@ function dedupeVariants(values: readonly QueryVariant[]): QueryVariant[] {
     output.push(value);
   }
   return output;
+}
+
+function segmentRequest(value: string): NormalizedIntent['instructionSegments'] {
+  const withoutControlBlocks = value
+    .replace(
+      /<(?:system|developer|tools?|tool_instructions|environment_context|test_prompt)[^>]*>[\s\S]*?<\/(?:system|developer|tools?|tool_instructions|environment_context|test_prompt)>/gi,
+      ' ',
+    )
+    .replace(/<\/?(?:attached_files|context_entry|environment_context)[^>]*>/gi, ' ');
+  const clauses = dedupeStrings(
+    withoutControlBlocks
+      .split(/\r?\n|(?<=[.!?])\s+/)
+      .map((entry) => entry.replace(/^\s*(?:[-*•]+|\d+[.)]|#{1,6})\s*/, '').trim())
+      .filter(Boolean),
+  ).slice(0, 200);
+  const taskInstructions: string[] = [];
+  const retrievalInstructions: string[] = [];
+  const systemToolInstructions: string[] = [];
+  const formattingInstructions: string[] = [];
+  const informationRequirements: string[] = [];
+
+  for (const clause of clauses) {
+    if (isSystemToolInstruction(clause)) {
+      systemToolInstructions.push(clause);
+      continue;
+    }
+    if (isFormattingInstruction(clause)) {
+      formattingInstructions.push(clause);
+      const subject = cleanInformationRequirement(clause);
+      if (subject) informationRequirements.push(subject);
+      continue;
+    }
+    if (isRetrievalInstruction(clause)) {
+      retrievalInstructions.push(clause);
+      const subject = cleanInformationRequirement(clause);
+      if (subject) informationRequirements.push(subject);
+      continue;
+    }
+    if (isTaskInstruction(clause)) {
+      taskInstructions.push(clause);
+      continue;
+    }
+    const subject = cleanInformationRequirement(clause);
+    if (subject) informationRequirements.push(subject);
+  }
+
+  const boundedRequirements = dedupeStrings(informationRequirements)
+    .filter((entry) => entry.length >= 2)
+    .slice(0, 12);
+  const fallback = cleanInformationRequirement(
+    clauses.find((clause) => !isSystemToolInstruction(clause)) ?? value,
+  );
+  const requirements = boundedRequirements.length > 0 ? boundedRequirements : [fallback].filter(Boolean);
+  const userIntent = normalizeQuery(requirements.join('; ').slice(0, 4_000));
+  return {
+    userIntent,
+    taskInstructions: dedupeStrings(taskInstructions).slice(0, 50),
+    retrievalInstructions: dedupeStrings(retrievalInstructions).slice(0, 30),
+    systemToolInstructions: dedupeStrings(systemToolInstructions).slice(0, 30),
+    formattingInstructions: dedupeStrings(formattingInstructions).slice(0, 30),
+    informationRequirements: requirements.map((entry) => normalizeQuery(entry).slice(0, 1_000)),
+  };
+}
+
+function cleanInformationRequirement(value: string): string {
+  return normalizeQuery(
+    value
+      .replace(/```[\s\S]*?```/g, ' ')
+      .replace(/\b(?:please\s+)?(?:find|search(?:\s+for)?|look\s+up|browse(?:\s+for)?|retrieve|fetch|tell\s+me|show\s+me|give\s+me)\b\s*/i, '')
+      .replace(
+        /\s+(?:and\s+)?(?:return|respond|format|present|output|write)\b[\s\S]*$/i,
+        ' ',
+      )
+      .replace(
+        /\s+(?:using|via|with)\s+(?:the\s+)?(?:web|internet|browser|search|available\s+tools?|mcp\s+tools?)[\s\S]*$/i,
+        ' ',
+      )
+      .replace(/\b(?:cite|include)\s+(?:the\s+)?sources?\b/gi, ' ')
+      .replace(/\s+/g, ' '),
+  ).slice(0, 1_000);
+}
+
+function isSystemToolInstruction(value: string): boolean {
+  return /\b(system prompt|developer instructions?|tool instructions?|available tools?|tool registry|permission mode|authorization policy|test harness|execution prompt|ignore previous|chain[- ]of[- ]thought)\b/i.test(
+    value,
+  ) || /^(?:context entry|environment context|instructions?|rules?|non-negotiable|acceptance criteria)\s*:?$/i.test(value);
+}
+
+function isFormattingInstruction(value: string): boolean {
+  return /\b(?:return|respond|format|present|output|render|write)\b.{0,80}\b(?:json|csv|table|list|report|summary|markdown|document|xml|yaml|bullet|code block)\b/i.test(
+    value,
+  );
+}
+
+function isRetrievalInstruction(value: string): boolean {
+  return /\b(?:search|browse|look\s+up|retrieve|fetch|verify|cite|source)\b.{0,80}\b(?:web|internet|online|official|source|documentation|database|api|mcp)\b/i.test(
+    value,
+  );
+}
+
+function isTaskInstruction(value: string): boolean {
+  return /^(?:must|never|only|ensure|do not|don't|without|before|after|limit|maximum|minimum)\b/i.test(
+    value,
+  ) || /\b(?:do not run tests|no test execution|do not clone|preserve backward compatibility)\b/i.test(value);
 }
 
 function normalizeQuery(value: string): string {

@@ -144,24 +144,527 @@ export function validateStoredSession(value: unknown): StoredSession {
   };
 }
 
+const EXECUTABLE_CONTEXT_CAPABILITIES = new Set([
+  'WEB_SEARCH',
+  'WEB_FETCH',
+  'FILE_READ',
+  'DATABASE_QUERY',
+  'API_RETRIEVAL',
+  'MCP_RETRIEVAL',
+  'MEMORY_RECALL',
+  'TASK_STATE_READ',
+  'ARTIFACT_READ',
+  'APPLICATION_CONTEXT_READ',
+  'MARKDOWN_ARTIFACT_CREATE',
+  'DOCUMENT_ARTIFACT_CREATE',
+]);
+const RUNTIME_STRATEGIES = new Set([
+  'initial',
+  'refined_query',
+  'alternate_source',
+  'alternate_capability',
+]);
+const RUNTIME_STATUSES = new Set(['planned', 'succeeded', 'empty', 'failed', 'denied']);
+const FAILURE_CLASSIFICATIONS = new Set([
+  'authorization_denied',
+  'invalid_input',
+  'not_found',
+  'timeout',
+  'network',
+  'rate_limited',
+  'unsupported',
+  'irrelevant',
+  'empty',
+  'malformed',
+  'unknown',
+]);
+const LIFECYCLE_STATES = new Set([
+  'discovered',
+  'retrieved',
+  'observed',
+  'evaluated',
+  'admitted',
+  'ranked',
+  'used',
+  'compressed',
+  'offloaded',
+  'recalled',
+  'archived',
+]);
+const FEEDBACK_CATEGORIES = new Set([
+  'retrieval',
+  'tool_choice',
+  'memory',
+  'overflow',
+  'quality_gate',
+]);
+const FEEDBACK_OUTCOMES = new Set([
+  'useful',
+  'irrelevant',
+  'failed',
+  'duplicate',
+  'retained',
+  'ignored_stale',
+  'ignored_conflict',
+  'omitted',
+  'offloaded',
+  'rejected',
+]);
+const FEEDBACK_REFERENCE_KINDS = new Set([
+  'operation',
+  'observation',
+  'evidence',
+  'retrieval_result',
+  'memory',
+  'context_item',
+  'evidence_group',
+  'finalization',
+  'quality_decision',
+]);
+const QUALITY_DECISIONS = new Set([
+  'ACCEPT',
+  'RETRIEVE',
+  'RETRIEVE_AGAIN',
+  'CLARIFY',
+  'CONFLICT',
+  'DENY',
+  'ABSTAIN',
+]);
+const QUALITY_STATUSES = new Set(['passed', 'degraded', 'insufficient', 'rejected']);
+const UNAVAILABLE_EVALUATION_METRICS = new Set([
+  'retrieval_recall',
+  'answer_accuracy',
+  'observed_cost',
+]);
+const UNAVAILABLE_EVALUATION_REASONS = new Set([
+  'no_relevance_ground_truth',
+  'no_accuracy_ground_truth',
+  'no_observed_cost',
+]);
+
 function validateContextIntelligenceState(
   value: unknown,
 ): PersistedContextIntelligenceState | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const root = value as Record<string, unknown>;
+  const allowedRootKeys = new Set([
+    'version',
+    'taskState',
+    'memories',
+    'observations',
+    'offloadedArtifacts',
+    'recentOperations',
+    'lifecycleEvents',
+    'feedback',
+    'performanceProfiles',
+    'lastEvaluation',
+    'lastSnapshot',
+    'lastContract',
+    'updatedAt',
+  ]);
+  if (!hasOnlyKeys(root, allowedRootKeys)) return undefined;
   const candidate = value as Partial<PersistedContextIntelligenceState>;
   if (
     candidate.version !== 1 ||
     !Array.isArray(candidate.memories) ||
     !Array.isArray(candidate.observations) ||
     !Array.isArray(candidate.offloadedArtifacts) ||
-    typeof candidate.updatedAt !== 'string' ||
+    !isBoundedString(candidate.updatedAt, 100) ||
     candidate.memories.length > 1_000 ||
     candidate.observations.length > 200 ||
-    candidate.offloadedArtifacts.length > 200
+    candidate.offloadedArtifacts.length > 200 ||
+    !isValidOperationSnapshots(candidate.recentOperations) ||
+    !isValidLifecycleSnapshots(candidate.lifecycleEvents) ||
+    !isValidFeedback(candidate.feedback) ||
+    !isValidPerformanceProfiles(candidate.performanceProfiles) ||
+    !isValidEvaluation(candidate.lastEvaluation) ||
+    !isValidContextSnapshot(candidate.lastSnapshot)
   ) {
     return undefined;
   }
-  return structuredClone(candidate as PersistedContextIntelligenceState);
+  const p3Projection = {
+    recentOperations: candidate.recentOperations,
+    lifecycleEvents: candidate.lifecycleEvents,
+    feedback: candidate.feedback,
+    performanceProfiles: candidate.performanceProfiles,
+    lastEvaluation: candidate.lastEvaluation,
+    lastSnapshot: candidate.lastSnapshot,
+  };
+  if (serializedBytes(p3Projection) > 1_024 * 1_024) return undefined;
+  // Accept the legacy key only long enough to migrate the state; never restore or
+  // persist its content-bearing full contract.
+  const { lastContract: _legacyContract, ...contentBoundedState } = candidate;
+  if (serializedBytes(contentBoundedState) > 5 * 1_024 * 1_024) return undefined;
+  return structuredClone(contentBoundedState as PersistedContextIntelligenceState);
+}
+
+function isValidOperationSnapshots(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 200) return false;
+  const allowed = new Set([
+    'id',
+    'requestId',
+    'needId',
+    'capability',
+    'toolName',
+    'attemptKey',
+    'strategy',
+    'iteration',
+    'status',
+    'failureClassification',
+    'observationId',
+    'startedAt',
+    'completedAt',
+    'durationMs',
+    'executionDurationMs',
+    'observedCost',
+  ]);
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const operation = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(operation, allowed) &&
+      !('input' in operation) &&
+      isBoundedString(operation.id, 300) &&
+      isBoundedString(operation.requestId, 300) &&
+      isBoundedString(operation.needId, 300) &&
+      isOneOf(operation.capability, EXECUTABLE_CONTEXT_CAPABILITIES) &&
+      isBoundedString(operation.toolName, 200) &&
+      isBoundedString(operation.attemptKey, 300) &&
+      isOneOf(operation.strategy, RUNTIME_STRATEGIES) &&
+      Number.isInteger(operation.iteration) &&
+      isFiniteNonNegative(operation.iteration) &&
+      isOneOf(operation.status, RUNTIME_STATUSES) &&
+      isBoundedString(operation.startedAt, 100) &&
+      isOptionalOneOf(operation.failureClassification, FAILURE_CLASSIFICATIONS) &&
+      isOptionalBoundedString(operation.observationId, 300) &&
+      isOptionalBoundedString(operation.completedAt, 100) &&
+      isOptionalFiniteNonNegative(operation.durationMs) &&
+      isOptionalFiniteNonNegative(operation.executionDurationMs) &&
+      isValidObservedCost(operation.observedCost)
+    );
+  });
+}
+
+function isValidLifecycleSnapshots(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 500) return false;
+  const allowed = new Set([
+    'id',
+    'requestId',
+    'itemId',
+    'needId',
+    'from',
+    'to',
+    'reasonCode',
+    'component',
+    'at',
+  ]);
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const event = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(event, allowed) &&
+      !('reason' in event) &&
+      !('metadata' in event) &&
+      isBoundedString(event.id, 300) &&
+      isBoundedString(event.requestId, 300) &&
+      isOptionalBoundedString(event.itemId, 300) &&
+      isOptionalBoundedString(event.needId, 300) &&
+      isOptionalOneOf(event.from, LIFECYCLE_STATES) &&
+      isOneOf(event.to, LIFECYCLE_STATES) &&
+      isBoundedString(event.reasonCode, 120) &&
+      isBoundedString(event.component, 200) &&
+      isBoundedString(event.at, 100)
+    );
+  });
+}
+
+function isValidObservedCost(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const cost = value as Record<string, unknown>;
+  return (
+    hasOnlyKeys(cost, new Set(['amount', 'unit', 'source'])) &&
+    isFiniteNonNegative(cost.amount) &&
+    isBoundedString(cost.unit, 50) &&
+    (cost.source === 'tool_result_metadata' || cost.source === 'runtime_event')
+  );
+}
+
+function isValidFeedback(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 1_000) return false;
+  const allowed = new Set([
+    'id',
+    'requestId',
+    'category',
+    'outcome',
+    'reasonCode',
+    'operationId',
+    'observationId',
+    'evidenceId',
+    'retrievalResultId',
+    'memoryId',
+    'toolName',
+    'capability',
+    'sourceReferences',
+    'at',
+  ]);
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const record = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(record, allowed) &&
+      isBoundedString(record.id, 300) &&
+      isBoundedString(record.requestId, 300) &&
+      isOneOf(record.category, FEEDBACK_CATEGORIES) &&
+      isOneOf(record.outcome, FEEDBACK_OUTCOMES) &&
+      isBoundedString(record.reasonCode, 120) &&
+      isOptionalBoundedString(record.operationId, 300) &&
+      isOptionalBoundedString(record.observationId, 300) &&
+      isOptionalBoundedString(record.evidenceId, 300) &&
+      isOptionalBoundedString(record.retrievalResultId, 300) &&
+      isOptionalBoundedString(record.memoryId, 300) &&
+      isOptionalBoundedString(record.toolName, 200) &&
+      isOptionalOneOf(record.capability, EXECUTABLE_CONTEXT_CAPABILITIES) &&
+      isValidFeedbackReferences(record.sourceReferences) &&
+      isBoundedString(record.at, 100)
+    );
+  });
+}
+
+function isValidFeedbackReferences(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 20) return false;
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const reference = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(reference, new Set(['kind', 'id'])) &&
+      isOneOf(reference.kind, FEEDBACK_REFERENCE_KINDS) &&
+      isBoundedString(reference.id, 500)
+    );
+  });
+}
+
+function isValidPerformanceProfiles(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 100) return false;
+  const allowed = new Set([
+    'toolName',
+    'capability',
+    'completedSamples',
+    'succeededSamples',
+    'usefulSamples',
+    'irrelevantSamples',
+    'failedSamples',
+    'duplicateSamples',
+    'classifiedSamples',
+    'durationSamples',
+    'totalDurationMs',
+    'observedCosts',
+    'processedOperationIds',
+    'updatedAt',
+  ]);
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const profile = entry as Record<string, unknown>;
+    const counters = [
+      'completedSamples',
+      'succeededSamples',
+      'usefulSamples',
+      'irrelevantSamples',
+      'failedSamples',
+      'duplicateSamples',
+      'classifiedSamples',
+      'durationSamples',
+    ];
+    return (
+      hasOnlyKeys(profile, allowed) &&
+      isBoundedString(profile.toolName, 200) &&
+      isOneOf(profile.capability, EXECUTABLE_CONTEXT_CAPABILITIES) &&
+      counters.every((key) => isNonNegativeInteger(profile[key])) &&
+      isFiniteNonNegative(profile.totalDurationMs) &&
+      isValidCostGroups(profile.observedCosts) &&
+      isBoundedStringArray(profile.processedOperationIds, 200) &&
+      isBoundedString(profile.updatedAt, 100)
+    );
+  });
+}
+
+function isValidCostGroups(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 20) return false;
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const cost = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(cost, new Set(['unit', 'samples', 'total'])) &&
+      isBoundedString(cost.unit, 50) &&
+      isNonNegativeInteger(cost.samples) &&
+      isFiniteNonNegative(cost.total)
+    );
+  });
+}
+
+function isValidEvaluation(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const evaluation = value as Record<string, unknown>;
+  const allowed = new Set([
+    'operationSuccess',
+    'classifiedRetrievalUsefulness',
+    'evidenceUtilization',
+    'memoryRetention',
+    'gateRejection',
+    'unclassifiedRetrievalOperations',
+    'latency',
+    'costs',
+    'unavailable',
+    'evaluatedAt',
+  ]);
+  return (
+    hasOnlyKeys(evaluation, allowed) &&
+    [
+      'operationSuccess',
+      'classifiedRetrievalUsefulness',
+      'evidenceUtilization',
+      'memoryRetention',
+      'gateRejection',
+    ].every((key) => isValidMeasuredRatio(evaluation[key])) &&
+    isNonNegativeInteger(evaluation.unclassifiedRetrievalOperations) &&
+    isValidLatency(evaluation.latency) &&
+    isValidCostGroups(evaluation.costs) &&
+    isValidUnavailableMetrics(evaluation.unavailable) &&
+    isBoundedString(evaluation.evaluatedAt, 100) &&
+    serializedBytes(value) <= 64 * 1_024
+  );
+}
+
+function isValidMeasuredRatio(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const ratio = value as Record<string, unknown>;
+  return (
+    hasOnlyKeys(ratio, new Set(['numerator', 'denominator', 'value'])) &&
+    isNonNegativeInteger(ratio.numerator) &&
+    typeof ratio.denominator === 'number' &&
+    Number.isInteger(ratio.denominator) &&
+    ratio.denominator > 0 &&
+    typeof ratio.value === 'number' &&
+    Number.isFinite(ratio.value) &&
+    ratio.value >= 0 &&
+    ratio.value <= 1
+  );
+}
+
+function isValidLatency(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const latency = value as Record<string, unknown>;
+  return (
+    hasOnlyKeys(
+      latency,
+      new Set(['samples', 'totalMs', 'meanMs', 'minimumMs', 'maximumMs']),
+    ) &&
+    isNonNegativeInteger(latency.samples) &&
+    isFiniteNonNegative(latency.totalMs) &&
+    isOptionalFiniteNonNegative(latency.meanMs) &&
+    isOptionalFiniteNonNegative(latency.minimumMs) &&
+    isOptionalFiniteNonNegative(latency.maximumMs)
+  );
+}
+
+function isValidUnavailableMetrics(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > 20) return false;
+  return value.every((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const unavailable = entry as Record<string, unknown>;
+    return (
+      hasOnlyKeys(unavailable, new Set(['metric', 'reason'])) &&
+      isOneOf(unavailable.metric, UNAVAILABLE_EVALUATION_METRICS) &&
+      isOneOf(unavailable.reason, UNAVAILABLE_EVALUATION_REASONS)
+    );
+  });
+}
+
+function isFiniteNonNegative(value: unknown): boolean {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+
+function isOneOf(value: unknown, values: ReadonlySet<string>): value is string {
+  return typeof value === 'string' && values.has(value);
+}
+
+function isOptionalOneOf(value: unknown, values: ReadonlySet<string>): boolean {
+  return value === undefined || isOneOf(value, values);
+}
+
+function isOptionalFiniteNonNegative(value: unknown): boolean {
+  return value === undefined || isFiniteNonNegative(value);
+}
+
+function isOptionalBoundedString(value: unknown, maximumLength: number): boolean {
+  return value === undefined || isBoundedString(value, maximumLength);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function serializedBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function isValidContextSnapshot(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const snapshot = value as Record<string, unknown>;
+  return (
+    hasOnlyKeys(
+      snapshot,
+      new Set([
+        'version',
+        'requestId',
+        'taskId',
+        'decision',
+        'qualityStatus',
+        'activeItemIds',
+        'evidenceIds',
+        'offloadedArtifactIds',
+        'lifecycleEventIds',
+        'updatedAt',
+      ]),
+    ) &&
+    snapshot.version === 1 &&
+    isBoundedString(snapshot.requestId, 200) &&
+    isBoundedString(snapshot.taskId, 200) &&
+    isOneOf(snapshot.decision, QUALITY_DECISIONS) &&
+    isOneOf(snapshot.qualityStatus, QUALITY_STATUSES) &&
+    isBoundedStringArray(snapshot.activeItemIds, 1_000) &&
+    isBoundedStringArray(snapshot.evidenceIds, 1_000) &&
+    isBoundedStringArray(snapshot.offloadedArtifactIds, 200) &&
+    isBoundedStringArray(snapshot.lifecycleEventIds, 500) &&
+    isBoundedString(snapshot.updatedAt, 100)
+  );
+}
+
+function isBoundedStringArray(value: unknown, maximum: number): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= maximum &&
+    value.every((entry) => isBoundedString(entry, 500))
+  );
+}
+
+function isBoundedString(value: unknown, maximumLength: number): value is string {
+  return typeof value === 'string' && value.length <= maximumLength;
 }
 
 export function createPreparedContextCheckpoint(

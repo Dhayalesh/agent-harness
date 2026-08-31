@@ -422,7 +422,8 @@ class AgentSessionImpl implements AgentSession {
                 });
               intelligentContext = await prepareIntelligence();
               while (
-                intelligentContext.contract.directive.decision === 'RETRIEVE' &&
+                (intelligentContext.contract.directive.decision === 'RETRIEVE' ||
+                  intelligentContext.contract.directive.decision === 'RETRIEVE_AGAIN') &&
                 intelligentContext.contract.directive.actions.length > 0
               ) {
                 for (const action of intelligentContext.contract.directive.actions) {
@@ -467,15 +468,54 @@ class AgentSessionImpl implements AgentSession {
               report: contextIntelligenceReport(intelligentContext.contract),
             });
           }
-          const intelligenceIntervention =
-            intelligentContext && !intelligentContext.contract.directive.continueToModel
-              ? intelligentContext.contract.directive.decision
+          const directive = intelligentContext?.contract.directive;
+          const requestedIntervention =
+            directive && !directive.continueToModel
+              ? directive.decision
               : intelligenceFailureDecision;
+          // RETRIEVE decisions are planning states, not application outcomes. If a
+          // bounded plan ever exhausts without the quality gate normalizing it,
+          // preserve the terminal stop while exposing the truthful ABSTAIN outcome.
+          const interventionDecision =
+            requestedIntervention === 'CLARIFY' ||
+            requestedIntervention === 'ABSTAIN' ||
+            requestedIntervention === 'DENY' ||
+            requestedIntervention === 'CONFLICT'
+              ? requestedIntervention
+              : requestedIntervention === 'RETRIEVE' ||
+                  requestedIntervention === 'RETRIEVE_AGAIN'
+                ? ('ABSTAIN' as const)
+                : undefined;
+          const intelligenceIntervention =
+            interventionDecision === undefined
+              ? undefined
+              : {
+                  kind: 'context-intelligence' as const,
+                  decision: interventionDecision,
+                  terminal: true as const,
+                  continueToModel: false as const,
+                  reasonCodes: (
+                    directive && !directive.continueToModel
+                      ? [
+                          ...directive.reasonCodes,
+                          ...(requestedIntervention === 'RETRIEVE' ||
+                          requestedIntervention === 'RETRIEVE_AGAIN'
+                            ? ['retrieval_exhausted']
+                            : []),
+                        ]
+                      : ['context_preparation_failed']
+                  ).slice(0, 50),
+                  clarificationNeeds:
+                    directive && !directive.continueToModel
+                      ? directive.clarification.map((entry) => entry.type).slice(0, 50)
+                      : [],
+                };
           if (intelligenceIntervention) {
             yield this.event({
               type: 'warning',
-              code: `CONTEXT_${intelligenceIntervention}`,
-              message: contextInterventionMessage(intelligenceIntervention),
+              code: `CONTEXT_${intelligenceIntervention.decision}`,
+              message: contextInterventionMessage(intelligenceIntervention.decision),
+              intervention: intelligenceIntervention,
             });
             await this.persist();
             yield this.event({ type: 'turn.completed', turnId, turn, reason: 'end_turn' });
@@ -1190,6 +1230,7 @@ class AgentSessionImpl implements AgentSession {
             output,
             sessionId: this.id,
             turnId,
+            executionDurationMs: Date.now() - toolStarted,
           });
           output = processed.result;
         } catch (error) {
@@ -1271,7 +1312,13 @@ class AgentSessionImpl implements AgentSession {
     } catch (error) {
       // Whatever the tool reported before it failed has already been yielded.
       let result = this.toolError(call.id, errorMessage(error));
-      result = await this.processToolFailure(tool, call, result, turnId);
+      result = await this.processToolFailure(
+        tool,
+        call,
+        result,
+        turnId,
+        Date.now() - toolStarted,
+      );
       this.log({
         level: 'error',
         event: 'tool.execution.failed',
@@ -1346,6 +1393,7 @@ class AgentSessionImpl implements AgentSession {
     call: ToolCallBlock,
     result: ToolResultBlock,
     turnId: string,
+    executionDurationMs?: number,
   ): Promise<ToolResultBlock> {
     if (!this.contextIntelligence) return result;
     try {
@@ -1359,6 +1407,7 @@ class AgentSessionImpl implements AgentSession {
         },
         sessionId: this.id,
         turnId,
+        ...(executionDurationMs === undefined ? {} : { executionDurationMs }),
       });
       return {
         type: 'tool_result',
@@ -1937,6 +1986,7 @@ function contextInterventionMessage(decision: ContextQualityDecision): string {
     case 'ABSTAIN':
       return 'Context Intelligence abstained because required evidence could not be obtained.';
     case 'RETRIEVE':
+    case 'RETRIEVE_AGAIN':
       return 'Context Intelligence could not complete its bounded retrieval plan.';
     case 'ACCEPT':
       return 'Context Intelligence accepted the active context.';

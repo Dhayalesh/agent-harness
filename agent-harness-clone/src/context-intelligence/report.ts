@@ -68,6 +68,9 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       insufficiencies: contract.retrieval.insufficiencies.length,
       conflicts: contract.retrieval.conflicts.length,
       operations: contract.runtimeRetrieval.length,
+      operationOutcomes: countBy(
+        contract.runtimeRetrieval.map((operation) => operation.status),
+      ),
       toolNames: unique(contract.runtimeRetrieval.map((operation) => operation.toolName)).slice(
         0,
         NAME_LIMIT,
@@ -76,6 +79,16 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     memory: {
       recalled: contract.memories.length,
       types: countBy<MemoryType>(contract.memories.map((memory) => memory.type)),
+      reconciliation: {
+        retained: contract.memoryAssessment.retained.length,
+        ignored: contract.memoryAssessment.ignoredIds.length,
+        stale: contract.memoryAssessment.staleIds.length,
+        conflicts: contract.memoryAssessment.conflictingIds.length,
+      },
+    },
+    lifecycle: {
+      events: contract.lifecycle.length,
+      states: countBy(contract.lifecycle.map((event) => event.to)),
     },
     capabilities: {
       available: contract.toolPlan.selected.length + contract.toolPlan.excluded.length,
@@ -114,6 +127,9 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     budget: structuredClone(contract.budget),
     finalContext: {
       items: contract.items.length,
+      canonicalItems: finalContext?.canonicalItemIds.length ?? contract.items.length,
+      activeItems:
+        finalContext?.activeItemIds.length ?? contract.items.filter((item) => item.active).length,
       evidence: contract.evidence.length,
       sources: contract.sources.length,
       sections: finalContext?.sections.length ?? 0,
@@ -137,6 +153,32 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       alternatives: contract.reasoning.alternatives.length,
       planSteps: contract.reasoning.plan.length,
     },
+    ...(contract.feedback === undefined
+      ? {}
+      : {
+          feedback: {
+            total: contract.feedback.length,
+            categories: countBy(contract.feedback.map((record) => record.category)),
+            outcomes: countBy(contract.feedback.map((record) => record.outcome)),
+          },
+        }),
+    ...(contract.predictiveContext === undefined
+      ? {}
+      : {
+          prediction: {
+            hints: contract.predictiveContext.readyStepIds.length,
+            satisfiedDependencies:
+              contract.predictiveContext.satisfiedDependencyIds.length,
+            evidenceReferences: contract.predictiveContext.evidenceIds.length,
+            truncated: contract.predictiveContext.truncated,
+          },
+        }),
+    ...(contract.optimization === undefined
+      ? {}
+      : { optimization: structuredClone(contract.optimization) }),
+    ...(contract.evaluation === undefined
+      ? {}
+      : { evaluation: structuredClone(contract.evaluation) }),
     updatedAt: contract.updatedAt,
   };
 }

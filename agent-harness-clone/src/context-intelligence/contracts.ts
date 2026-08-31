@@ -28,8 +28,24 @@ export type TemporalRequirement = {
   requiresCurrentData: boolean;
 };
 
+export type RequestInstructionSegments = {
+  /** The user's outcome, without tool, policy, or formatting directives. */
+  userIntent: string;
+  /** Non-retrieval task constraints that still govern execution. */
+  taskInstructions: readonly string[];
+  /** Directions about where/how to retrieve, never copied into the query verbatim. */
+  retrievalInstructions: readonly string[];
+  /** System/tool/control-plane language excluded from retrieval. */
+  systemToolInstructions: readonly string[];
+  /** Output-shape directions excluded from retrieval. */
+  formattingInstructions: readonly string[];
+  /** Subject matter that evidence must answer. */
+  informationRequirements: readonly string[];
+};
+
 export type NormalizedIntent = {
   originalRequest: string;
+  /** A clean information query, not the complete execution prompt. */
   normalizedRequest: string;
   goal: string;
   operation: 'answer' | 'analyze' | 'create' | 'update' | 'delete' | 'execute' | 'unknown';
@@ -41,19 +57,82 @@ export type NormalizedIntent = {
   keywords: readonly string[];
   complexity: 'simple' | 'compound' | 'complex';
   confidence: number;
+  instructionSegments: RequestInstructionSegments;
 };
+
+/** Source-independent vocabulary used for need, evidence, and capability decisions. */
+export type ContextSourceKind =
+  | 'FILE'
+  | 'WEB'
+  | 'MEMORY'
+  | 'MCP'
+  | 'DATABASE'
+  | 'API'
+  | 'TASK_STATE'
+  | 'ARTIFACT'
+  | 'APPLICATION_CONTEXT';
 
 /** Generic information/capability vocabulary owned by Context Intelligence. */
 export type ContextNeedType =
-  'CURRENT_EXTERNAL_INFORMATION' | 'FILE_INFORMATION' | 'DOCUMENT_CREATION';
+  | 'CURRENT_EXTERNAL_INFORMATION'
+  | 'FILE_INFORMATION'
+  | 'DATABASE_INFORMATION'
+  | 'API_INFORMATION'
+  | 'MCP_DOMAIN_INFORMATION'
+  | 'MEMORY_INFORMATION'
+  | 'TASK_STATE_INFORMATION'
+  | 'ARTIFACT_INFORMATION'
+  | 'APPLICATION_CONTEXT_INFORMATION'
+  | 'DOCUMENT_CREATION';
 
 export type ContextCapability =
   | 'WEB_RETRIEVAL'
   | 'WEB_SEARCH'
   | 'WEB_FETCH'
   | 'FILE_READ'
+  | 'DATABASE_QUERY'
+  | 'API_RETRIEVAL'
+  | 'MCP_RETRIEVAL'
+  | 'MEMORY_RECALL'
+  | 'TASK_STATE_READ'
+  | 'ARTIFACT_READ'
+  | 'APPLICATION_CONTEXT_READ'
   | 'MARKDOWN_ARTIFACT_CREATE'
   | 'DOCUMENT_ARTIFACT_CREATE';
+
+export type ExecutableContextCapability = Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+export type ContextFreshnessRequirement =
+  | 'CURRENT'
+  | 'LATEST'
+  | 'RECENT'
+  | 'TODAY'
+  | 'THIS_WEEK'
+  | 'HISTORICAL'
+  | 'ANY'
+  | 'NONE';
+export type ContextAuthorityRequirement = 'AUTHORITATIVE' | 'TRUSTED' | 'ANY';
+export type ContextSourceRequirement =
+  | 'external'
+  | 'workspace'
+  | 'memory'
+  | 'mcp'
+  | 'database'
+  | 'api'
+  | 'task-state'
+  | 'artifact'
+  | 'application-context'
+  | 'any';
+
+export type CapabilityRequirement = {
+  id: string;
+  needId: string;
+  capability: ContextCapability;
+  sourceKinds: readonly ContextSourceKind[];
+  readOnly: boolean;
+  requiredInputs: readonly string[];
+  authorityRequirement: ContextAuthorityRequirement;
+  freshnessRequirement: ContextFreshnessRequirement;
+};
 
 export type ContextNeedStatus = 'satisfied' | 'missing' | 'unavailable' | 'clarification_required';
 
@@ -64,15 +143,17 @@ export type ContextNeed = {
   requiredInformation: readonly string[];
   missingInformation: readonly string[];
   reason: string;
-  sourceRequirement: 'external' | 'workspace' | 'any';
-  freshnessRequirement: 'CURRENT' | 'RECENT' | 'ANY';
-  authorityRequirement: 'AUTHORITATIVE' | 'TRUSTED' | 'ANY';
+  sourceRequirement: ContextSourceRequirement;
+  sourceKinds: readonly ContextSourceKind[];
+  freshnessRequirement: ContextFreshnessRequirement;
+  authorityRequirement: ContextAuthorityRequirement;
   scope: ContextScope;
   evidenceRequirement: 'REQUIRED' | 'SUPPORTING' | 'NONE';
   requiredCapability: ContextCapability;
+  capabilityRequirement: CapabilityRequirement;
   priority: 'critical' | 'high' | 'normal' | 'low';
   status: ContextNeedStatus;
-  /** Validated arguments known before capability execution, such as a file path. */
+  /** Validated arguments with real provenance, or safe abstract query inputs. */
   inputs: Readonly<Record<string, unknown>>;
 };
 
@@ -80,6 +161,14 @@ export type SourceType =
   | 'user'
   | 'conversation'
   | 'memory'
+  | 'file'
+  | 'web'
+  | 'mcp'
+  | 'database'
+  | 'api'
+  | 'task-state'
+  | 'artifact'
+  | 'application-context'
   | 'document'
   | 'structured'
   | 'vector'
@@ -94,16 +183,21 @@ export type SourceMetadata = {
   id: string;
   name: string;
   type: SourceType;
+  sourceKind?: ContextSourceKind;
   provider?: string;
   authority: number;
   retrievedAt?: ISODateTime;
   observedAt?: ISODateTime;
+  /** Timestamp asserted by the source, distinct from retrieval time. */
+  sourceTimestamp?: ISODateTime;
   validFrom?: ISODateTime;
   validUntil?: ISODateTime;
   version?: string;
   scope?: readonly string[];
   uri?: string;
   contentHash?: string;
+  extractionContext?: string;
+  evidenceIdentity?: string;
   policyLabels?: readonly string[];
 };
 
@@ -151,6 +245,19 @@ export type ContextItemKind =
   | 'example'
   | 'artifact-handle';
 
+export type ContextLifecycleState =
+  | 'discovered'
+  | 'retrieved'
+  | 'observed'
+  | 'evaluated'
+  | 'admitted'
+  | 'ranked'
+  | 'used'
+  | 'compressed'
+  | 'offloaded'
+  | 'recalled'
+  | 'archived';
+
 export type ContextItem = {
   id: string;
   kind: ContextItemKind;
@@ -159,6 +266,10 @@ export type ContextItem = {
   structured?: unknown;
   source: SourceMetadata;
   provenance: Provenance;
+  /** Provenance records folded into this strongest representation during deduplication. */
+  supportingProvenanceIds?: readonly string[];
+  dependencyIds?: readonly string[];
+  lifecycleState?: ContextLifecycleState;
   relevance: number;
   confidence: number;
   authority: number;
@@ -173,13 +284,38 @@ export type ContextItem = {
   active: boolean;
 };
 
+export type EvidenceRelationship = 'supports' | 'contradicts' | 'context' | 'discovery';
+
 export type EvidenceItem = ContextItem & {
   kind: 'evidence';
   claims: readonly string[];
   retrievalQuery?: string;
+  /** Passive-provider result identity retained for event-derived feedback correlation. */
+  retrievalResultId?: string;
   rank: number;
   capability?: ContextCapability;
   observationId?: string;
+  evidenceIdentity: string;
+  relationship: EvidenceRelationship;
+  evaluation: {
+    relevance: number;
+    authority: number;
+    freshness: number;
+    confidence: number;
+    provenanceComplete: boolean;
+    admitted: boolean;
+    reasons: readonly string[];
+  };
+};
+
+export type EvidenceGroup = {
+  id: string;
+  claimKey: string;
+  evidenceIds: readonly string[];
+  provenanceIds: readonly string[];
+  strongestEvidenceId: string;
+  duplicateCount: number;
+  relationships: Readonly<Partial<Record<EvidenceRelationship, number>>>;
 };
 
 export type ContextConflict = {
@@ -188,7 +324,15 @@ export type ContextConflict = {
   itemIds: readonly string[];
   reason: 'value' | 'scope' | 'time' | 'version' | 'authority';
   resolution: 'authority' | 'freshness' | 'scope' | 'unresolved';
+  resolutionStatus: 'resolved' | 'unresolved' | 'requires_clarification';
   preferredItemId?: string;
+  claims: readonly {
+    itemId: string;
+    value: string;
+    sourceId: string;
+    sourceTimestamp?: ISODateTime;
+    authority: number;
+  }[];
   explanation: string;
 };
 
@@ -203,30 +347,55 @@ export type TaskStep = {
   updatedAt: ISODateTime;
 };
 
+export type TaskFailureAttempt = {
+  receiptId?: string;
+  stepId?: string;
+  reason: string;
+  at: ISODateTime;
+};
+
+export type TaskDependency = {
+  id: string;
+  dependsOn: readonly string[];
+  status: 'pending' | 'ready' | 'blocked' | 'satisfied';
+};
+
 export type TaskState = {
   taskId: string;
   goal: string;
+  objective: string;
+  currentPhase: string;
   scope: readonly string[];
   plan: readonly TaskStep[];
   completedSteps: readonly string[];
   pendingSteps: readonly string[];
+  completedWork: readonly string[];
+  pendingWork: readonly string[];
+  retrievedEvidence: readonly string[];
   constraints: readonly string[];
   confirmations: readonly string[];
   retries: number;
   receipts: readonly string[];
   unresolvedIssues: readonly string[];
+  unresolvedQuestions: readonly string[];
+  failedAttempts: readonly TaskFailureAttempt[];
+  decisions: readonly string[];
   pendingDecisions: readonly string[];
+  dependencies: readonly TaskDependency[];
+  nextAction?: string;
   variables: Readonly<Record<string, unknown>>;
   status: 'active' | 'completed' | 'blocked' | 'failed';
   updatedAt: ISODateTime;
 };
 
 export type MemoryType = 'short-term' | 'working' | 'semantic' | 'procedural' | 'episodic';
+export type MemoryLayer = 'working' | 'task' | 'long-term';
 export type MemoryLifecycleStatus = 'active' | 'superseded' | 'expired' | 'deleted';
 
 export type MemoryItem = {
   id: string;
   type: MemoryType;
+  layer?: MemoryLayer;
   scope: ContextScope;
   content: string;
   structured?: unknown;
@@ -246,6 +415,15 @@ export type MemoryItem = {
   version: number;
   status: MemoryLifecycleStatus;
   supersedes?: string;
+  conflictsWithEvidenceIds?: readonly string[];
+  retentionDecision?: 'retain' | 'ignore_stale' | 'ignore_conflict' | 'ignore_irrelevant';
+};
+
+export type MemoryRecallAssessment = {
+  retained: readonly MemoryItem[];
+  ignoredIds: readonly string[];
+  staleIds: readonly string[];
+  conflictingIds: readonly string[];
 };
 
 export type MemoryAdmissionDecision = {
@@ -297,6 +475,12 @@ export type RetrievalProviderMetadata = {
   cost: number;
   latency: number;
   enabled: boolean;
+  /**
+   * Passive providers expose already-authorized in-process context. Providers marked
+   * runtime_tool are discovery metadata only; acquisition must be planned as a
+   * normal AgentSession tool action and is never invoked by this interface.
+   */
+  executionBoundary?: 'passive_context' | 'runtime_tool';
 };
 
 export type RetrievalRequest = {
@@ -369,6 +553,7 @@ export type CapabilityMetadata = {
   entityTypes: readonly string[];
   operations: readonly string[];
   sourceIds: readonly string[];
+  sourceKinds?: readonly ContextSourceKind[];
   authority: number;
   cost: number;
   latency: number;
@@ -379,6 +564,8 @@ export type CapabilityMetadata = {
   enabled: boolean;
   /** Generic capabilities implemented by this concrete runtime tool. */
   provides?: readonly ContextCapability[];
+  /** Optional generic-to-concrete argument aliases declared by the host. */
+  inputAliases?: Readonly<Record<string, string>>;
 };
 
 export type CapabilityResolution = {
@@ -387,6 +574,8 @@ export type CapabilityResolution = {
   requiredCapabilities: readonly ContextCapability[];
   status: 'available' | 'unavailable';
   toolNames: readonly string[];
+  alternatives: Readonly<Partial<Record<ExecutableContextCapability, readonly string[]>>>;
+  selectionBasis?: 'declared_order' | 'observed_performance';
   reason: string;
 };
 
@@ -402,6 +591,7 @@ export type ToolPlan = {
   selected: readonly SelectedCapability[];
   excluded: readonly { name: string; reason: string }[];
   argumentRequirements: Readonly<Record<string, readonly string[]>>;
+  requirements: readonly CapabilityRequirement[];
   resolutions: readonly CapabilityResolution[];
 };
 
@@ -409,23 +599,57 @@ export type ContextRuntimeAction = {
   id: string;
   requestId: string;
   needId: string;
-  capability: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  capability: ExecutableContextCapability;
   toolName: string;
   input: Readonly<Record<string, unknown>>;
+  /** Stable fingerprint used to prevent identical failed retries. */
+  attemptKey: string;
   reason: string;
+  strategy: 'initial' | 'refined_query' | 'alternate_source' | 'alternate_capability';
   iteration: number;
+  priorOperationIds: readonly string[];
+};
+
+export type ToolFailureClassification =
+  | 'authorization_denied'
+  | 'invalid_input'
+  | 'not_found'
+  | 'timeout'
+  | 'network'
+  | 'rate_limited'
+  | 'unsupported'
+  | 'irrelevant'
+  | 'empty'
+  | 'malformed'
+  | 'unknown';
+
+export type ObservedCost = {
+  amount: number;
+  unit: string;
+  source: 'tool_result_metadata' | 'runtime_event';
 };
 
 export type RuntimeRetrievalOperation = {
   id: string;
   requestId: string;
   needId: string;
-  capability: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  capability: ExecutableContextCapability;
   toolName: string;
   input: Readonly<Record<string, unknown>>;
+  attemptKey: string;
+  strategy: ContextRuntimeAction['strategy'];
   iteration: number;
   status: 'planned' | 'succeeded' | 'empty' | 'failed' | 'denied';
+  failureClassification?: ToolFailureClassification;
   observationId?: string;
+  startedAt: ISODateTime;
+  completedAt?: ISODateTime;
+  /** End-to-end latency from planning until the observation was recorded. */
+  durationMs?: number;
+  /** Tool execution time supplied by the runtime; never estimated by Context Intelligence. */
+  executionDurationMs?: number;
+  /** Explicit cost accounting supplied by the runtime/tool, if available. */
+  observedCost?: ObservedCost;
 };
 
 export type ToolOutcome = 'success' | 'empty' | 'partial' | 'error' | 'denied' | 'malformed';
@@ -444,22 +668,188 @@ export type ToolObservation = {
   artifactId?: string;
   requiresFollowUp: boolean;
   followUpReason?: string;
+  failureClassification?: ToolFailureClassification;
   createdAt: ISODateTime;
   requestId?: string;
   needIds?: readonly string[];
-  capability?: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  capability?: ExecutableContextCapability;
   links?: readonly string[];
 };
 
 export type OffloadedArtifact = {
   id: string;
   artifactId: string;
+  originalItemId?: string;
   kind: 'tool-result' | 'document' | 'observation' | 'intermediate' | 'history';
   summary: string;
   size: number;
   contentType: string;
+  reference: string;
+  recall: {
+    capability: 'ARTIFACT_READ';
+    inputs: Readonly<{ artifactId: string; referenceOrigin: 'context_offload' }>;
+  };
+  source: SourceMetadata;
+  provenance: Provenance;
+  lifecycleState: 'offloaded' | 'recalled' | 'archived';
+  createdAt: ISODateTime;
+};
+
+export type CrossDocumentSynthesis = {
+  id: string;
+  sourceIds: readonly string[];
+  itemIds: readonly string[];
+  evidenceIds: readonly string[];
+  claimGroups: readonly {
+    claimKey: string;
+    itemIds: readonly string[];
+    sourceIds: readonly string[];
+  }[];
+  conflictIds: readonly string[];
+  summary: string;
   provenance: Provenance;
   createdAt: ISODateTime;
+};
+
+export type ContextLifecycleEvent = {
+  id: string;
+  requestId: string;
+  itemId?: string;
+  needId?: string;
+  from?: ContextLifecycleState;
+  to: ContextLifecycleState;
+  reason: string;
+  component: string;
+  metadata: Readonly<Record<string, unknown>>;
+  at: ISODateTime;
+};
+
+export type ContextFeedbackCategory =
+  | 'retrieval'
+  | 'tool_choice'
+  | 'memory'
+  | 'overflow'
+  | 'quality_gate';
+
+export type ContextFeedbackOutcome =
+  | 'useful'
+  | 'irrelevant'
+  | 'failed'
+  | 'duplicate'
+  | 'retained'
+  | 'ignored_stale'
+  | 'ignored_conflict'
+  | 'omitted'
+  | 'offloaded'
+  | 'rejected';
+
+export type ContextFeedbackReference = {
+  kind:
+    | 'operation'
+    | 'observation'
+    | 'evidence'
+    | 'retrieval_result'
+    | 'memory'
+    | 'context_item'
+    | 'evidence_group'
+    | 'finalization'
+    | 'quality_decision';
+  id: string;
+};
+
+/** Bounded, content-free feedback grounded in concrete lifecycle/runtime facts. */
+export type ContextFeedbackRecord = {
+  id: string;
+  requestId: string;
+  category: ContextFeedbackCategory;
+  outcome: ContextFeedbackOutcome;
+  reasonCode: string;
+  operationId?: string;
+  observationId?: string;
+  evidenceId?: string;
+  retrievalResultId?: string;
+  memoryId?: string;
+  toolName?: string;
+  capability?: ExecutableContextCapability;
+  sourceReferences: readonly ContextFeedbackReference[];
+  at: ISODateTime;
+};
+
+export type RuntimePerformanceProfile = {
+  toolName: string;
+  capability: ExecutableContextCapability;
+  completedSamples: number;
+  succeededSamples: number;
+  usefulSamples: number;
+  irrelevantSamples: number;
+  failedSamples: number;
+  duplicateSamples: number;
+  classifiedSamples: number;
+  durationSamples: number;
+  totalDurationMs: number;
+  observedCosts: readonly {
+    unit: string;
+    samples: number;
+    total: number;
+  }[];
+  processedOperationIds: readonly string[];
+  updatedAt: ISODateTime;
+};
+
+export type RuntimeOptimizationSummary = {
+  enabled: boolean;
+  eligibleProfiles: number;
+  reorderedSelections: number;
+  durationSamples: number;
+  costSamples: number;
+  unavailableReason?:
+    | 'disabled'
+    | 'no_runtime_operations'
+    | 'insufficient_comparable_samples'
+    | 'no_observed_cost';
+};
+
+export type PredictiveContextProjection = {
+  readyStepIds: readonly string[];
+  satisfiedDependencyIds: readonly string[];
+  evidenceIds: readonly string[];
+  truncated: boolean;
+  generatedAt: ISODateTime;
+};
+
+export type MeasuredRatio = {
+  numerator: number;
+  denominator: number;
+  value: number;
+};
+
+export type ContextEvaluationSnapshot = {
+  operationSuccess?: MeasuredRatio;
+  classifiedRetrievalUsefulness?: MeasuredRatio;
+  evidenceUtilization?: MeasuredRatio;
+  memoryRetention?: MeasuredRatio;
+  gateRejection?: MeasuredRatio;
+  unclassifiedRetrievalOperations: number;
+  latency: {
+    samples: number;
+    totalMs: number;
+    meanMs?: number;
+    minimumMs?: number;
+    maximumMs?: number;
+  };
+  costs: readonly {
+    unit: string;
+    samples: number;
+    total: number;
+  }[];
+  unavailable: readonly {
+    metric: 'retrieval_recall' | 'answer_accuracy' | 'observed_cost';
+    reason:
+      | 'no_relevance_ground_truth'
+      | 'no_accuracy_ground_truth'
+      | 'no_observed_cost';
+  }[];
+  evaluatedAt: ISODateTime;
 };
 
 export type ContextBudgetCategory =
@@ -525,7 +915,13 @@ export type ContextQualityReport = {
 };
 
 export type ContextQualityDecision =
-  'ACCEPT' | 'RETRIEVE' | 'CLARIFY' | 'CONFLICT' | 'DENY' | 'ABSTAIN';
+  | 'ACCEPT'
+  | 'RETRIEVE'
+  | 'RETRIEVE_AGAIN'
+  | 'CLARIFY'
+  | 'CONFLICT'
+  | 'DENY'
+  | 'ABSTAIN';
 
 export type ContextRuntimeDirective = {
   decision: ContextQualityDecision;
@@ -555,6 +951,11 @@ export type FinalizedContext = {
   sections: readonly FinalContextSection[];
   budget: ContextBudgetSnapshot;
   quality: ContextQualityReport;
+  /** Full governed item identities remain canonical outside the model request. */
+  canonicalItemIds: readonly string[];
+  /** Only these item identities were admitted to this model decision. */
+  activeItemIds: readonly string[];
+  criticalEvidenceIds: readonly string[];
   provenanceIds: readonly string[];
   omittedItemIds: readonly string[];
   omittedMessageIds: readonly string[];
@@ -581,7 +982,15 @@ export type ContextContract = {
   requiredEntities: readonly IntentEntity[];
   temporal?: TemporalRequirement;
   memories: readonly MemoryItem[];
+  memoryAssessment: MemoryRecallAssessment;
   evidence: readonly EvidenceItem[];
+  evidenceGroups: readonly EvidenceGroup[];
+  crossDocument: CrossDocumentSynthesis;
+  lifecycle: readonly ContextLifecycleEvent[];
+  feedback?: readonly ContextFeedbackRecord[];
+  predictiveContext?: PredictiveContextProjection;
+  optimization?: RuntimeOptimizationSummary;
+  evaluation?: ContextEvaluationSnapshot;
   sources: readonly SourceMetadata[];
   conflicts: readonly ContextConflict[];
   capabilities: readonly SelectedCapability[];
@@ -603,6 +1012,25 @@ export type ContextContract = {
   pendingDecisions: readonly string[];
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
+};
+
+/**
+ * Bounded application outcome for a turn that Context Intelligence ends before
+ * model invocation. It contains decision metadata only, never request or evidence
+ * content, and is safe to persist independently of the canonical transcript.
+ */
+export type ContextIntelligenceTerminalDecision = Extract<
+  ContextQualityDecision,
+  'CLARIFY' | 'CONFLICT' | 'DENY' | 'ABSTAIN'
+>;
+
+export type ContextIntelligenceIntervention = {
+  kind: 'context-intelligence';
+  decision: ContextIntelligenceTerminalDecision;
+  terminal: true;
+  continueToModel: false;
+  reasonCodes: readonly string[];
+  clarificationNeeds: readonly ContextNeedType[];
 };
 
 /**
@@ -647,11 +1075,24 @@ export type ContextIntelligenceReport = {
     insufficiencies: number;
     conflicts: number;
     operations: number;
+    operationOutcomes?: Readonly<
+      Partial<Record<RuntimeRetrievalOperation['status'], number>>
+    >;
     toolNames: readonly string[];
   };
   memory: {
     recalled: number;
     types: Readonly<Partial<Record<MemoryType, number>>>;
+    reconciliation?: {
+      retained: number;
+      ignored: number;
+      stale: number;
+      conflicts: number;
+    };
+  };
+  lifecycle?: {
+    events: number;
+    states: Readonly<Partial<Record<ContextLifecycleState, number>>>;
   };
   capabilities: {
     available: number;
@@ -692,6 +1133,8 @@ export type ContextIntelligenceReport = {
   budget: ContextBudgetSnapshot;
   finalContext: {
     items: number;
+    canonicalItems?: number;
+    activeItems?: number;
     evidence: number;
     sources: number;
     sections: number;
@@ -713,6 +1156,38 @@ export type ContextIntelligenceReport = {
     alternatives: number;
     planSteps: number;
   };
+  feedback?: {
+    total: number;
+    categories: Readonly<Partial<Record<ContextFeedbackCategory, number>>>;
+    outcomes: Readonly<Partial<Record<ContextFeedbackOutcome, number>>>;
+  };
+  prediction?: {
+    hints: number;
+    satisfiedDependencies: number;
+    evidenceReferences: number;
+    truncated: boolean;
+  };
+  optimization?: RuntimeOptimizationSummary;
+  evaluation?: ContextEvaluationSnapshot;
+  updatedAt: ISODateTime;
+};
+
+export type RuntimeOperationSnapshot = Omit<RuntimeRetrievalOperation, 'input'>;
+
+export type ContextLifecycleSnapshot = Omit<ContextLifecycleEvent, 'reason' | 'metadata'> & {
+  reasonCode: string;
+};
+
+export type ContextSnapshot = {
+  version: 1;
+  requestId: string;
+  taskId: string;
+  decision: ContextQualityDecision;
+  qualityStatus: ContextQualityStatus;
+  activeItemIds: readonly string[];
+  evidenceIds: readonly string[];
+  offloadedArtifactIds: readonly string[];
+  lifecycleEventIds: readonly string[];
   updatedAt: ISODateTime;
 };
 
@@ -722,6 +1197,22 @@ export type PersistedContextIntelligenceState = {
   memories: readonly MemoryItem[];
   observations: readonly ToolObservation[];
   offloadedArtifacts: readonly OffloadedArtifact[];
+  recentOperations?: readonly RuntimeOperationSnapshot[];
+  lifecycleEvents?: readonly ContextLifecycleSnapshot[];
+  feedback?: readonly ContextFeedbackRecord[];
+  performanceProfiles?: readonly RuntimePerformanceProfile[];
+  lastEvaluation?: ContextEvaluationSnapshot;
+  lastSnapshot?: ContextSnapshot;
+  /** Legacy v1 field read for migration only; new snapshots stay bounded. */
   lastContract?: ContextContract;
   updatedAt: ISODateTime;
 };
+
+/** Compatibility aliases for the shared P0-P3 vocabulary. */
+export type ContextSource = SourceMetadata;
+export type ContextCandidate = ContextItem;
+export type RetrievalPlan = QueryPlan;
+export type RetrievalObservation = ToolObservation;
+export type ContextDecision = ContextQualityDecision;
+export type ContextQuality = ContextQualityReport;
+export type ConflictGroup = ContextConflict;

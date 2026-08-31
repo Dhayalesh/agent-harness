@@ -60,7 +60,10 @@ export type RoutedRetrievalProvider = {
 };
 
 export class RetrievalRouter {
-  constructor(private readonly config: ContextIntelligenceConfig['retrieval']) {}
+  constructor(
+    private readonly config: ContextIntelligenceConfig['retrieval'],
+    private readonly useDeclaredPerformance = true,
+  ) {}
 
   route(
     query: QueryVariant,
@@ -69,7 +72,7 @@ export class RetrievalRouter {
   ): RoutedRetrievalProvider[] {
     return providers
       .filter((provider) => provider.metadata.enabled)
-      .map((provider) => scoreProvider(query, intent, provider))
+      .map((provider) => scoreProvider(query, intent, provider, this.useDeclaredPerformance))
       .filter((entry) => entry.score >= 0.08)
       .sort((left, right) => right.score - left.score)
       .slice(0, this.config.maximumProvidersPerQuery);
@@ -85,7 +88,10 @@ export class RetrievalIntelligence {
     private readonly queryIntelligence: QueryIntelligence,
     private readonly reranker?: RetrievalReranker,
   ) {
-    this.router = new RetrievalRouter(config.retrieval);
+    this.router = new RetrievalRouter(
+      config.retrieval,
+      !config.features.observedPerformanceOptimization,
+    );
   }
 
   async retrieve(input: {
@@ -99,8 +105,11 @@ export class RetrievalIntelligence {
     const allResults: RetrievalResult[] = [];
     const insufficiencies: string[] = [];
     let pending = executableQueries(input.plan);
+    const passiveProviders = this.registry
+      .list()
+      .filter((provider) => provider.metadata.executionBoundary !== 'runtime_tool');
 
-    if (this.registry.list().length === 0 || pending.length === 0) {
+    if (passiveProviders.length === 0 || pending.length === 0) {
       return {
         results: [],
         iterations,
@@ -124,7 +133,7 @@ export class RetrievalIntelligence {
       const usedProviders = new Set<string>();
       const batch: RetrievalResult[] = [];
       for (const query of pending) {
-        const routed = this.router.route(query, input.intent, this.registry.list());
+        const routed = this.router.route(query, input.intent, passiveProviders);
         for (const route of routed) {
           if (batch.length + allResults.length >= this.config.budgets.maxRetrievalResults) break;
           usedProviders.add(route.provider.metadata.id);
@@ -274,6 +283,7 @@ function scoreProvider(
   query: QueryVariant,
   intent: NormalizedIntent,
   provider: RetrievalProvider,
+  useDeclaredPerformance = true,
 ): RoutedRetrievalProvider {
   const metadata = provider.metadata;
   const searchable = [
@@ -292,7 +302,8 @@ function scoreProvider(
   const entityCoverage =
     intent.entities.length === 0 ? 0 : Math.min(1, entityMatches / intent.entities.length);
   const semanticFit = lexical * 0.8 + entityCoverage * 0.2;
-  const score = clamp(semanticFit * (0.75 + authority * 0.2 + efficiency * 0.05));
+  const efficiencyContribution = useDeclaredPerformance ? efficiency * 0.05 : 0.05;
+  const score = clamp(semanticFit * (0.75 + authority * 0.2 + efficiencyContribution));
   return {
     provider,
     score,
@@ -300,7 +311,7 @@ function scoreProvider(
       ...(lexical > 0 ? ['metadata relevance'] : []),
       ...(entityMatches > 0 ? ['entity coverage'] : []),
       ...(authority >= 0.7 ? ['authoritative source'] : []),
-      ...(efficiency >= 0.7 ? ['cost/latency fit'] : []),
+      ...(useDeclaredPerformance && efficiency >= 0.7 ? ['cost/latency fit'] : []),
     ],
   };
 }
@@ -410,7 +421,17 @@ export function detectRetrievalConflicts(results: readonly RetrievalResult[]): C
       itemIds: group.map((entry) => entry.id),
       reason: values.size > 1 ? 'value' : 'scope',
       resolution,
+      resolutionStatus: resolution === 'unresolved' ? 'requires_clarification' : 'resolved',
       ...(resolution === 'unresolved' ? {} : { preferredItemId: first.id }),
+      claims: group.map((entry) => ({
+        itemId: entry.id,
+        value: entry.content.slice(0, 500),
+        sourceId: entry.source.id,
+        ...((entry.source.sourceTimestamp ?? entry.source.observedAt) === undefined
+          ? {}
+          : { sourceTimestamp: entry.source.sourceTimestamp ?? entry.source.observedAt! }),
+        authority: entry.authority,
+      })),
       explanation:
         resolution === 'unresolved'
           ? `Sources disagree about ${claimKey}; authority and freshness do not resolve the conflict.`

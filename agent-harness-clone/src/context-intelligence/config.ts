@@ -13,6 +13,10 @@ export type ContextIntelligenceFeatureFlags = {
   pruning: boolean;
   offloading: boolean;
   advancedReasoning: boolean;
+  boundedFeedback: boolean;
+  predictiveContext: boolean;
+  observedPerformanceOptimization: boolean;
+  evaluationMetrics: boolean;
 };
 
 export type ContextIntelligenceConfig = {
@@ -83,6 +87,14 @@ export type ContextIntelligenceConfig = {
     conflictPolicy: 'proceed' | 'clarify' | 'abstain';
     unavailablePolicy: 'abstain' | 'clarify';
   };
+  p3: {
+    maximumFeedbackRecords: number;
+    maximumPerformanceProfiles: number;
+    minimumComparableSamples: number;
+    maximumPredictiveHints: number;
+    maximumEvaluationOperations: number;
+    maximumSourceReferencesPerFeedback: number;
+  };
   sourceAuthority: Readonly<Record<string, number>>;
   sourceMetadata: readonly SourceMetadata[];
   policyLabels: readonly string[];
@@ -102,6 +114,7 @@ export type ContextIntelligenceConfigInput = {
   chunking?: Partial<ContextIntelligenceConfig['chunking']>;
   reasoning?: Partial<ContextIntelligenceConfig['reasoning']>;
   quality?: Partial<ContextIntelligenceConfig['quality']>;
+  p3?: Partial<ContextIntelligenceConfig['p3']>;
   sourceAuthority?: Readonly<Record<string, number>>;
   sourceMetadata?: readonly SourceMetadata[];
   policyLabels?: readonly string[];
@@ -135,6 +148,11 @@ export const DEFAULT_CONTEXT_INTELLIGENCE_CONFIG: ContextIntelligenceConfig = {
     pruning: true,
     offloading: true,
     advancedReasoning: false,
+    // P3 is opt-in so existing sessions retain byte-for-byte planning behavior.
+    boundedFeedback: false,
+    predictiveContext: false,
+    observedPerformanceOptimization: false,
+    evaluationMetrics: false,
   },
   budgets: {
     safetyMarginTokens: 1_024,
@@ -197,6 +215,14 @@ export const DEFAULT_CONTEXT_INTELLIGENCE_CONFIG: ContextIntelligenceConfig = {
     conflictPolicy: 'proceed',
     unavailablePolicy: 'abstain',
   },
+  p3: {
+    maximumFeedbackRecords: 200,
+    maximumPerformanceProfiles: 50,
+    minimumComparableSamples: 3,
+    maximumPredictiveHints: 8,
+    maximumEvaluationOperations: 200,
+    maximumSourceReferencesPerFeedback: 8,
+  },
   sourceAuthority: {},
   sourceMetadata: [],
   policyLabels: [],
@@ -226,6 +252,7 @@ export function resolveContextIntelligenceConfig(
     chunking: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.chunking, ...input.chunking },
     reasoning: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.reasoning, ...input.reasoning },
     quality: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.quality, ...input.quality },
+    p3: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.p3, ...input.p3 },
     sourceAuthority: {
       ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.sourceAuthority,
       ...input.sourceAuthority,

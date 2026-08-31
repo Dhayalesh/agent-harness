@@ -6,6 +6,14 @@ const sourceType = z.enum([
   'user',
   'conversation',
   'memory',
+  'file',
+  'web',
+  'mcp',
+  'database',
+  'api',
+  'task-state',
+  'artifact',
+  'application-context',
   'document',
   'structured',
   'vector',
@@ -16,22 +24,37 @@ const sourceType = z.enum([
   'external',
   'derived',
 ]);
+const contextSourceKind = z.enum([
+  'FILE',
+  'WEB',
+  'MEMORY',
+  'MCP',
+  'DATABASE',
+  'API',
+  'TASK_STATE',
+  'ARTIFACT',
+  'APPLICATION_CONTEXT',
+]);
 
 export const contextSourceMetadataSchema = z
   .object({
     id: z.string().min(1).max(300),
     name: z.string().min(1).max(300),
     type: sourceType,
+    sourceKind: contextSourceKind.optional(),
     provider: z.string().min(1).max(300).optional(),
     authority: unit,
     retrievedAt: z.iso.datetime().optional(),
     observedAt: z.iso.datetime().optional(),
+    sourceTimestamp: z.iso.datetime().optional(),
     validFrom: z.iso.datetime().optional(),
     validUntil: z.iso.datetime().optional(),
     version: z.string().max(300).optional(),
     scope: z.array(z.string().max(300)).max(100).optional(),
     uri: z.string().max(4_096).optional(),
     contentHash: z.string().max(300).optional(),
+    extractionContext: z.string().max(2_000).optional(),
+    evidenceIdentity: z.string().max(300).optional(),
     policyLabels: z.array(z.string().max(200)).max(100).optional(),
   })
   .strict();
@@ -53,6 +76,10 @@ export const contextIntelligenceConfigSchema = z
         pruning: z.boolean().optional(),
         offloading: z.boolean().optional(),
         advancedReasoning: z.boolean().optional(),
+        boundedFeedback: z.boolean().optional(),
+        predictiveContext: z.boolean().optional(),
+        observedPerformanceOptimization: z.boolean().optional(),
+        evaluationMetrics: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -182,6 +209,17 @@ export const contextIntelligenceConfigSchema = z
       .object({
         conflictPolicy: z.enum(['proceed', 'clarify', 'abstain']).optional(),
         unavailablePolicy: z.enum(['abstain', 'clarify']).optional(),
+      })
+      .strict()
+      .optional(),
+    p3: z
+      .object({
+        maximumFeedbackRecords: positiveInteger.max(1_000).optional(),
+        maximumPerformanceProfiles: positiveInteger.max(100).optional(),
+        minimumComparableSamples: positiveInteger.max(100).optional(),
+        maximumPredictiveHints: positiveInteger.max(20).optional(),
+        maximumEvaluationOperations: positiveInteger.max(1_000).optional(),
+        maximumSourceReferencesPerFeedback: positiveInteger.max(20).optional(),
       })
       .strict()
       .optional(),

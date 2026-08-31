@@ -1,11 +1,15 @@
 import type { ContextIntelligenceConfig } from './config.js';
 import type {
+  ContextNeed,
   ContextScope,
+  EvidenceItem,
   MemoryAdmissionDecision,
   MemoryItem,
+  MemoryRecallAssessment,
   MemoryType,
   NormalizedIntent,
   Provenance,
+  RetrievalResult,
   TaskState,
   TaskStep,
 } from './contracts.js';
@@ -161,10 +165,58 @@ export class MemoryIntelligence {
         .filter((entry) => entry.score >= this.config.relevanceThreshold)
         .sort((left, right) => right.score - left.score)
         .slice(0, this.config.recallLimit)
-        .map(({ item, score }) => ({ ...item, relevance: score, lastAccessedAt: now() }));
+        .map(({ item, score }) => ({
+          ...item,
+          layer: item.layer ?? memoryLayer(item.type),
+          relevance: score,
+          retentionDecision: 'retain' as const,
+          lastAccessedAt: now(),
+        }));
     } catch {
       return [];
     }
+  }
+
+  reconcile(
+    memories: readonly MemoryItem[],
+    evidence: readonly (EvidenceItem | RetrievalResult)[],
+    needs: readonly ContextNeed[],
+  ): MemoryRecallAssessment {
+    const retained: MemoryItem[] = [];
+    const ignoredIds: string[] = [];
+    const staleIds: string[] = [];
+    const conflictingIds: string[] = [];
+    const requiresFreshMemory = needs.some(
+      (need) =>
+        need.sourceKinds.includes('MEMORY') &&
+        !['ANY', 'NONE', 'HISTORICAL'].includes(need.freshnessRequirement),
+    );
+    for (const memory of memories) {
+      const recency = freshnessScore(memory.updatedAt, 90 * 24 * 60 * 60 * 1_000);
+      if (requiresFreshMemory && recency < 0.6) {
+        ignoredIds.push(memory.id);
+        staleIds.push(memory.id);
+        continue;
+      }
+      const conflicts = evidence.filter(
+        (item) =>
+          lexicalSimilarity(memory.content, item.content) >= 0.4 &&
+          contradictionHint(memory.content, item.content) &&
+          item.authority >= memory.authority &&
+          item.confidence >= memory.confidence,
+      );
+      if (conflicts.length > 0) {
+        ignoredIds.push(memory.id);
+        conflictingIds.push(memory.id);
+        continue;
+      }
+      retained.push({
+        ...memory,
+        layer: memory.layer ?? memoryLayer(memory.type),
+        retentionDecision: 'retain',
+      });
+    }
+    return { retained, ignoredIds, staleIds, conflictingIds };
   }
 
   async evaluate(candidate: MemoryCandidate, scope: ContextScope): Promise<MemoryAdmissionDecision> {
@@ -276,27 +328,50 @@ export class MemoryIntelligence {
 export class TaskStateManager {
   recover(existing: TaskState | undefined, intent: NormalizedIntent, taskId: string): TaskState {
     if (existing && existing.status === 'active' && relatedGoal(existing.goal, intent.goal)) {
+      const recovered = normalizeTaskState(existing);
+      const nextAction = nextPendingAction(recovered.plan);
       return {
-        ...deepClone(existing),
+        ...recovered,
         goal: intent.goal,
-        constraints: dedupeStrings([...existing.constraints, ...intent.constraints]),
+        objective: intent.goal,
+        currentPhase: currentPhase(recovered.plan),
+        constraints: dedupeStrings([...recovered.constraints, ...intent.constraints]),
+        pendingWork: recovered.plan
+          .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+          .map((step) => step.description),
+        ...(nextAction === undefined ? {} : { nextAction }),
         updatedAt: now(),
       };
     }
     const steps = initialSteps(intent);
+    const nextAction = nextPendingAction(steps);
     return {
       taskId,
       goal: intent.goal,
+      objective: intent.goal,
+      currentPhase: currentPhase(steps),
       scope: intent.entities.map((entity) => entity.value),
       plan: steps,
       completedSteps: [],
       pendingSteps: steps.map((step) => step.id),
+      completedWork: [],
+      pendingWork: steps.map((step) => step.description),
+      retrievedEvidence: [],
       constraints: [...intent.constraints],
       confirmations: [],
       retries: 0,
       receipts: [],
       unresolvedIssues: [...intent.ambiguity],
+      unresolvedQuestions: [...intent.ambiguity],
+      failedAttempts: [],
+      decisions: [],
       pendingDecisions: [],
+      dependencies: steps.map((step) => ({
+        id: step.id,
+        dependsOn: step.dependencies,
+        status: step.dependencies.length === 0 ? 'ready' : 'pending',
+      })),
+      ...(nextAction === undefined ? {} : { nextAction }),
       variables: {},
       status: 'active',
       updatedAt: now(),
@@ -307,39 +382,175 @@ export class TaskStateManager {
     state: TaskState,
     input: { receiptId?: string; successful: boolean; requiresFollowUp: boolean; issue?: string },
   ): TaskState {
-    const plan = state.plan.map((step, index) => {
-      if (step.status !== 'in_progress' && !(index === 0 && state.completedSteps.length === 0)) return step;
+    const normalized = normalizeTaskState(state);
+    const plan = normalized.plan.map((step, index) => {
+      if (
+        step.status !== 'in_progress' &&
+        !(index === 0 && normalized.completedSteps.length === 0)
+      )
+        return step;
       return {
         ...step,
-        status: input.successful && !input.requiresFollowUp ? ('completed' as const) : input.successful ? ('in_progress' as const) : ('failed' as const),
+        status:
+          input.successful && !input.requiresFollowUp
+            ? ('completed' as const)
+            : input.successful
+              ? ('in_progress' as const)
+              : ('failed' as const),
         attempts: step.attempts + 1,
-        ...(input.receiptId === undefined ? {} : { receiptIds: dedupeStrings([...step.receiptIds, input.receiptId]) }),
+        ...(input.receiptId === undefined
+          ? {}
+          : { receiptIds: dedupeStrings([...step.receiptIds, input.receiptId]) }),
         updatedAt: now(),
       };
     });
-    const completedSteps = plan.filter((step) => step.status === 'completed').map((step) => step.id);
-    const pendingSteps = plan.filter((step) => step.status === 'pending' || step.status === 'in_progress').map((step) => step.id);
+    const completedSteps = plan
+      .filter((step) => step.status === 'completed')
+      .map((step) => step.id);
+    const pendingSteps = plan
+      .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+      .map((step) => step.id);
+    const nextAction = nextPendingAction(plan);
     return {
-      ...state,
+      ...normalized,
       plan,
+      currentPhase: currentPhase(plan),
       completedSteps,
       pendingSteps,
-      retries: state.retries + (input.successful ? 0 : 1),
-      receipts: input.receiptId ? dedupeStrings([...state.receipts, input.receiptId]) : state.receipts,
-      unresolvedIssues: input.issue ? dedupeStrings([...state.unresolvedIssues, input.issue]) : state.unresolvedIssues,
+      completedWork: plan
+        .filter((step) => step.status === 'completed')
+        .map((step) => step.description),
+      pendingWork: plan
+        .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+        .map((step) => step.description),
+      retries: normalized.retries + (input.successful ? 0 : 1),
+      receipts: input.receiptId
+        ? dedupeStrings([...normalized.receipts, input.receiptId])
+        : normalized.receipts,
+      unresolvedIssues: input.issue
+        ? dedupeStrings([...normalized.unresolvedIssues, input.issue])
+        : normalized.unresolvedIssues,
+      unresolvedQuestions:
+        input.issue && /\?|clarif|missing|unknown/i.test(input.issue)
+          ? dedupeStrings([...normalized.unresolvedQuestions, input.issue])
+          : normalized.unresolvedQuestions,
+      failedAttempts: input.successful
+        ? normalized.failedAttempts
+        : [
+            ...normalized.failedAttempts,
+            {
+              ...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
+              reason: input.issue ?? 'Context retrieval attempt failed.',
+              at: now(),
+            },
+          ].slice(-100),
+      dependencies: plan.map((step) => ({
+        id: step.id,
+        dependsOn: step.dependencies,
+        status:
+          step.status === 'completed'
+            ? ('satisfied' as const)
+            : step.dependencies.every((dependency) => completedSteps.includes(dependency))
+              ? ('ready' as const)
+              : ('blocked' as const),
+      })),
+      ...(nextAction === undefined ? {} : { nextAction }),
       updatedAt: now(),
     };
   }
 
-  complete(state: TaskState, successful: boolean, unresolvedIssues: readonly string[] = []): TaskState {
+  recordEvidence(state: TaskState, evidenceIds: readonly string[]): TaskState {
+    const normalized = normalizeTaskState(state);
     return {
-      ...state,
-      status: successful ? 'completed' : unresolvedIssues.length ? 'blocked' : 'failed',
-      unresolvedIssues: dedupeStrings([...state.unresolvedIssues, ...unresolvedIssues]),
-      pendingSteps: successful ? [] : state.pendingSteps,
+      ...normalized,
+      retrievedEvidence: dedupeStrings([...normalized.retrievedEvidence, ...evidenceIds]),
+      plan: normalized.plan.map((step) =>
+        step.status === 'in_progress'
+          ? { ...step, evidenceIds: dedupeStrings([...step.evidenceIds, ...evidenceIds]) }
+          : step,
+      ),
       updatedAt: now(),
     };
   }
+
+  recordDecision(state: TaskState, decision: string): TaskState {
+    const normalized = normalizeTaskState(state);
+    return {
+      ...normalized,
+      decisions: dedupeStrings([...normalized.decisions, decision]),
+      pendingDecisions: normalized.pendingDecisions.filter((entry) => entry !== decision),
+      updatedAt: now(),
+    };
+  }
+
+  complete(
+    state: TaskState,
+    successful: boolean,
+    unresolvedIssues: readonly string[] = [],
+  ): TaskState {
+    const normalized = normalizeTaskState(state);
+    return {
+      ...normalized,
+      status: successful ? 'completed' : unresolvedIssues.length ? 'blocked' : 'failed',
+      currentPhase: successful ? 'completed' : 'blocked',
+      unresolvedIssues: dedupeStrings([...normalized.unresolvedIssues, ...unresolvedIssues]),
+      unresolvedQuestions: dedupeStrings([
+        ...normalized.unresolvedQuestions,
+        ...unresolvedIssues,
+      ]),
+      pendingSteps: successful ? [] : normalized.pendingSteps,
+      pendingWork: successful ? [] : normalized.pendingWork,
+      ...(successful
+        ? { nextAction: 'none' }
+        : normalized.nextAction === undefined
+          ? {}
+          : { nextAction: normalized.nextAction }),
+      updatedAt: now(),
+    };
+  }
+}
+
+function normalizeTaskState(state: TaskState): TaskState {
+  const candidate = state as TaskState & Partial<TaskState>;
+  const plan = Array.isArray(candidate.plan) ? candidate.plan : [];
+  const nextAction = candidate.nextAction ?? nextPendingAction(plan);
+  return {
+    ...state,
+    objective: candidate.objective ?? candidate.goal,
+    currentPhase: candidate.currentPhase ?? currentPhase(plan),
+    completedWork:
+      candidate.completedWork ??
+      plan.filter((step) => step.status === 'completed').map((step) => step.description),
+    pendingWork:
+      candidate.pendingWork ??
+      plan
+        .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+        .map((step) => step.description),
+    retrievedEvidence: candidate.retrievedEvidence ?? [],
+    unresolvedQuestions: candidate.unresolvedQuestions ?? candidate.unresolvedIssues ?? [],
+    failedAttempts: candidate.failedAttempts ?? [],
+    decisions: candidate.decisions ?? [],
+    dependencies:
+      candidate.dependencies ??
+      plan.map((step) => ({
+        id: step.id,
+        dependsOn: step.dependencies,
+        status: step.dependencies.length === 0 ? ('ready' as const) : ('pending' as const),
+      })),
+    ...(nextAction === undefined ? {} : { nextAction }),
+  };
+}
+
+function currentPhase(plan: readonly TaskStep[]): string {
+  return (
+    plan.find((step) => step.status === 'in_progress')?.description ??
+    plan.find((step) => step.status === 'pending')?.description ??
+    (plan.every((step) => step.status === 'completed') ? 'completed' : 'planning')
+  );
+}
+
+function nextPendingAction(plan: readonly TaskStep[]): string | undefined {
+  return plan.find((step) => step.status === 'in_progress' || step.status === 'pending')?.description;
 }
 
 function candidateToItem(
@@ -352,7 +563,8 @@ function candidateToItem(
   const candidateSource = sourceMetadata({
     id: `memory-candidate:${scope.applicationId ?? scope.conversationId}`,
     name: 'Application memory candidate',
-    type: 'derived',
+    type: 'memory',
+    sourceKind: 'MEMORY',
     authority: candidate.authority,
     observedAt: timestamp,
     scope: scope.namespaces,
@@ -360,6 +572,7 @@ function candidateToItem(
   return {
     id: id('memory'),
     type: candidate.type,
+    layer: memoryLayer(candidate.type),
     scope: deepClone(scope),
     content: candidate.content.trim(),
     ...(candidate.structured === undefined ? {} : { structured: deepClone(candidate.structured) }),
@@ -392,6 +605,12 @@ function memoryScore(item: MemoryItem, intent: NormalizedIntent, scope: ContextS
   const recency = freshnessScore(item.updatedAt, 90 * 24 * 60 * 60 * 1_000, current);
   const scopeScore = scopeMatches(item.scope, scope) ? 1 : 0;
   return clamp(semantic * 0.35 + entity * 0.15 + recency * 0.1 + item.authority * 0.12 + item.confidence * 0.1 + item.usefulness * 0.08 + scopeScore * 0.1);
+}
+
+function memoryLayer(type: MemoryType): NonNullable<MemoryItem['layer']> {
+  if (type === 'working') return 'working';
+  if (type === 'short-term') return 'task';
+  return 'long-term';
 }
 
 function scopeMatches(item: ContextScope, requested: ContextScope): boolean {
@@ -431,11 +650,12 @@ function initialSteps(intent: NormalizedIntent): TaskStep[] {
   const descriptions = intent.complexity === 'simple'
     ? ['Resolve the request with sufficient context']
     : ['Resolve intent and dependencies', 'Acquire and evaluate required evidence', 'Synthesize and finalize the response'];
+  const ids = descriptions.map(() => id('step'));
   return descriptions.map((description, index) => ({
-    id: id('step'),
+    id: ids[index]!,
     description,
     status: index === 0 ? 'in_progress' : 'pending',
-    dependencies: [],
+    dependencies: index === 0 ? [] : [ids[index - 1]!],
     attempts: 0,
     evidenceIds: [],
     receiptIds: [],
