@@ -70,6 +70,9 @@ function planWebAction(
   operations: readonly RuntimeRetrievalOperation[],
   iteration: number,
 ): Omit<ContextRuntimeAction, 'requestId'> | undefined {
+  if (need.sourceRequirement !== 'external' || need.freshnessRequirement === 'ANY') {
+    return undefined;
+  }
   const searchTool = toolForCapability(toolPlan, 'WEB_SEARCH');
   const fetchTool = toolForCapability(toolPlan, 'WEB_FETCH');
   if (!fetchTool) return undefined;
@@ -149,8 +152,16 @@ function planFileAction(
   iteration: number,
 ): Omit<ContextRuntimeAction, 'requestId'> | undefined {
   const path = need.inputs.path;
+  const referenceOrigin = need.inputs.referenceOrigin;
   const toolName = toolForCapability(toolPlan, 'FILE_READ');
-  if (typeof path !== 'string' || !toolName) return undefined;
+  if (
+    need.sourceRequirement !== 'workspace' ||
+    typeof path !== 'string' ||
+    referenceOrigin !== 'explicit_user_reference' ||
+    !toolName
+  ) {
+    return undefined;
+  }
   const alreadySucceeded = observations.some(
     (observation) =>
       observation.capability === 'FILE_READ' &&

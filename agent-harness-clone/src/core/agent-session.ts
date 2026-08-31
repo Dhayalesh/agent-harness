@@ -399,6 +399,8 @@ class AgentSessionImpl implements AgentSession {
             .join('\n\n');
           let intelligentContext:
             Awaited<ReturnType<ContextIntelligenceEngine['prepare']>> | undefined;
+          let intelligenceFailureDecision:
+            Extract<ContextQualityDecision, 'ABSTAIN' | 'CLARIFY'> | undefined;
           if (this.contextIntelligence) {
             try {
               const prepareIntelligence = (): ReturnType<ContextIntelligenceEngine['prepare']> =>
@@ -443,6 +445,10 @@ class AgentSessionImpl implements AgentSession {
               }
             } catch (error) {
               intelligentContext = undefined;
+              intelligenceFailureDecision = this.contextIntelligence.preparationFailureDecision(
+                prompt,
+                intelligenceScope,
+              );
               this.log({
                 level: 'warn',
                 event: 'context-intelligence.lifecycle',
@@ -460,22 +466,25 @@ class AgentSessionImpl implements AgentSession {
               turnId,
               report: contextIntelligenceReport(intelligentContext.contract),
             });
-            if (!intelligentContext.contract.directive.continueToModel) {
-              const decision = intelligentContext.contract.directive.decision;
-              yield this.event({
-                type: 'warning',
-                code: `CONTEXT_${decision}`,
-                message: contextInterventionMessage(decision),
-              });
-              await this.persist();
-              yield this.event({ type: 'turn.completed', turnId, turn, reason: 'end_turn' });
-              yield this.event({
-                type: 'session.completed',
-                reason: 'end_turn',
-                historyMessageCount: this.history.length,
-              });
-              return;
-            }
+          }
+          const intelligenceIntervention =
+            intelligentContext && !intelligentContext.contract.directive.continueToModel
+              ? intelligentContext.contract.directive.decision
+              : intelligenceFailureDecision;
+          if (intelligenceIntervention) {
+            yield this.event({
+              type: 'warning',
+              code: `CONTEXT_${intelligenceIntervention}`,
+              message: contextInterventionMessage(intelligenceIntervention),
+            });
+            await this.persist();
+            yield this.event({ type: 'turn.completed', turnId, turn, reason: 'end_turn' });
+            yield this.event({
+              type: 'session.completed',
+              reason: 'end_turn',
+              historyMessageCount: this.history.length,
+            });
+            return;
           }
           const modelMessages = intelligentContext?.finalized.messages ?? prepared.messages;
           const modelTools = intelligentContext?.finalized.tools ?? this.registry.descriptors();

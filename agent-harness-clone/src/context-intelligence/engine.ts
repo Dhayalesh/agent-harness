@@ -17,6 +17,7 @@ import type {
   CapabilityMetadata,
   ContextContract,
   ContextNeed,
+  ContextQualityDecision,
   ContextQualityReport,
   ContextRuntimeAction,
   ContextScope,
@@ -395,6 +396,23 @@ export class ContextIntelligenceEngine {
     this.requestStartedAt = Date.now();
     this.runtimeOperations = [];
     this.plannedActions.clear();
+  }
+
+  /**
+   * Fail closed only when a preparation failure would otherwise let the model act
+   * without evidence that the request declares mandatory. Ordinary requests retain
+   * the existing degraded/fail-open compatibility behavior.
+   */
+  preparationFailureDecision(
+    request: string,
+    scope: ContextScope,
+  ): Extract<ContextQualityDecision, 'ABSTAIN' | 'CLARIFY'> | undefined {
+    const intent = this.query.understand(request);
+    const evidenceRequired = this.needs
+      .identify(intent, scope, `${this.activeRequestId}:preparation-failure`)
+      .some((need) => need.required && need.evidenceRequirement === 'REQUIRED');
+    if (!evidenceRequired) return undefined;
+    return this.config.quality.unavailablePolicy === 'clarify' ? 'CLARIFY' : 'ABSTAIN';
   }
 
   async processObservation(input: {

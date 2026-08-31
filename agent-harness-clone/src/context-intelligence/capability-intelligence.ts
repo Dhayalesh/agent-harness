@@ -73,11 +73,20 @@ export class CapabilityIntelligence {
       .map((capability) => scoreCapability(capability, intent, descriptors.get(capability.name)))
       .sort((left, right) => right.score - left.score);
     const resolutions = resolveCapabilities(needs, metadata);
-    const forced = new Set([
-      ...this.config.alwaysExpose,
-      ...resolutions.flatMap((resolution) => resolution.toolNames),
-    ]);
-    const accepted = scored.filter(
+    const resolvedToolNames = resolutions
+      .filter((resolution) => resolution.status === 'available')
+      .flatMap((resolution) => {
+        const need = needs.find((candidate) => candidate.id === resolution.needId);
+        return need?.status === 'clarification_required' ? [] : resolution.toolNames;
+      });
+    const forced = new Set([...this.config.alwaysExpose, ...resolvedToolNames]);
+    const evidenceConstrained =
+      (intent.operation === 'answer' || intent.operation === 'analyze') &&
+      needs.some((need) => need.required && need.evidenceRequirement === 'REQUIRED');
+    const candidates = evidenceConstrained
+      ? scored.filter((entry) => forced.has(entry.capability.name))
+      : scored;
+    const accepted = candidates.filter(
       (entry, index) =>
         forced.has(entry.capability.name) ||
         entry.score >= this.config.relevanceThreshold ||
@@ -85,8 +94,8 @@ export class CapabilityIntelligence {
     );
     const required = accepted.filter((entry) => forced.has(entry.capability.name));
     const optional = accepted.filter((entry) => !forced.has(entry.capability.name));
-    const limit = Math.max(required.length, this.config.minimumExposed, this.config.maximumExposed);
-    const selected = [...required, ...optional].slice(0, limit);
+    const optionalLimit = Math.max(0, this.config.maximumExposed - required.length);
+    const selected = [...required, ...optional.slice(0, optionalLimit)];
     const names = new Set(selected.map((entry) => entry.capability.name));
     return {
       goal: intent.goal,
@@ -200,16 +209,19 @@ function resolveCapabilities(
       if (selected) toolNames.push(selected.name);
       else missing.push(capability);
     }
+    const available = missing.length === 0;
     return {
       needId: need.id,
       requested: need.requiredCapability,
       requiredCapabilities,
-      status: missing.length === 0 ? 'available' : 'unavailable',
-      toolNames: dedupeStrings(toolNames),
-      reason:
-        missing.length === 0
-          ? `Resolved ${need.requiredCapability} through registered runtime capabilities.`
-          : `No registered runtime capability provides: ${missing.join(', ')}.`,
+      status: available ? 'available' : 'unavailable',
+      // Composite capabilities are atomic at resolution time. Exposing a partial
+      // implementation (for example fetch without search) invites unrelated model
+      // fallback even though the required retrieval chain cannot run.
+      toolNames: available ? dedupeStrings(toolNames) : [],
+      reason: available
+        ? `Resolved ${need.requiredCapability} through registered runtime capabilities.`
+        : `No registered runtime capability provides: ${missing.join(', ')}.`,
     };
   });
 }

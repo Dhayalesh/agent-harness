@@ -5,7 +5,7 @@ import type {
   EvidenceItem,
   NormalizedIntent,
 } from './contracts.js';
-import { id } from './utils.js';
+import { dedupeStrings, id } from './utils.js';
 
 /** Identifies concrete information gaps before retrieval or tool selection occurs. */
 export class ContextNeedIntelligence {
@@ -16,11 +16,11 @@ export class ContextNeedIntelligence {
   ): ContextNeed[] {
     const needs: ContextNeed[] = [];
     const request = intent.originalRequest;
+    const suppliedUrl = intent.entities
+      .find((entity) => entity.type === 'uri')
+      ?.value.replace(/[),.;]+$/, '');
 
     if (requiresCurrentExternalInformation(intent)) {
-      const suppliedUrl = intent.entities
-        .find((entity) => entity.type === 'uri')
-        ?.value.replace(/[),.;]+$/, '');
       needs.push({
         id: `${requestId}:CURRENT_EXTERNAL_INFORMATION`,
         type: 'CURRENT_EXTERNAL_INFORMATION',
@@ -29,7 +29,7 @@ export class ContextNeedIntelligence {
         missingInformation: ['current external evidence'],
         reason: 'The request depends on information that can change after model training.',
         sourceRequirement: 'external',
-        freshnessRequirement: 'CURRENT',
+        freshnessRequirement: currentExternalFreshnessRequirement(intent),
         authorityRequirement: 'TRUSTED',
         scope: structuredClone(scope),
         evidenceRequirement: 'REQUIRED',
@@ -43,26 +43,29 @@ export class ContextNeedIntelligence {
       });
     }
 
-    const filePath = extractFilePath(request);
-    if ((filePath && intent.operation !== 'create') || explicitlyRequiresFileContent(request)) {
+    const fileReference = extractFileReference(request);
+    const requiresFileContent = explicitlyRequiresFileContent(request) && !suppliedUrl;
+    if ((fileReference && intent.operation !== 'create') || requiresFileContent) {
       needs.push({
         id: `${requestId}:FILE_INFORMATION`,
         type: 'FILE_INFORMATION',
         required: true,
         requiredInformation: ['workspace file contents'],
-        missingInformation: [filePath ? 'file evidence' : 'file path'],
-        reason: filePath
+        missingInformation: [fileReference ? 'file evidence' : 'file path'],
+        reason: fileReference
           ? 'The requested answer depends on the contents of a workspace file.'
           : 'The request asks for file contents but does not identify the file to read.',
         sourceRequirement: 'workspace',
-        freshnessRequirement: 'CURRENT',
+        freshnessRequirement: freshnessRequirement(intent),
         authorityRequirement: 'AUTHORITATIVE',
         scope: structuredClone(scope),
         evidenceRequirement: 'REQUIRED',
         requiredCapability: 'FILE_READ',
         priority: 'high',
-        status: filePath ? 'missing' : 'clarification_required',
-        inputs: filePath ? { path: filePath } : {},
+        status: fileReference ? 'missing' : 'clarification_required',
+        inputs: fileReference
+          ? { path: fileReference.path, referenceOrigin: fileReference.origin }
+          : {},
       });
     }
 
@@ -110,7 +113,15 @@ export class ContextNeedIntelligence {
         return { ...need, status: 'satisfied' as const, missingInformation: [] };
       }
       if (!resolution || resolution.status === 'unavailable') {
-        return { ...need, status: 'unavailable' as const };
+        return {
+          ...need,
+          status: 'unavailable' as const,
+          missingInformation: dedupeStrings([
+            ...need.missingInformation,
+            `${need.requiredCapability} capability unavailable`,
+          ]),
+          reason: `${need.reason} ${resolution?.reason ?? 'No runtime capability resolution was produced.'}`,
+        };
       }
       return {
         ...need,
@@ -124,14 +135,12 @@ function requiresCurrentExternalInformation(intent: NormalizedIntent): boolean {
   const request = intent.originalRequest;
   const hasExternalUri = intent.entities.some((entity) => entity.type === 'uri');
   const stronglyExternal =
-    /\b(web|internet|online|external|news|weather|stock|share price|exchange rate|current president|current ceo|latest release|latest version|today'?s|search online)\b/i.test(
+    /\b(web|internet|online|external|official (?:information|sources?)|news|weather|stock|share price|exchange rate|current president|current ceo|latest release|latest version|today'?s|search online)\b/i.test(
       request,
     );
   const evidenceRequested = /\b(sources?|evidence|verify|look up)\b/i.test(request);
   const explicitlyLocal =
-    /\b(code|codebase|repository|repo|workspace|runtime|session|conversation|local file|source file|this file|the file)\b/i.test(
-      request,
-    );
+    Boolean(extractFileReference(request)) || explicitlyRequiresFileContent(request);
   return (
     hasExternalUri ||
     stronglyExternal ||
@@ -141,25 +150,79 @@ function requiresCurrentExternalInformation(intent: NormalizedIntent): boolean {
 }
 
 function explicitlyRequiresFileContent(request: string): boolean {
-  return /\b(read|open|inspect|review|summari[sz]e|use)\b.{0,40}\b(file|attachment)\b/i.test(
-    request,
+  return (
+    /\b(read|open|inspect|review|summari[sz]e|use|find|extract|get)\b.{0,60}\b(?:(?:this|that|the|attached|uploaded|created|generated|local|workspace|source)\s+)?(?:file|attachment)\b/i.test(
+      request,
+    ) ||
+    /\b(?:read|open|inspect|review|summari[sz]e|use|find|extract|get|in|from|inside|within)\b.{0,60}\b(?:this|that|the|created|generated|attached|uploaded|local|workspace|source)\s+(?:artifact|document)\b/i.test(
+      request,
+    )
   );
 }
 
-function extractFilePath(request: string): string | undefined {
-  const candidates = [
-    ...(request.match(/`([^`\r\n]+)`/g) ?? []).map((value) => value.slice(1, -1)),
-    ...(request.match(/(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g) ?? []),
+type ExplicitFileReference = {
+  path: string;
+  origin: 'explicit_user_reference';
+};
+
+/**
+ * Extracts only literal user-supplied file references. Freshness words are never
+ * converted into paths, and prose containing slash-separated alternatives is not
+ * treated as a workspace location unless the request gives it file/path semantics.
+ */
+function extractFileReference(request: string): ExplicitFileReference | undefined {
+  const directive = stripAttachedContent(request).replace(/\b[A-Za-z]+:\/\/\S+/g, ' ');
+  const candidates = dedupeStrings([
+    ...(directive.match(/`([^`\r\n]+)`/g) ?? []).map((value) => value.slice(1, -1).trim()),
+    ...(directive.match(/(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g) ?? []),
     ...(
-      request.match(/(?:^|\s)([\w.-]+(?:[\\/][\w .-]+)*\.[A-Za-z0-9]{1,12})(?=\s|$|[,.):;])/g) ?? []
+      directive.match(
+        /(?:^|\s)([\w.-]+(?:[\\/][\w .-]+)*\.[A-Za-z0-9]{1,12})(?=\s|$|[,.):;"'])/g,
+      ) ?? []
     ).map((value) => value.trim()),
-  ];
-  return candidates.find(
-    (value) =>
-      value.length > 0 &&
-      value.length <= 4_096 &&
-      (/[/\\]/.test(value) || /\.[A-Za-z0-9]{1,12}$/.test(value)),
+  ]);
+  for (const candidate of candidates) {
+    if (!isConcreteFileReference(candidate, directive)) continue;
+    return { path: candidate, origin: 'explicit_user_reference' };
+  }
+  return undefined;
+}
+
+function isConcreteFileReference(candidate: string, request: string): boolean {
+  if (!candidate || candidate.length > 4_096 || /[\r\n]/.test(candidate)) return false;
+  const escaped = escapeRegExp(candidate);
+  const quoted = new RegExp('`' + escaped + '`').test(request);
+  const fileLike = /\.[A-Za-z0-9]{1,12}$/.test(candidate);
+  const explicitlyRelative = /^\.\.?[\\/]/.test(candidate);
+  const windowsAbsolute = /^[A-Za-z]:[\\/]/.test(candidate);
+  if (quoted || fileLike || explicitlyRelative || windowsAbsolute) return true;
+  const referenceCue = new RegExp(
+    `(?:\\b(?:file|path|attachment|artifact|document|read|open|inspect|review|from|in)\\b.{0,40}${escaped}|${escaped}.{0,40}\\b(?:file|path|attachment|artifact|document)\\b)`,
+    'i',
   );
+  return referenceCue.test(request);
+}
+
+function stripAttachedContent(request: string): string {
+  return request.replace(/<attached_files>[\s\S]*?<\/attached_files>/gi, ' ');
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function freshnessRequirement(intent: NormalizedIntent): ContextNeed['freshnessRequirement'] {
+  if (!intent.temporal?.requiresCurrentData) return 'ANY';
+  return /\b(recent(?:ly|\s+changes?)?|this\s+week|last\s+\d+)\b/i.test(intent.temporal.expression)
+    ? 'RECENT'
+    : 'CURRENT';
+}
+
+function currentExternalFreshnessRequirement(
+  intent: NormalizedIntent,
+): ContextNeed['freshnessRequirement'] {
+  const required = freshnessRequirement(intent);
+  return required === 'ANY' ? 'CURRENT' : required;
 }
 
 function needSatisfied(
