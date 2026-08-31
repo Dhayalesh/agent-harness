@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Chip,
   Popover,
@@ -10,17 +11,22 @@ import { SectionCard } from "./Bits.jsx";
 import {
   budgetRows,
   humanize,
+  interventionPresentation,
   issueSummary,
   qualityPresentation,
   qualityScore,
   reportStats,
+  terminalIntervention,
 } from "../lib/context-intelligence.js";
 
 /** Compact live entry point beside the existing context-occupancy meter. */
-export function ContextIntelligenceIndicator({ report }) {
-  if (!report) return null;
-  const quality = qualityPresentation(report);
-  const score = qualityScore(report);
+export function ContextIntelligenceIndicator({ report, intervention }) {
+  const terminal =
+    terminalIntervention(intervention) ?? terminalIntervention(report);
+  if (!report && !terminal) return null;
+  const outcome = interventionPresentation(terminal);
+  const quality = outcome ?? qualityPresentation(report);
+  const score = report ? qualityScore(report) : null;
 
   return (
     <Popover placement="top-end" showArrow offset={10}>
@@ -35,23 +41,30 @@ export function ContextIntelligenceIndicator({ report }) {
           {score === null ? quality.label : `${quality.label} · ${score}`}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[min(92vw,390px)] p-0">
-        <IntelligenceSummary report={report} compact />
+      <PopoverContent className="w-[min(92vw,430px)] p-0">
+        <IntelligenceSummary
+          report={report}
+          intervention={terminal}
+          compact
+        />
       </PopoverContent>
     </Popover>
   );
 }
 
 /** Full run-detail surface using the console's existing card and metric language. */
-export function ContextIntelligenceSection({ report }) {
-  if (!report) return null;
-  const quality = qualityPresentation(report);
-  const score = qualityScore(report);
+export function ContextIntelligenceSection({ report, intervention }) {
+  const terminal =
+    terminalIntervention(intervention) ?? terminalIntervention(report);
+  if (!report && !terminal) return null;
+  const outcome = interventionPresentation(terminal);
+  const quality = outcome ?? qualityPresentation(report);
+  const score = report ? qualityScore(report) : null;
 
   return (
     <SectionCard
       title="Context Intelligence"
-      description="What the runtime selected, checked, and budgeted before the final model turn."
+      description="What the runtime selected, checked, and budgeted before the final model decision or terminal intervention."
       action={
         <Chip size="sm" variant="flat" color={quality.color}>
           {quality.label}
@@ -60,22 +73,78 @@ export function ContextIntelligenceSection({ report }) {
       }
       bodyClassName="px-5 pb-5 pt-2"
     >
-      <IntelligenceSummary report={report} />
+      <IntelligenceSummary report={report} intervention={terminal} />
     </SectionCard>
   );
 }
 
-function IntelligenceSummary({ report, compact = false }) {
+/** Application-level outcome; never presented as model-authored assistant prose. */
+export function ContextInterventionAlert({
+  intervention,
+  compact = false,
+  className = "",
+}) {
+  const outcome = interventionPresentation(intervention);
+  if (!outcome) return null;
+  const { reasonCodes, clarificationNeeds } = outcome.intervention;
+
+  return (
+    <Alert
+      color={outcome.color}
+      variant="flat"
+      title={outcome.label}
+      className={className}
+      classNames={{
+        base: "items-start border border-current/20",
+        title: "text-small font-semibold",
+      }}
+    >
+      <p className="text-tiny">{outcome.detail}</p>
+      {!compact && (reasonCodes.length > 0 || clarificationNeeds.length > 0) && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {reasonCodes.map((reason) => (
+            <Chip key={`reason:${reason}`} size="sm" variant="flat">
+              {humanize(reason)}
+            </Chip>
+          ))}
+          {clarificationNeeds.map((need) => (
+            <Chip key={`need:${need}`} size="sm" variant="bordered">
+              Needs {humanize(need)}
+            </Chip>
+          ))}
+        </div>
+      )}
+    </Alert>
+  );
+}
+
+function IntelligenceSummary({ report, intervention, compact = false }) {
+  const terminal =
+    terminalIntervention(intervention) ?? terminalIntervention(report);
+  if (!report) {
+    return (
+      <div className={compact ? "w-full p-4" : "flex flex-col gap-4"}>
+        <ContextInterventionAlert intervention={terminal} compact={compact} />
+      </div>
+    );
+  }
+
   const quality = qualityPresentation(report);
   const score = qualityScore(report) ?? 0;
   const allocations = budgetRows(report);
   const issues = issueSummary(report);
   const names = report.capabilities?.names ?? [];
+  const reconciliation = report.memory?.reconciliation;
+  const evaluation = report.evaluation;
 
   return (
     <div className={compact ? "w-full p-4" : "flex flex-col gap-5"}>
+      {terminal && (
+        <ContextInterventionAlert intervention={terminal} compact={compact} />
+      )}
+
       {compact && (
-        <div className="mb-4">
+        <div>
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-small font-semibold">{quality.label}</p>
@@ -154,6 +223,10 @@ function IntelligenceSummary({ report, compact = false }) {
                   value={`${humanize(report.task?.status)} · ${report.task?.pending ?? 0} pending`}
                 />
                 <Decision
+                  label="Quality decision"
+                  value={humanize(report.quality?.decision)}
+                />
+                <Decision
                   label="Retrieval"
                   value={
                     report.retrieval?.sufficient ? "Sufficient" : "Insufficient"
@@ -182,7 +255,7 @@ function IntelligenceSummary({ report, compact = false }) {
                 </div>
               ) : (
                 <p className="text-small text-default-500">
-                  No tools were needed for the final turn.
+                  No tools were needed for the final decision.
                 </p>
               )}
             </div>
@@ -191,24 +264,110 @@ function IntelligenceSummary({ report, compact = false }) {
       )}
 
       {compact && (
-        <dl className="mt-3 divide-y divide-divider rounded-medium border border-divider bg-content2 px-3">
+        <dl className="divide-y divide-divider rounded-medium border border-divider bg-content2 px-3">
           <Decision
             label="Retrieval"
             value={`${report.retrieval?.results ?? 0} results · ${report.retrieval?.iterations ?? 0} iterations`}
           />
           <Decision
-            label="Memory recalled"
-            value={String(report.memory?.recalled ?? 0)}
+            label="Operations"
+            value={countMap(report.retrieval?.operationOutcomes)}
           />
           <Decision
-            label="Task state"
-            value={`${humanize(report.task?.status)} · ${report.task?.pending ?? 0} pending`}
+            label="Memory"
+            value={`${report.memory?.recalled ?? 0} recalled · ${reconciliation?.retained ?? 0} retained`}
+          />
+          <Decision
+            label="Lifecycle"
+            value={`${report.lifecycle?.events ?? 0} events · ${report.finalContext?.activeItems ?? 0} active`}
           />
           <Decision
             label="Context changes"
             value={`${report.finalContext?.omittedItems ?? 0} omitted · ${report.finalContext?.offloadedArtifacts ?? 0} offloaded`}
           />
         </dl>
+      )}
+
+      {!compact && (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+          <div>
+            <Heading>Lifecycle and reconciliation</Heading>
+            <dl className="divide-y divide-divider overflow-hidden rounded-medium border border-divider bg-content2">
+              <Decision
+                label="Retrieval operations"
+                value={`${report.retrieval?.operations ?? 0} · ${countMap(report.retrieval?.operationOutcomes)}`}
+              />
+              <Decision
+                label="Memory reconciliation"
+                value={`${reconciliation?.retained ?? 0} retained · ${reconciliation?.ignored ?? 0} ignored · ${reconciliation?.stale ?? 0} stale · ${reconciliation?.conflicts ?? 0} conflicts`}
+              />
+              <Decision
+                label="Lifecycle transitions"
+                value={`${report.lifecycle?.events ?? 0} · ${countMap(report.lifecycle?.states)}`}
+              />
+              <Decision
+                label="Canonical / active"
+                value={`${report.finalContext?.canonicalItems ?? report.finalContext?.items ?? 0} / ${report.finalContext?.activeItems ?? 0}`}
+              />
+              <Decision
+                label="Provenance"
+                value={`${report.finalContext?.provenanceRecords ?? 0} records · ${report.finalContext?.sources ?? 0} sources`}
+              />
+            </dl>
+          </div>
+
+          <div>
+            <Heading>P3 adaptive signals</Heading>
+            <dl className="divide-y divide-divider overflow-hidden rounded-medium border border-divider bg-content2">
+              <Decision
+                label="Feedback"
+                value={
+                  report.feedback
+                    ? `${report.feedback.total ?? 0} · categories ${countMap(report.feedback.categories)} · outcomes ${countMap(report.feedback.outcomes)}`
+                    : "Not enabled or not reported"
+                }
+              />
+              <Decision
+                label="Prediction"
+                value={
+                  report.prediction
+                    ? `${report.prediction.hints ?? 0} hints · ${report.prediction.satisfiedDependencies ?? 0} dependencies · ${report.prediction.evidenceReferences ?? 0} evidence${report.prediction.truncated ? " · truncated" : ""}`
+                    : "Not enabled or not reported"
+                }
+              />
+              <Decision
+                label="Optimization"
+                value={optimizationSummary(report.optimization)}
+              />
+              <Decision
+                label="Operation success"
+                value={ratioSummary(evaluation?.operationSuccess)}
+              />
+              <Decision
+                label="Retrieval usefulness"
+                value={ratioSummary(
+                  evaluation?.classifiedRetrievalUsefulness,
+                )}
+              />
+              <Decision
+                label="Evidence utilization"
+                value={ratioSummary(evaluation?.evidenceUtilization)}
+              />
+              <Decision
+                label="Memory retention / gate rejection"
+                value={`${ratioSummary(evaluation?.memoryRetention)} / ${ratioSummary(evaluation?.gateRejection)}`}
+              />
+              <Decision
+                label="Observed latency / cost"
+                value={evaluationSummary(evaluation)}
+              />
+              <Decision
+                label="Unavailable metrics"
+                value={unavailableMetrics(evaluation)}
+              />
+            </dl>
+          </div>
+        </div>
       )}
 
       {!compact && issues.length > 0 && (
@@ -254,4 +413,52 @@ function Decision({ label, value }) {
       <dd className="text-right font-medium text-foreground">{value || "—"}</dd>
     </div>
   );
+}
+
+function countMap(value) {
+  if (!value || typeof value !== "object") return "none";
+  const entries = Object.entries(value)
+    .filter(([, count]) => Number.isFinite(Number(count)) && Number(count) > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (!entries.length) return "none";
+  return entries
+    .map(([key, count]) => `${humanize(key)} ${Number(count).toLocaleString()}`)
+    .join(" · ");
+}
+
+function ratioSummary(value) {
+  if (!value || !Number.isFinite(Number(value.value))) return "Not reported";
+  return `${Math.round(Number(value.value) * 100)}% (${value.numerator ?? 0}/${value.denominator ?? 0})`;
+}
+
+function optimizationSummary(value) {
+  if (!value) return "Not enabled or not reported";
+  if (!value.enabled) {
+    return value.unavailableReason
+      ? humanize(value.unavailableReason)
+      : "Disabled";
+  }
+  return `${value.reorderedSelections ?? 0} reordered · ${value.eligibleProfiles ?? 0} eligible profiles · ${value.durationSamples ?? 0} duration samples · ${value.costSamples ?? 0} cost samples`;
+}
+
+function evaluationSummary(value) {
+  if (!value) return "Not enabled or not reported";
+  const samples = value.latency?.samples ?? 0;
+  const mean = Number(value.latency?.meanMs);
+  const latency = Number.isFinite(mean)
+    ? `${Math.round(mean).toLocaleString()} ms mean (${samples})`
+    : `${samples} latency samples`;
+  const costs = Array.isArray(value.costs)
+    ? value.costs.reduce((total, entry) => total + (Number(entry.samples) || 0), 0)
+    : 0;
+  return `${latency} · ${costs} observed cost samples`;
+}
+
+function unavailableMetrics(value) {
+  if (!value) return "Not enabled or not reported";
+  const entries = Array.isArray(value.unavailable) ? value.unavailable : [];
+  if (!entries.length) return "none";
+  return entries
+    .map((entry) => `${humanize(entry.metric)}: ${humanize(entry.reason)}`)
+    .join(" · ");
 }

@@ -63,6 +63,14 @@ const contextSourceMetadataSchema = z
       "user",
       "conversation",
       "memory",
+      "file",
+      "web",
+      "mcp",
+      "database",
+      "api",
+      "task-state",
+      "artifact",
+      "application-context",
       "document",
       "structured",
       "vector",
@@ -73,16 +81,32 @@ const contextSourceMetadataSchema = z
       "external",
       "derived",
     ]),
+    sourceKind: z
+      .enum([
+        "FILE",
+        "WEB",
+        "MEMORY",
+        "MCP",
+        "DATABASE",
+        "API",
+        "TASK_STATE",
+        "ARTIFACT",
+        "APPLICATION_CONTEXT",
+      ])
+      .optional(),
     provider: z.string().trim().min(1).max(300).optional(),
     authority: unitInterval,
     retrievedAt: isoTimestamp.optional(),
     observedAt: isoTimestamp.optional(),
+    sourceTimestamp: isoTimestamp.optional(),
     validFrom: isoTimestamp.optional(),
     validUntil: isoTimestamp.optional(),
     version: z.string().max(300).optional(),
     scope: z.array(z.string().max(300)).max(100).optional(),
     uri: z.string().max(4096).optional(),
     contentHash: z.string().max(300).optional(),
+    extractionContext: z.string().max(2000).optional(),
+    evidenceIdentity: z.string().max(300).optional(),
     policyLabels: z.array(z.string().max(200)).max(100).optional(),
   })
   .strict();
@@ -104,6 +128,10 @@ export const contextIntelligenceConfigSchema = z
         pruning: z.boolean().optional(),
         offloading: z.boolean().optional(),
         advancedReasoning: z.boolean().optional(),
+        boundedFeedback: z.boolean().optional(),
+        predictiveContext: z.boolean().optional(),
+        observedPerformanceOptimization: z.boolean().optional(),
+        evaluationMetrics: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -121,6 +149,7 @@ export const contextIntelligenceConfigSchema = z
             memory: unitInterval.optional(),
             retrievalEvidence: unitInterval.optional(),
             toolObservations: unitInterval.optional(),
+            toolDefinitions: unitInterval.optional(),
             taskState: unitInterval.optional(),
             safetyPolicy: unitInterval.optional(),
           })
@@ -134,6 +163,7 @@ export const contextIntelligenceConfigSchema = z
           .positive()
           .max(10000000)
           .optional(),
+        maxRetrievalOperations: z.number().int().positive().max(1000).optional(),
         maxToolActions: z.number().int().positive().max(1000).optional(),
         maxLoopMilliseconds: z.number().int().positive().max(600000).optional(),
       })
@@ -231,6 +261,29 @@ export const contextIntelligenceConfigSchema = z
           .max(20)
           .optional(),
         maximumAlternatives: z.number().int().positive().max(20).optional(),
+      })
+      .strict()
+      .optional(),
+    quality: z
+      .object({
+        conflictPolicy: z.enum(["proceed", "clarify", "abstain"]).optional(),
+        unavailablePolicy: z.enum(["abstain", "clarify"]).optional(),
+      })
+      .strict()
+      .optional(),
+    p3: z
+      .object({
+        maximumFeedbackRecords: z.number().int().positive().max(1000).optional(),
+        maximumPerformanceProfiles: z.number().int().positive().max(100).optional(),
+        minimumComparableSamples: z.number().int().positive().max(100).optional(),
+        maximumPredictiveHints: z.number().int().positive().max(20).optional(),
+        maximumEvaluationOperations: z.number().int().positive().max(1000).optional(),
+        maximumSourceReferencesPerFeedback: z
+          .number()
+          .int()
+          .positive()
+          .max(20)
+          .optional(),
       })
       .strict()
       .optional(),
@@ -751,6 +804,46 @@ export const chatMessageSchema = z
 
 const reportCount = z.number().int().nonnegative();
 const reportCountMap = z.record(reportCount);
+const contextQualityDecisionSchema = z.enum([
+  "ACCEPT",
+  "RETRIEVE",
+  "RETRIEVE_AGAIN",
+  "CLARIFY",
+  "CONFLICT",
+  "DENY",
+  "ABSTAIN",
+]);
+const contextNeedTypeSchema = z.enum([
+  "CURRENT_EXTERNAL_INFORMATION",
+  "FILE_INFORMATION",
+  "DATABASE_INFORMATION",
+  "API_INFORMATION",
+  "MCP_DOMAIN_INFORMATION",
+  "MEMORY_INFORMATION",
+  "TASK_STATE_INFORMATION",
+  "ARTIFACT_INFORMATION",
+  "APPLICATION_CONTEXT_INFORMATION",
+  "DOCUMENT_CREATION",
+]);
+const measuredRatioSchema = z
+  .object({
+    numerator: reportCount,
+    denominator: reportCount,
+    value: z.number().min(0).max(1),
+  })
+  .strict();
+
+/** Content-free terminal outcome emitted on a warning and on the folded result. */
+export const contextIntelligenceInterventionSchema = z
+  .object({
+    kind: z.literal("context-intelligence"),
+    decision: z.enum(["CLARIFY", "CONFLICT", "DENY", "ABSTAIN"]),
+    terminal: z.literal(true),
+    continueToModel: z.literal(false),
+    reasonCodes: z.array(z.string().max(200)).max(50),
+    clarificationNeeds: z.array(contextNeedTypeSchema).max(50),
+  })
+  .strict();
 
 /**
  * Content-free Context Intelligence projection emitted by the Harness.
@@ -782,6 +875,18 @@ export const contextIntelligenceReportSchema = z
         ambiguities: reportCount,
       })
       .passthrough(),
+    contextNeeds: z
+      .object({
+        total: reportCount,
+        required: reportCount,
+        missing: reportCount,
+        unavailable: reportCount,
+        clarificationRequired: reportCount,
+        types: reportCountMap,
+        capabilities: z.array(z.string().max(100)).max(50),
+      })
+      .passthrough()
+      .optional(),
     query: z
       .object({
         variants: reportCount,
@@ -797,11 +902,33 @@ export const contextIntelligenceReportSchema = z
         sufficient: z.boolean(),
         insufficiencies: reportCount,
         conflicts: reportCount,
+        operations: reportCount.optional(),
+        operationOutcomes: reportCountMap.optional(),
+        toolNames: z.array(z.string().max(200)).max(50).optional(),
       })
       .passthrough(),
     memory: z
-      .object({ recalled: reportCount, types: reportCountMap })
+      .object({
+        recalled: reportCount,
+        types: reportCountMap,
+        reconciliation: z
+          .object({
+            retained: reportCount,
+            ignored: reportCount,
+            stale: reportCount,
+            conflicts: reportCount,
+          })
+          .strict()
+          .optional(),
+      })
       .passthrough(),
+    lifecycle: z
+      .object({
+        events: reportCount,
+        states: reportCountMap,
+      })
+      .passthrough()
+      .optional(),
     capabilities: z
       .object({
         available: reportCount,
@@ -834,6 +961,7 @@ export const contextIntelligenceReportSchema = z
     quality: z
       .object({
         status: z.enum(["passed", "degraded", "insufficient", "rejected"]),
+        decision: contextQualityDecisionSchema.optional(),
         score: z.number().min(0).max(1),
         sufficient: z.boolean(),
         conflicts: reportCount,
@@ -884,15 +1012,28 @@ export const contextIntelligenceReportSchema = z
     finalContext: z
       .object({
         items: reportCount,
+        canonicalItems: reportCount.optional(),
+        activeItems: reportCount.optional(),
         evidence: reportCount,
         sources: reportCount,
         sections: reportCount,
         tools: reportCount,
         omittedItems: reportCount,
+        omittedMessages: reportCount.optional(),
         offloadedArtifacts: reportCount,
         provenanceRecords: reportCount,
       })
       .passthrough(),
+    intervention: z
+      .object({
+        required: z.boolean(),
+        continueToModel: z.boolean(),
+        decision: contextQualityDecisionSchema,
+        reasonCodes: z.array(z.string().max(200)).max(50),
+        clarificationNeeds: z.array(contextNeedTypeSchema).max(50),
+      })
+      .passthrough()
+      .optional(),
     reasoning: z
       .object({
         mode: z.enum(["direct", "react", "alternatives", "tree"]),
@@ -900,6 +1041,91 @@ export const contextIntelligenceReportSchema = z
         planSteps: reportCount,
       })
       .passthrough(),
+    feedback: z
+      .object({
+        total: reportCount,
+        categories: reportCountMap,
+        outcomes: reportCountMap,
+      })
+      .passthrough()
+      .optional(),
+    prediction: z
+      .object({
+        hints: reportCount,
+        satisfiedDependencies: reportCount,
+        evidenceReferences: reportCount,
+        truncated: z.boolean(),
+      })
+      .passthrough()
+      .optional(),
+    optimization: z
+      .object({
+        enabled: z.boolean(),
+        eligibleProfiles: reportCount,
+        reorderedSelections: reportCount,
+        durationSamples: reportCount,
+        costSamples: reportCount,
+        unavailableReason: z
+          .enum([
+            "disabled",
+            "no_runtime_operations",
+            "insufficient_comparable_samples",
+            "no_observed_cost",
+          ])
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
+    evaluation: z
+      .object({
+        operationSuccess: measuredRatioSchema.optional(),
+        classifiedRetrievalUsefulness: measuredRatioSchema.optional(),
+        evidenceUtilization: measuredRatioSchema.optional(),
+        memoryRetention: measuredRatioSchema.optional(),
+        gateRejection: measuredRatioSchema.optional(),
+        unclassifiedRetrievalOperations: reportCount,
+        latency: z
+          .object({
+            samples: reportCount,
+            totalMs: z.number().nonnegative(),
+            meanMs: z.number().nonnegative().optional(),
+            minimumMs: z.number().nonnegative().optional(),
+            maximumMs: z.number().nonnegative().optional(),
+          })
+          .strict(),
+        costs: z
+          .array(
+            z
+              .object({
+                unit: z.string().max(100),
+                samples: reportCount,
+                total: z.number().nonnegative(),
+              })
+              .strict(),
+          )
+          .max(1000),
+        unavailable: z
+          .array(
+            z
+              .object({
+                metric: z.enum([
+                  "retrieval_recall",
+                  "answer_accuracy",
+                  "observed_cost",
+                ]),
+                reason: z.enum([
+                  "no_relevance_ground_truth",
+                  "no_accuracy_ground_truth",
+                  "no_observed_cost",
+                ]),
+              })
+              .strict(),
+          )
+          .max(3),
+        evaluatedAt: z.string().datetime(),
+      })
+      .passthrough()
+      .optional(),
     updatedAt: z.string().datetime(),
   })
   .passthrough();
@@ -1032,6 +1258,7 @@ export const runtimeResultSchema = z
       .passthrough()
       .optional(),
     contextIntelligence: contextIntelligenceReportSchema.optional(),
+    intervention: contextIntelligenceInterventionSchema.optional(),
     events: z.array(z.unknown()).optional(),
     durationMs: z.number().nonnegative(),
     error: z

@@ -46,6 +46,7 @@ const STATUS_COLOR = {
   missing: "danger",
   running: "warning",
   pending: "warning",
+  intervened: "warning",
   plan: "warning",
   default: "primary",
   auto: "primary",

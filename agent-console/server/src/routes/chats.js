@@ -674,9 +674,12 @@ async function appendResult(chat, invocation, requestId) {
     content:
       invocation.result.output ||
       invocation.result.error?.message ||
-      (invocation.result.artifacts?.length
+      (invocation.result.intervention || invocation.result.artifacts?.length
         ? ""
         : "The agent returned no output."),
+    ...(invocation.result.intervention
+      ? { intervention: invocation.result.intervention }
+      : {}),
     ...(invocation.result.artifacts?.length
       ? { artifacts: invocation.result.artifacts }
       : {}),
@@ -962,6 +965,7 @@ function replayableHistory(messages, startIndex) {
     .map((message) => ({ message, text: historyText(message) }))
     .filter(
       ({ message, text }) =>
+        !message.intervention &&
         (message.role === "user" || message.role === "assistant") &&
         text.length > 0,
     );

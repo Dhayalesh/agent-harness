@@ -28,7 +28,10 @@ import {
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
-import { ContextIntelligenceSection } from "../components/ContextIntelligence.jsx";
+import {
+  ContextIntelligenceSection,
+  ContextInterventionAlert,
+} from "../components/ContextIntelligence.jsx";
 
 export function RunDetailPage() {
   const { id } = useParams();
@@ -68,7 +71,10 @@ export function RunDetailPage() {
         title={
           <span className="flex items-center gap-3">
             Run
-            <StatusPill status={run.status} size="md" />
+            <StatusPill
+              status={run.intervention ? "intervened" : run.status}
+              size="md"
+            />
           </span>
         }
         description={`${run.agentName} · ${when(run.createdAt)}`}
@@ -97,6 +103,11 @@ export function RunDetailPage() {
       />
 
       <ErrorNote error={error} />
+
+      <ContextInterventionAlert
+        intervention={run.intervention}
+        className="mb-4"
+      />
 
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatTile label="Turns" value={run.turns ?? "—"} />
@@ -152,7 +163,10 @@ export function RunDetailPage() {
           />
         </SectionCard>
 
-        <ContextIntelligenceSection report={run.contextIntelligence} />
+        <ContextIntelligenceSection
+          report={run.contextIntelligence}
+          intervention={run.intervention}
+        />
 
         <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
           <SectionCard title="Prompt" bodyClassName="px-5 pb-5 pt-1">
@@ -166,7 +180,10 @@ export function RunDetailPage() {
           <SectionCard title="Output" bodyClassName="px-5 pb-5 pt-1">
             <ScrollShadow className="max-h-[260px] rounded-medium border border-divider bg-content2">
               <pre className="message-text p-3.5 font-mono text-tiny">
-                {run.output || "(no text output)"}
+                {run.output ||
+                  (run.intervention
+                    ? "Model invocation was skipped by Context Intelligence."
+                    : "(no text output)")}
               </pre>
             </ScrollShadow>
           </SectionCard>

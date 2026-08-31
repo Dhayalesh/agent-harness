@@ -76,6 +76,9 @@ const runSchema = new mongoose.Schema(
     // Bounded content-free report from the Harness. Mixed keeps the wire report
     // forward-compatible while validation happens at the AgentCore boundary.
     contextIntelligence: mongoose.Schema.Types.Mixed,
+    // Validated at the runtime/stream boundary; stored separately from output so
+    // transport success remains backward-compatible while the UI can show intervened.
+    intervention: mongoose.Schema.Types.Mixed,
     tools: { type: [toolSummarySchema], default: [] },
     artifacts: { type: [mongoose.Schema.Types.Mixed], default: [] },
     agentRuntimeArn: String,

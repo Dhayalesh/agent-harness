@@ -247,6 +247,7 @@ function applyRuntimeResult(run, result, invocation) {
   if (result.contextIntelligence) {
     run.contextIntelligence = result.contextIntelligence;
   }
+  if (result.intervention) run.intervention = result.intervention;
   run.tools = result.tools ?? [];
   run.artifacts = artifactMetadata(result.artifacts);
   run.harnessSessionId = result.sessionId;

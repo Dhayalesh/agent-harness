@@ -21,6 +21,29 @@ const QUALITY = {
   },
 };
 
+const INTERVENTIONS = {
+  CLARIFY: {
+    label: "Clarification required",
+    color: "warning",
+    detail: "Context Intelligence ended the turn before model invocation because required information needs clarification.",
+  },
+  ABSTAIN: {
+    label: "Context abstained",
+    color: "warning",
+    detail: "Context Intelligence ended the turn because the required evidence could not be obtained safely.",
+  },
+  CONFLICT: {
+    label: "Evidence conflict",
+    color: "danger",
+    detail: "Context Intelligence ended the turn because material evidence remained in conflict.",
+  },
+  DENY: {
+    label: "Request denied",
+    color: "danger",
+    detail: "Context Intelligence ended the turn because a governing policy denied the operation.",
+  },
+};
+
 export const BUDGET_LABELS = {
   systemInstructions: "System instructions",
   taskInstructions: "Task instructions",
@@ -29,9 +52,43 @@ export const BUDGET_LABELS = {
   memory: "Memory",
   retrievalEvidence: "Retrieved evidence",
   toolObservations: "Tool observations",
+  toolDefinitions: "Tool definitions",
   taskState: "Task state",
   safetyPolicy: "Safety policy",
 };
+
+/** Normalize either the typed application DTO or a report's intervention summary. */
+export function terminalIntervention(value) {
+  const candidate = value?.kind
+    ? value
+    : value?.intervention && typeof value.intervention === "object"
+      ? value.intervention
+      : value;
+  const presentation = INTERVENTIONS[candidate?.decision];
+  const terminal =
+    candidate?.kind === "context-intelligence"
+      ? candidate.terminal === true && candidate.continueToModel === false
+      : candidate?.required === true && candidate.continueToModel === false;
+  if (!presentation || !terminal) return null;
+  return {
+    kind: "context-intelligence",
+    decision: candidate.decision,
+    terminal: true,
+    continueToModel: false,
+    reasonCodes: Array.isArray(candidate.reasonCodes)
+      ? candidate.reasonCodes.slice(0, 50)
+      : [],
+    clarificationNeeds: Array.isArray(candidate.clarificationNeeds)
+      ? candidate.clarificationNeeds.slice(0, 50)
+      : [],
+  };
+}
+
+export function interventionPresentation(value) {
+  const intervention = terminalIntervention(value);
+  if (!intervention) return null;
+  return { ...INTERVENTIONS[intervention.decision], intervention };
+}
 
 export function qualityPresentation(report) {
   const status = report?.quality?.status;

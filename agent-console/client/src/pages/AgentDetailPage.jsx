@@ -170,25 +170,82 @@ export function AgentDetailPage() {
                   value:
                     agent.contextIntelligence?.enabled === false
                       ? "disabled"
-                      : "enabled",
+                      : agent.contextIntelligence?.enabled === true
+                        ? "enabled (configured)"
+                        : "runtime default (enabled)",
                 },
                 {
                   label: "Retrieval iterations",
-                  value:
+                  value: configuredValue(
                     agent.contextIntelligence?.budgets
-                      ?.maxRetrievalIterations ?? "runtime default",
+                      ?.maxRetrievalIterations,
+                    3,
+                  ),
+                },
+                {
+                  label: "Retrieval operations",
+                  value: configuredValue(
+                    agent.contextIntelligence?.budgets
+                      ?.maxRetrievalOperations,
+                    8,
+                  ),
                 },
                 {
                   label: "Memory recall",
-                  value:
-                    agent.contextIntelligence?.memory?.recallLimit ??
-                    "runtime default",
+                  value: configuredValue(
+                    agent.contextIntelligence?.memory?.recallLimit,
+                    12,
+                  ),
                 },
                 {
                   label: "Exposed tools",
-                  value:
-                    agent.contextIntelligence?.capability?.maximumExposed ??
-                    "runtime default",
+                  value: configuredValue(
+                    agent.contextIntelligence?.capability?.maximumExposed,
+                    20,
+                  ),
+                },
+                {
+                  label: "Conflict policy",
+                  value: configuredValue(
+                    agent.contextIntelligence?.quality?.conflictPolicy,
+                    "proceed",
+                  ),
+                },
+                {
+                  label: "Unavailable evidence",
+                  value: configuredValue(
+                    agent.contextIntelligence?.quality?.unavailablePolicy,
+                    "abstain",
+                  ),
+                },
+                {
+                  label: "P3 bounded feedback",
+                  value: configuredFlag(
+                    agent.contextIntelligence?.features?.boundedFeedback,
+                  ),
+                },
+                {
+                  label: "P3 prediction",
+                  value: configuredFlag(
+                    agent.contextIntelligence?.features?.predictiveContext,
+                  ),
+                },
+                {
+                  label: "P3 optimization",
+                  value: configuredFlag(
+                    agent.contextIntelligence?.features
+                      ?.observedPerformanceOptimization,
+                  ),
+                },
+                {
+                  label: "P3 evaluation",
+                  value: configuredFlag(
+                    agent.contextIntelligence?.features?.evaluationMetrics,
+                  ),
+                },
+                {
+                  label: "P3 limits",
+                  value: configuredP3Limits(agent.contextIntelligence?.p3),
                 },
                 { label: "Max turns", value: agent.limits?.maxTurns ?? "—" },
                 {
@@ -338,6 +395,36 @@ export function AgentDetailPage() {
       </SectionCard>
     </section>
   );
+}
+
+function configuredValue(value, runtimeDefault) {
+  return value === undefined
+    ? `runtime default (${runtimeDefault})`
+    : `${value} (configured)`;
+}
+
+function configuredFlag(value) {
+  return value === undefined
+    ? "runtime default (off)"
+    : value
+      ? "on (configured)"
+      : "off (configured)";
+}
+
+function configuredP3Limits(p3) {
+  const limits = [
+    ["feedback", p3?.maximumFeedbackRecords, 200],
+    ["profiles", p3?.maximumPerformanceProfiles, 50],
+    ["samples", p3?.minimumComparableSamples, 3],
+    ["hints", p3?.maximumPredictiveHints, 8],
+    ["evaluation", p3?.maximumEvaluationOperations, 200],
+    ["references", p3?.maximumSourceReferencesPerFeedback, 8],
+  ];
+  return limits
+    .map(([label, value, fallback]) =>
+      `${label} ${value === undefined ? `default ${fallback}` : value}`,
+    )
+    .join(" · ");
 }
 
 function IntegrationList({ heading, items, empty }) {

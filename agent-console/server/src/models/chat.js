@@ -97,6 +97,9 @@ const chatMessageSchema = new mongoose.Schema(
     attachments: { type: [messageAttachmentSchema], default: undefined },
     artifacts: { type: [artifactSchema], default: undefined },
     toolCalls: { type: [toolCallSchema], default: undefined },
+    // Application metadata for a terminal Context Intelligence decision. It is
+    // deliberately not assistant prose and is excluded from replay history.
+    intervention: mongoose.Schema.Types.Mixed,
     runId: String,
     createdAt: { type: String, required: true },
     error: {

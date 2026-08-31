@@ -10,7 +10,10 @@
 import { presentedArtifact } from "./response-artifacts.js";
 import { presentedReasoning } from "./response-reasoning.js";
 import { presentedToolCall } from "./response-tool-calls.js";
-import { contextIntelligenceReportSchema } from "../lib/schemas.js";
+import {
+  contextIntelligenceInterventionSchema,
+  contextIntelligenceReportSchema,
+} from "../lib/schemas.js";
 
 /**
  * How many turns of context history a run keeps.
@@ -40,6 +43,7 @@ export class RunTotals {
   #artifacts = [];
   #context;
   #contextIntelligence;
+  #intervention;
   #compactions = 0;
   #recoveries = 0;
   #peakTokens;
@@ -226,8 +230,20 @@ export class RunTotals {
           );
           if (!parsed.success) break;
           // Last report wins, matching the buffered Harness result: it describes
-          // the curated context that produced the final model turn.
+          // the final model decision or the terminal Context Intelligence outcome.
           this.#contextIntelligence = structuredClone(parsed.data);
+        }
+        break;
+      case "warning":
+        {
+          const parsed = contextIntelligenceInterventionSchema.safeParse(
+            event.intervention,
+          );
+          if (parsed.success) {
+            // Warnings remain backward-compatible; only the bounded typed payload
+            // becomes an application outcome on the folded result.
+            this.#intervention = structuredClone(parsed.data);
+          }
         }
         break;
       // Counted, not stored in detail: what a reader needs is "the layer had to put
@@ -372,6 +388,7 @@ export class RunTotals {
       ...(this.#contextIntelligence
         ? { contextIntelligence: this.#contextIntelligence }
         : {}),
+      ...(this.#intervention ? { intervention: this.#intervention } : {}),
       durationMs,
       ...(failure ? { error: failure } : {}),
     };

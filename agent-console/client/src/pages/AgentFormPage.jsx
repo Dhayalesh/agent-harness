@@ -42,10 +42,17 @@ const EMPTY = {
   maxOutputTokens: "",
   contextIntelligenceEnabled: true,
   maxRetrievalIterations: 3,
+  maxRetrievalOperations: 8,
   memoryRecallLimit: 12,
   maximumExposedTools: 20,
   offloadThresholdChars: 40000,
   defaultChunkingStrategy: "recursive",
+  contextBoundedFeedback: false,
+  contextPredictiveContext: false,
+  contextObservedPerformanceOptimization: false,
+  contextEvaluationMetrics: false,
+  contextConflictPolicy: "proceed",
+  contextUnavailablePolicy: "abstain",
   stream: false,
   enabled: true,
   isDefault: false,
@@ -62,8 +69,17 @@ const EMPTY_CATALOGUE = {
 function agentContext(form) {
   return {
     enabled: Boolean(form.contextIntelligenceEnabled),
+    features: {
+      boundedFeedback: Boolean(form.contextBoundedFeedback),
+      predictiveContext: Boolean(form.contextPredictiveContext),
+      observedPerformanceOptimization: Boolean(
+        form.contextObservedPerformanceOptimization,
+      ),
+      evaluationMetrics: Boolean(form.contextEvaluationMetrics),
+    },
     budgets: {
       maxRetrievalIterations: Number(form.maxRetrievalIterations) || 3,
+      maxRetrievalOperations: Number(form.maxRetrievalOperations) || 8,
     },
     memory: {
       recallLimit: Number(form.memoryRecallLimit) || 12,
@@ -76,6 +92,10 @@ function agentContext(form) {
     },
     chunking: {
       defaultStrategy: form.defaultChunkingStrategy || "recursive",
+    },
+    quality: {
+      conflictPolicy: form.contextConflictPolicy || "proceed",
+      unavailablePolicy: form.contextUnavailablePolicy || "abstain",
     },
   };
 }
@@ -131,6 +151,8 @@ export function AgentFormPage({ mode }) {
               agent.contextIntelligence?.enabled !== false,
             maxRetrievalIterations:
               agent.contextIntelligence?.budgets?.maxRetrievalIterations ?? 3,
+            maxRetrievalOperations:
+              agent.contextIntelligence?.budgets?.maxRetrievalOperations ?? 8,
             memoryRecallLimit:
               agent.contextIntelligence?.memory?.recallLimit ?? 12,
             maximumExposedTools:
@@ -141,6 +163,20 @@ export function AgentFormPage({ mode }) {
             defaultChunkingStrategy:
               agent.contextIntelligence?.chunking?.defaultStrategy ??
               "recursive",
+            contextBoundedFeedback:
+              agent.contextIntelligence?.features?.boundedFeedback ?? false,
+            contextPredictiveContext:
+              agent.contextIntelligence?.features?.predictiveContext ?? false,
+            contextObservedPerformanceOptimization:
+              agent.contextIntelligence?.features
+                ?.observedPerformanceOptimization ?? false,
+            contextEvaluationMetrics:
+              agent.contextIntelligence?.features?.evaluationMetrics ?? false,
+            contextConflictPolicy:
+              agent.contextIntelligence?.quality?.conflictPolicy ?? "proceed",
+            contextUnavailablePolicy:
+              agent.contextIntelligence?.quality?.unavailablePolicy ??
+              "abstain",
           });
           return;
         }
@@ -694,7 +730,7 @@ export function AgentFormPage({ mode }) {
 
         <SectionCard
           title="Context Intelligence"
-          description="Curates intent, memory, evidence, observations, and relevant tools before each model decision."
+          description="Curates intent, memory, evidence, observations, and relevant tools before each model decision. P3 learning remains opt-in."
           bodyClassName="gap-4 px-5 py-4"
         >
           <Checkbox
@@ -714,6 +750,17 @@ export function AgentFormPage({ mode }) {
               value={String(form.maxRetrievalIterations)}
               onValueChange={setNumber("maxRetrievalIterations")}
               description="Bounded adaptive query/retrieval retries."
+            />
+            <Input
+              type="number"
+              min={1}
+              max={1000}
+              label="Retrieval operations"
+              labelPlacement="outside"
+              variant="bordered"
+              value={String(form.maxRetrievalOperations)}
+              onValueChange={setNumber("maxRetrievalOperations")}
+              description="Maximum runtime acquisition operations per request."
             />
             <Input
               type="number"
@@ -762,12 +809,77 @@ export function AgentFormPage({ mode }) {
                 "recursive",
                 "document",
                 "semantic",
+                "llm",
+                "agentic",
                 "hierarchical",
                 "late",
               ].map((strategy) => (
                 <SelectItem key={strategy}>{strategy}</SelectItem>
               ))}
             </Select>
+            <Select
+              label="Conflict policy"
+              labelPlacement="outside"
+              variant="bordered"
+              selectedKeys={[form.contextConflictPolicy]}
+              onSelectionChange={(keys) =>
+                set("contextConflictPolicy")([...keys][0] ?? "proceed")
+              }
+              description="How unresolved evidence conflicts end the turn."
+            >
+              <SelectItem key="proceed">Proceed</SelectItem>
+              <SelectItem key="clarify">Clarify</SelectItem>
+              <SelectItem key="abstain">Abstain</SelectItem>
+            </Select>
+            <Select
+              label="Unavailable evidence policy"
+              labelPlacement="outside"
+              variant="bordered"
+              selectedKeys={[form.contextUnavailablePolicy]}
+              onSelectionChange={(keys) =>
+                set("contextUnavailablePolicy")([...keys][0] ?? "abstain")
+              }
+              description="Outcome when required evidence cannot be acquired."
+            >
+              <SelectItem key="abstain">Abstain</SelectItem>
+              <SelectItem key="clarify">Clarify</SelectItem>
+            </Select>
+          </div>
+
+          <div className="rounded-medium border border-divider bg-content2 p-4">
+            <p className="text-small font-semibold">P3 adaptive intelligence</p>
+            <p className="mt-1 text-tiny text-default-500">
+              Disabled by default. Each capability uses bounded, content-free,
+              observed lifecycle data only.
+            </p>
+            <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Checkbox
+                isSelected={form.contextBoundedFeedback}
+                onValueChange={set("contextBoundedFeedback")}
+              >
+                Bounded feedback
+              </Checkbox>
+              <Checkbox
+                isSelected={form.contextPredictiveContext}
+                onValueChange={set("contextPredictiveContext")}
+              >
+                Dependency-only prediction
+              </Checkbox>
+              <Checkbox
+                isSelected={form.contextObservedPerformanceOptimization}
+                onValueChange={set(
+                  "contextObservedPerformanceOptimization",
+                )}
+              >
+                Observed performance optimization
+              </Checkbox>
+              <Checkbox
+                isSelected={form.contextEvaluationMetrics}
+                onValueChange={set("contextEvaluationMetrics")}
+              >
+                Evaluation metrics
+              </Checkbox>
+            </div>
           </div>
         </SectionCard>
 
