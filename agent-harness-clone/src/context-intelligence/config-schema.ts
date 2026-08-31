@@ -70,6 +70,7 @@ export const contextIntelligenceConfigSchema = z
             memory: unit.optional(),
             retrievalEvidence: unit.optional(),
             toolObservations: unit.optional(),
+            toolDefinitions: unit.optional(),
             taskState: unit.optional(),
             safetyPolicy: unit.optional(),
           })
@@ -78,6 +79,7 @@ export const contextIntelligenceConfigSchema = z
         maxRetrievalIterations: positiveInteger.max(20).optional(),
         maxRetrievalResults: positiveInteger.max(1_000).optional(),
         maxRetrievalTokens: positiveInteger.max(10_000_000).optional(),
+        maxRetrievalOperations: positiveInteger.max(1_000).optional(),
         maxToolActions: positiveInteger.max(1_000).optional(),
         maxLoopMilliseconds: positiveInteger.max(600_000).optional(),
       })
@@ -140,7 +142,16 @@ export const contextIntelligenceConfigSchema = z
     chunking: z
       .object({
         defaultStrategy: z
-          .enum(['fixed', 'recursive', 'document', 'semantic', 'llm', 'agentic', 'hierarchical', 'late'])
+          .enum([
+            'fixed',
+            'recursive',
+            'document',
+            'semantic',
+            'llm',
+            'agentic',
+            'hierarchical',
+            'late',
+          ])
           .optional(),
         targetTokens: positiveInteger.max(1_000_000).optional(),
         overlapTokens: z.number().int().nonnegative().max(1_000_000).optional(),
@@ -164,6 +175,13 @@ export const contextIntelligenceConfigSchema = z
           .max(20)
           .optional(),
         maximumAlternatives: positiveInteger.max(20).optional(),
+      })
+      .strict()
+      .optional(),
+    quality: z
+      .object({
+        conflictPolicy: z.enum(['proceed', 'clarify', 'abstain']).optional(),
+        unavailablePolicy: z.enum(['abstain', 'clarify']).optional(),
       })
       .strict()
       .optional(),

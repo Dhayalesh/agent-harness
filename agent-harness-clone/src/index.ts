@@ -604,18 +604,26 @@ export {
 export type { ContextIntelligenceConfigWire } from './context-intelligence/config-schema.js';
 export type {
   CapabilityMetadata,
+  CapabilityResolution,
+  ContextCapability,
   ContextBudgetAllocation,
   ContextBudgetCategory,
   ContextBudgetSnapshot,
   ContextConflict,
   ContextContract,
   ContextIntelligenceReport,
+  ContextNeed,
+  ContextNeedStatus,
+  ContextNeedType,
   ContextItem as IntelligenceContextItem,
   ContextItemKind as IntelligenceContextItemKind,
   ContextQualityIssue,
+  ContextQualityDecision,
   ContextQualityReport,
   ContextQualityStatus,
   ContextScope,
+  ContextRuntimeAction,
+  ContextRuntimeDirective,
   EvidenceItem,
   FinalContextSection,
   FinalizedContext,
@@ -641,6 +649,7 @@ export type {
   RetrievalRequest,
   RetrievalResult,
   RetrievalReranker,
+  RuntimeRetrievalOperation,
   SelectedCapability,
   SourceMetadata,
   SourceType,
@@ -652,6 +661,7 @@ export type {
   ToolPlan,
 } from './context-intelligence/contracts.js';
 export { contextIntelligenceReport } from './context-intelligence/report.js';
+export { ContextNeedIntelligence } from './context-intelligence/context-need.js';
 export { IntentResolver, QueryIntelligence } from './context-intelligence/query-intelligence.js';
 export type { QueryTransformer } from './context-intelligence/query-intelligence.js';
 export {
@@ -708,9 +718,14 @@ export type {
 export {
   CapabilityIntelligence,
   CapabilityRegistry,
+  inferCapability,
+  inferGenericCapabilities,
 } from './context-intelligence/capability-intelligence.js';
 export type { CapabilityMetadataProvider } from './context-intelligence/capability-intelligence.js';
 export { ObservationIntelligence } from './context-intelligence/observation-intelligence.js';
+export { EvidenceIntelligence } from './context-intelligence/evidence-intelligence.js';
+export { ContextQualityGate } from './context-intelligence/quality-gate.js';
+export { RuntimeRetrievalPlanner } from './context-intelligence/runtime-retrieval.js';
 export type { ProcessedObservation } from './context-intelligence/observation-intelligence.js';
 export {
   ContextBudgetEngine,
@@ -721,9 +736,5 @@ export {
   detectContextConflicts,
   itemFreshness,
 } from './context-intelligence/hygiene.js';
-export type {
-  HygieneResult,
-  SemanticSummarizer,
-} from './context-intelligence/hygiene.js';
+export type { HygieneResult, SemanticSummarizer } from './context-intelligence/hygiene.js';
 export { MultiSourceSynthesizer } from './context-intelligence/synthesis.js';
-export { createContextArtifactReadTool } from './context-intelligence/artifact-drilldown-tool.js';

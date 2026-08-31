@@ -2,7 +2,11 @@ import type { ArtifactStore } from '../artifacts/artifact-store.js';
 import type { AgentMessage } from '../core/messages.js';
 import type { StopReason } from '../models/provider.js';
 import type { Tool, ToolExecutionResult } from '../tools/tool.js';
-import { CapabilityIntelligence, type CapabilityMetadataProvider } from './capability-intelligence.js';
+import {
+  CapabilityIntelligence,
+  inferGenericCapabilities,
+  type CapabilityMetadataProvider,
+} from './capability-intelligence.js';
 import { ChunkingIntelligence, type ChunkingStrategy } from './chunking.js';
 import {
   resolveContextIntelligenceConfig,
@@ -12,7 +16,9 @@ import {
 import type {
   CapabilityMetadata,
   ContextContract,
+  ContextNeed,
   ContextQualityReport,
+  ContextRuntimeAction,
   ContextScope,
   FinalizedContext,
   MemoryItem,
@@ -20,6 +26,7 @@ import type {
   ReasoningSupport,
   RetrievalProvider,
   RetrievalReranker,
+  RuntimeRetrievalOperation,
   ToolObservation,
 } from './contracts.js';
 import {
@@ -40,6 +47,10 @@ import { ObservationIntelligence, type ProcessedObservation } from './observatio
 import { QueryIntelligence, type QueryTransformer } from './query-intelligence.js';
 import { RetrievalIntelligence, RetrievalProviderRegistry } from './retrieval-intelligence.js';
 import { MultiSourceSynthesizer } from './synthesis.js';
+import { ContextNeedIntelligence } from './context-need.js';
+import { EvidenceIntelligence } from './evidence-intelligence.js';
+import { ContextQualityGate } from './quality-gate.js';
+import { RuntimeRetrievalPlanner } from './runtime-retrieval.js';
 import {
   deepClone,
   dedupeStrings,
@@ -116,6 +127,10 @@ export class ContextIntelligenceEngine {
   private readonly offloader: ContextOffloader;
   private readonly finalizer: ContextFinalizer;
   private readonly synthesizer = new MultiSourceSynthesizer();
+  private readonly needs = new ContextNeedIntelligence();
+  private readonly evidence: EvidenceIntelligence;
+  private readonly qualityGate: ContextQualityGate;
+  private readonly runtimeRetrieval: RuntimeRetrievalPlanner;
   private readonly tasks = new TaskStateManager();
   private readonly onTelemetry: ((event: ContextIntelligenceTelemetryEvent) => void) | undefined;
   private taskState: ContextContract['taskState'] | undefined;
@@ -123,6 +138,10 @@ export class ContextIntelligenceEngine {
   private offloadedState: ContextContract['offloadedArtifacts'][number][];
   private lastContract: ContextContract | undefined;
   private toolActionCount = 0;
+  private activeRequestId = id('request');
+  private requestStartedAt = Date.now();
+  private runtimeOperations: RuntimeRetrievalOperation[] = [];
+  private readonly plannedActions = new Map<string, ContextRuntimeAction>();
 
   constructor(options: ContextIntelligenceEngineOptions = {}) {
     this.taskState = options.initialState?.taskState;
@@ -154,6 +173,9 @@ export class ContextIntelligenceEngine {
     this.hygiene = new ContextHygieneEngine(this.config, options.semanticSummarizer);
     this.offloader = new ContextOffloader(options.artifactStore);
     this.finalizer = new ContextFinalizer(this.config);
+    this.evidence = new EvidenceIntelligence(this.config);
+    this.qualityGate = new ContextQualityGate(this.config);
+    this.runtimeRetrieval = new RuntimeRetrievalPlanner(this.config);
     this.chunking = new ChunkingIntelligence(this.config.chunking, options.chunkingStrategies);
     this.onTelemetry = options.onTelemetry;
   }
@@ -161,6 +183,7 @@ export class ContextIntelligenceEngine {
   async prepare(input: PrepareContextIntelligenceInput): Promise<PrepareContextIntelligenceResult> {
     const started = Date.now();
     const intent = this.query.understand(input.request);
+    const initialNeeds = this.needs.identify(intent, input.scope, this.activeRequestId);
     const taskState = this.tasks.recover(this.taskState, intent, input.scope.taskId);
     this.taskState = taskState;
     const memories = this.config.features.memory
@@ -171,7 +194,12 @@ export class ContextIntelligenceEngine {
       types: [...new Set(memories.map((memory) => memory.type))],
     });
 
-    const queryResult = await this.prepareQuery(input.request, input.scope, input.signal);
+    const queryResult = await this.prepareQuery(
+      input.request,
+      input.scope,
+      input.signal,
+      initialNeeds,
+    );
     this.emit('context-intelligence.query', input, {
       complexity: queryResult.intent.complexity,
       variants: queryResult.plan.variants.length,
@@ -186,12 +214,18 @@ export class ContextIntelligenceEngine {
     });
 
     const toolPlan = this.config.features.capabilityNarrowing
-      ? await this.capabilities.select(intent, input.tools)
-      : await this.allCapabilities(intent, input.tools);
+      ? await this.capabilities.select(intent, input.tools, initialNeeds)
+      : await this.allCapabilities(intent, input.tools, initialNeeds);
     this.emit('context-intelligence.capability-selection', input, {
       available: input.tools.length,
       selected: toolPlan.selected.length,
       names: toolPlan.selected.map((entry) => entry.capability.name),
+    });
+    const observationEvidence = this.evidence.admit({
+      requestId: this.activeRequestId,
+      intent,
+      needs: initialNeeds,
+      observations: this.observationState,
     });
     const synthesis = this.synthesizer.synthesize({
       request: input.request,
@@ -200,6 +234,7 @@ export class ContextIntelligenceEngine {
       messages: input.messages,
       memories,
       retrieval: queryResult.outcome,
+      observationEvidence,
       observations: this.observationState,
       taskState,
       queryPlan: queryResult.plan,
@@ -216,7 +251,11 @@ export class ContextIntelligenceEngine {
       ) {
         const offloaded = await this.offloader.offload(
           item,
-          item.kind === 'history' ? 'history' : item.kind === 'evidence' ? 'document' : 'intermediate',
+          item.kind === 'history'
+            ? 'history'
+            : item.kind === 'evidence'
+              ? 'document'
+              : 'intermediate',
           input.sessionId,
         );
         preHygiene.push(offloaded.item);
@@ -225,23 +264,63 @@ export class ContextIntelligenceEngine {
     }
     this.offloadedState = offloadedArtifacts.slice(-100);
     const hygiene = await this.hygiene.process(preHygiene, input.signal, input.scope);
+    const retainedIds = new Set(hygiene.items.map((item) => item.id));
+    const admittedEvidence = synthesis.evidence.filter((item) => retainedIds.has(item.id));
+    const contextNeeds = this.needs.assess(initialNeeds, admittedEvidence, toolPlan.resolutions);
+    const evidenceNeeds = contextNeeds.filter(
+      (need) => need.required && need.evidenceRequirement === 'REQUIRED',
+    );
+    const evidenceSufficient = evidenceNeeds.every((need) => need.status === 'satisfied');
+    const effectiveRetrieval = {
+      ...queryResult.outcome,
+      sufficient: evidenceSufficient,
+      insufficiencies: evidenceSufficient
+        ? []
+        : dedupeStrings([
+            ...queryResult.outcome.insufficiencies,
+            ...evidenceNeeds
+              .filter((need) => need.status !== 'satisfied')
+              .flatMap((need) => need.missingInformation),
+          ]),
+    };
+    const runtimeActions = this.runtimeRetrieval.plan({
+      requestId: this.activeRequestId,
+      intent,
+      needs: contextNeeds,
+      toolPlan,
+      observations: this.observationState,
+      operations: this.runtimeOperations,
+      elapsedMs: Date.now() - this.requestStartedAt,
+    });
+    this.registerRuntimeActions(runtimeActions);
+    const combinedConflicts = [...queryResult.outcome.conflicts, ...hygiene.conflicts];
+    const qualityGate = this.qualityGate.evaluate({
+      report: { ...hygiene.report, conflicts: combinedConflicts },
+      needs: contextNeeds,
+      actions: runtimeActions,
+      operations: this.runtimeOperations,
+      elapsedMs: Date.now() - this.requestStartedAt,
+    });
     this.emit('context-intelligence.hygiene', input, {
       candidates: preHygiene.length,
       retained: hygiene.items.length,
       pruned: hygiene.prunedItemIds.length,
       compressed: hygiene.compressedItemIds.length,
       conflicts: hygiene.conflicts.length,
-      quality: hygiene.report.status,
-      score: hygiene.report.score,
+      quality: qualityGate.report.status,
+      decision: qualityGate.report.decision,
+      score: qualityGate.report.score,
     });
     const selectedTools = toolPlan.selected
       .map((entry) => entry.descriptor)
-      .filter((descriptor): descriptor is NonNullable<typeof descriptor> => descriptor !== undefined);
+      .filter(
+        (descriptor): descriptor is NonNullable<typeof descriptor> => descriptor !== undefined,
+      );
     const finalized = this.finalizer.finalize({
       items: hygiene.items,
       messages: input.messages,
       tools: selectedTools,
-      quality: hygiene.report,
+      quality: qualityGate.report,
       offloadedArtifacts: this.offloadedState,
       inputLimit: input.inputLimit,
       outputReservation: input.outputReservation,
@@ -257,31 +336,34 @@ export class ContextIntelligenceEngine {
     );
     const contract: ContextContract = {
       version: 1,
-      requestId: id('request'),
+      requestId: this.activeRequestId,
       scope: deepClone(input.scope),
       rawRequest: input.request,
       intent,
+      contextNeeds,
       constraints: intent.constraints,
       requiredEntities: intent.entities.filter((entity) => entity.required),
       ...(intent.temporal === undefined ? {} : { temporal: intent.temporal }),
       memories,
-      evidence: synthesis.evidence,
+      evidence: admittedEvidence,
       sources: dedupeSources(hygiene.items.map((item) => item.source)),
-      conflicts: [...queryResult.outcome.conflicts, ...hygiene.conflicts],
+      conflicts: combinedConflicts,
       capabilities: toolPlan.selected,
       toolPlan,
       observations: deepClone(this.observationState),
       findings: hygiene.items.filter((item) => item.kind === 'finding'),
       taskState,
       queryPlan: queryResult.plan,
-      retrieval: queryResult.outcome,
+      retrieval: effectiveRetrieval,
+      runtimeRetrieval: deepClone(this.runtimeOperations),
       reasoning,
       budget: finalized.budget,
       provenance: hygiene.items.map((item) => item.provenance),
       items: hygiene.items,
       offloadedArtifacts: deepClone(this.offloadedState),
       finalContext: finalized,
-      quality: hygiene.report,
+      quality: qualityGate.report,
+      directive: qualityGate.directive,
       pendingDecisions: dedupeStrings([
         ...taskState.pendingDecisions,
         ...intent.ambiguity,
@@ -289,7 +371,10 @@ export class ContextIntelligenceEngine {
           .filter((conflict) => conflict.resolution === 'unresolved')
           .map((conflict) => conflict.explanation),
       ]),
-      createdAt: this.lastContract?.scope.taskId === input.scope.taskId ? this.lastContract.createdAt : timestamp,
+      createdAt:
+        this.lastContract?.scope.taskId === input.scope.taskId
+          ? this.lastContract.createdAt
+          : timestamp,
       updatedAt: timestamp,
     };
     this.lastContract = contract;
@@ -306,6 +391,10 @@ export class ContextIntelligenceEngine {
 
   beginRequest(): void {
     this.toolActionCount = 0;
+    this.activeRequestId = id('request');
+    this.requestStartedAt = Date.now();
+    this.runtimeOperations = [];
+    this.plannedActions.clear();
   }
 
   async processObservation(input: {
@@ -315,49 +404,73 @@ export class ContextIntelligenceEngine {
     sessionId: string;
     turnId: string;
   }): Promise<ProcessedObservation> {
-    if (!this.config.features.observationProcessing) {
-      const fallback = await this.observations.process({
-        ...input,
-        intent: this.lastContract?.intent ?? this.query.understand(input.tool.description),
-      });
-      return { ...fallback, result: input.output };
-    }
     const processed = await this.observations.process({
       ...input,
       intent: this.lastContract?.intent ?? this.query.understand(input.tool.description),
     });
-    this.observationState.push(processed.observation);
+    const action = this.plannedActions.get(input.toolCallId);
+    const inferredCapability = inferGenericCapabilities(input.tool)[0];
+    const capability = action?.capability ?? inferredCapability;
+    const matchingNeeds =
+      action === undefined
+        ? (this.lastContract?.contextNeeds ?? [])
+            .filter(
+              (need) =>
+                this.lastContract?.toolPlan.resolutions?.some(
+                  (resolution) =>
+                    resolution.needId === need.id && resolution.toolNames.includes(input.tool.name),
+                ) ?? false,
+            )
+            .map((need) => need.id)
+        : [action.needId];
+    const observation = {
+      ...processed.observation,
+      requestId: this.activeRequestId,
+      ...(matchingNeeds.length === 0 ? {} : { needIds: matchingNeeds }),
+      ...(capability === undefined ? {} : { capability }),
+    };
+    this.observationState.push(observation);
     if (this.observationState.length > 100) this.observationState.shift();
     if (processed.offloaded) {
       this.offloadedState.push(processed.offloaded);
       if (this.offloadedState.length > 100) this.offloadedState.shift();
     }
+    if (action) {
+      const operation = this.runtimeOperations.find((entry) => entry.id === action.id);
+      if (operation) {
+        operation.status = runtimeOperationStatus(observation.outcome);
+        operation.observationId = observation.id;
+      }
+    }
     if (this.taskState) {
       this.taskState = this.tasks.recordObservation(this.taskState, {
-        receiptId: processed.observation.id,
-        successful: processed.observation.outcome === 'success' || processed.observation.outcome === 'partial',
-        requiresFollowUp: processed.observation.requiresFollowUp,
-        ...(processed.observation.followUpReason === undefined
-          ? {}
-          : { issue: processed.observation.followUpReason }),
+        receiptId: observation.id,
+        successful: observation.outcome === 'success' || observation.outcome === 'partial',
+        requiresFollowUp: observation.requiresFollowUp,
+        ...(observation.followUpReason === undefined ? {} : { issue: observation.followUpReason }),
       });
     }
     this.emit('context-intelligence.observation', input, {
       tool: input.tool.name,
-      outcome: processed.observation.outcome,
-      facts: processed.observation.facts.length,
-      identifiers: processed.observation.identifiers.length,
+      outcome: observation.outcome,
+      facts: observation.facts.length,
+      identifiers: observation.identifiers.length,
       offloaded: Boolean(processed.offloaded),
-      requiresFollowUp: processed.observation.requiresFollowUp,
+      requiresFollowUp: observation.requiresFollowUp,
     });
-    return processed;
+    return {
+      ...processed,
+      observation,
+      result: this.config.features.observationProcessing ? processed.result : input.output,
+    };
   }
 
-  reserveToolAction(input: {
-    toolName: string;
-    sessionId: string;
-    turnId: string;
-  }): { allowed: boolean; used: number; limit: number; reason?: string } {
+  reserveToolAction(input: { toolName: string; sessionId: string; turnId: string }): {
+    allowed: boolean;
+    used: number;
+    limit: number;
+    reason?: string;
+  } {
     const limit = this.config.budgets.maxToolActions;
     if (this.toolActionCount >= limit) {
       return {
@@ -393,7 +506,9 @@ export class ContextIntelligenceEngine {
       this.taskState = this.tasks.complete(
         this.taskState,
         input.stopReason === 'end_turn',
-        this.lastContract?.quality.sufficient === false ? ['Context quality gate reported insufficiency.'] : [],
+        this.lastContract?.quality.sufficient === false
+          ? ['Context quality gate reported insufficiency.']
+          : [],
       );
     }
     if (this.config.features.memory) {
@@ -451,10 +566,7 @@ export class ContextIntelligenceEngine {
       id: `short-term:${scope.taskId}`,
       type: 'short-term',
       ...common,
-      content: [existingShort?.content, responseText]
-        .filter(Boolean)
-        .join('\n')
-        .slice(-3_000),
+      content: [existingShort?.content, responseText].filter(Boolean).join('\n').slice(-3_000),
       createdAt: existingShort?.createdAt ?? timestamp,
       version: (existingShort?.version ?? 0) + 1,
       expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
@@ -473,7 +585,12 @@ export class ContextIntelligenceEngine {
     await this.memoryProvider.upsert(working);
   }
 
-  private async prepareQuery(request: string, scope: ContextScope, signal: AbortSignal) {
+  private async prepareQuery(
+    request: string,
+    scope: ContextScope,
+    signal: AbortSignal,
+    needs: readonly ContextNeed[],
+  ) {
     const intent = this.query.understand(request);
     const plan = this.config.features.queryIntelligence
       ? await this.query.plan(request, signal)
@@ -498,17 +615,28 @@ export class ContextIntelligenceEngine {
           synthesisOrder: [],
           createdAt: now(),
         };
+    const evidenceRequired = needs.some(
+      (need) => need.required && need.evidenceRequirement === 'REQUIRED',
+    );
+    const providerCount = this.retrievalRegistry.list().length;
     const retrieve =
       this.config.features.retrieval &&
-      shouldRetrieve(intent, this.observationState, this.retrievalRegistry.list().length);
+      providerCount > 0 &&
+      (evidenceRequired || shouldRetrieve(intent, this.observationState, providerCount));
     const retrievedOutcome = retrieve
       ? await this.retrieval.retrieve({ plan, intent, scope, signal })
       : {
           results: [],
           iterations: [],
           conflicts: [],
-          sufficient: true,
-          insufficiencies: [],
+          sufficient: !evidenceRequired,
+          insufficiencies: evidenceRequired
+            ? [
+                providerCount === 0
+                  ? 'no retrieval provider; resolve through runtime capabilities'
+                  : 'retrieval was not available',
+              ]
+            : [],
         };
     const outcome = await this.applyDocumentIntelligence(
       retrievedOutcome,
@@ -556,8 +684,7 @@ export class ContextIntelligenceEngine {
           .filter((chunk) => chunk.level > 0 || !chunk.children.length)
           .sort(
             (left, right) =>
-              lexicalSimilarity(query, right.content) -
-              lexicalSimilarity(query, left.content),
+              lexicalSimilarity(query, right.content) - lexicalSimilarity(query, left.content),
           )
           .slice(0, 6);
         const content = selected
@@ -590,14 +717,35 @@ export class ContextIntelligenceEngine {
     return { ...outcome, results };
   }
 
-  private async allCapabilities(intent: ContextContract['intent'], tools: readonly Tool[]) {
+  private async allCapabilities(
+    intent: ContextContract['intent'],
+    tools: readonly Tool[],
+    needs: readonly ContextNeed[],
+  ) {
     const temporary = new CapabilityIntelligence({
       ...this.config.capability,
       relevanceThreshold: 0,
       minimumExposed: tools.length,
       maximumExposed: tools.length,
     });
-    return temporary.select(intent, tools);
+    return temporary.select(intent, tools, needs);
+  }
+
+  private registerRuntimeActions(actions: readonly ContextRuntimeAction[]): void {
+    for (const action of actions) {
+      if (this.plannedActions.has(action.id)) continue;
+      this.plannedActions.set(action.id, action);
+      this.runtimeOperations.push({
+        id: action.id,
+        requestId: action.requestId,
+        needId: action.needId,
+        capability: action.capability,
+        toolName: action.toolName,
+        input: deepClone(action.input),
+        iteration: action.iteration,
+        status: 'planned',
+      });
+    }
   }
 
   private emit(
@@ -688,9 +836,19 @@ function shouldRetrieve(
   return intent.operation === 'answer' && intent.entities.length > 0;
 }
 
+function runtimeOperationStatus(
+  outcome: ToolObservation['outcome'],
+): RuntimeRetrievalOperation['status'] {
+  if (outcome === 'success' || outcome === 'partial') return 'succeeded';
+  if (outcome === 'empty') return 'empty';
+  if (outcome === 'denied') return 'denied';
+  return 'failed';
+}
+
 export function insufficientQualityReport(reason: string): ContextQualityReport {
   return {
     status: 'insufficient',
+    decision: 'ABSTAIN',
     score: 0,
     issues: [
       {

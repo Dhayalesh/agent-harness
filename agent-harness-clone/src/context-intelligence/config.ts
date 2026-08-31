@@ -26,6 +26,7 @@ export type ContextIntelligenceConfig = {
     maxRetrievalIterations: number;
     maxRetrievalResults: number;
     maxRetrievalTokens: number;
+    maxRetrievalOperations: number;
     maxToolActions: number;
     maxLoopMilliseconds: number;
   };
@@ -66,7 +67,8 @@ export type ContextIntelligenceConfig = {
     alwaysExpose: readonly string[];
   };
   chunking: {
-    defaultStrategy: 'fixed' | 'recursive' | 'document' | 'semantic' | 'llm' | 'agentic' | 'hierarchical' | 'late';
+    defaultStrategy:
+      'fixed' | 'recursive' | 'document' | 'semantic' | 'llm' | 'agentic' | 'hierarchical' | 'late';
     targetTokens: number;
     overlapTokens: number;
     maximumTokens: number;
@@ -76,6 +78,10 @@ export type ContextIntelligenceConfig = {
     mode: 'auto' | 'direct' | 'react' | 'alternatives' | 'tree';
     examples: readonly { input: string; output: string }[];
     maximumAlternatives: number;
+  };
+  quality: {
+    conflictPolicy: 'proceed' | 'clarify' | 'abstain';
+    unavailablePolicy: 'abstain' | 'clarify';
   };
   sourceAuthority: Readonly<Record<string, number>>;
   sourceMetadata: readonly SourceMetadata[];
@@ -95,6 +101,7 @@ export type ContextIntelligenceConfigInput = {
   capability?: Partial<ContextIntelligenceConfig['capability']>;
   chunking?: Partial<ContextIntelligenceConfig['chunking']>;
   reasoning?: Partial<ContextIntelligenceConfig['reasoning']>;
+  quality?: Partial<ContextIntelligenceConfig['quality']>;
   sourceAuthority?: Readonly<Record<string, number>>;
   sourceMetadata?: readonly SourceMetadata[];
   policyLabels?: readonly string[];
@@ -108,6 +115,7 @@ const CATEGORY_SHARES: Readonly<Record<ContextBudgetCategory, number>> = {
   memory: 0.1,
   retrievalEvidence: 0.2,
   toolObservations: 0.1,
+  toolDefinitions: 0.06,
   taskState: 0.07,
   safetyPolicy: 0.05,
 };
@@ -134,6 +142,7 @@ export const DEFAULT_CONTEXT_INTELLIGENCE_CONFIG: ContextIntelligenceConfig = {
     maxRetrievalIterations: 3,
     maxRetrievalResults: 40,
     maxRetrievalTokens: 20_000,
+    maxRetrievalOperations: 8,
     maxToolActions: 16,
     maxLoopMilliseconds: 20_000,
   },
@@ -184,6 +193,10 @@ export const DEFAULT_CONTEXT_INTELLIGENCE_CONFIG: ContextIntelligenceConfig = {
     examples: [],
     maximumAlternatives: 4,
   },
+  quality: {
+    conflictPolicy: 'proceed',
+    unavailablePolicy: 'abstain',
+  },
   sourceAuthority: {},
   sourceMetadata: [],
   policyLabels: [],
@@ -212,8 +225,14 @@ export function resolveContextIntelligenceConfig(
     capability: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.capability, ...input.capability },
     chunking: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.chunking, ...input.chunking },
     reasoning: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.reasoning, ...input.reasoning },
-    sourceAuthority: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.sourceAuthority, ...input.sourceAuthority },
-    sourceMetadata: [...(input.sourceMetadata ?? DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.sourceMetadata)],
+    quality: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.quality, ...input.quality },
+    sourceAuthority: {
+      ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.sourceAuthority,
+      ...input.sourceAuthority,
+    },
+    sourceMetadata: [
+      ...(input.sourceMetadata ?? DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.sourceMetadata),
+    ],
     policyLabels: [...(input.policyLabels ?? DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.policyLabels)],
   };
 }
@@ -223,8 +242,7 @@ function normalizeShares(
 ): Readonly<Record<ContextBudgetCategory, number>> {
   const entries = Object.entries(shares) as [ContextBudgetCategory, number][];
   const total = entries.reduce((sum, [, value]) => sum + Math.max(0, value), 0) || 1;
-  return Object.fromEntries(entries.map(([key, value]) => [key, Math.max(0, value) / total])) as Record<
-    ContextBudgetCategory,
-    number
-  >;
+  return Object.fromEntries(
+    entries.map(([key, value]) => [key, Math.max(0, value) / total]),
+  ) as Record<ContextBudgetCategory, number>;
 }

@@ -1,6 +1,9 @@
 import type { ContextIntelligenceConfig } from './config.js';
 import type {
+  CapabilityResolution,
   CapabilityMetadata,
+  ContextCapability,
+  ContextNeed,
   NormalizedIntent,
   SelectedCapability,
   ToolPlan,
@@ -49,28 +52,41 @@ export class CapabilityIntelligence {
     for (const tool of tools) {
       let metadata = this.registry.get(tool.name) ?? tool.contextMetadata;
       for (const provider of this.providers) metadata ??= await provider.metadata(tool);
-      const resolved = metadata ?? inferCapability(tool);
+      const resolved = metadata
+        ? { ...metadata, provides: metadata.provides ?? inferGenericCapabilities(tool) }
+        : inferCapability(tool);
       this.registry.register(resolved);
       output.push(resolved);
     }
     return output;
   }
 
-  async select(intent: NormalizedIntent, tools: readonly Tool[]): Promise<ToolPlan> {
+  async select(
+    intent: NormalizedIntent,
+    tools: readonly Tool[],
+    needs: readonly ContextNeed[] = [],
+  ): Promise<ToolPlan> {
     const metadata = await this.catalog(tools);
     const descriptors = new Map(tools.map((tool) => [tool.name, descriptorOf(tool)]));
     const scored = metadata
       .filter((capability) => capability.enabled)
       .map((capability) => scoreCapability(capability, intent, descriptors.get(capability.name)))
       .sort((left, right) => right.score - left.score);
-    const forced = new Set(this.config.alwaysExpose);
+    const resolutions = resolveCapabilities(needs, metadata);
+    const forced = new Set([
+      ...this.config.alwaysExpose,
+      ...resolutions.flatMap((resolution) => resolution.toolNames),
+    ]);
     const accepted = scored.filter(
       (entry, index) =>
         forced.has(entry.capability.name) ||
         entry.score >= this.config.relevanceThreshold ||
         index < this.config.minimumExposed,
     );
-    const selected = accepted.slice(0, Math.max(this.config.minimumExposed, this.config.maximumExposed));
+    const required = accepted.filter((entry) => forced.has(entry.capability.name));
+    const optional = accepted.filter((entry) => !forced.has(entry.capability.name));
+    const limit = Math.max(required.length, this.config.minimumExposed, this.config.maximumExposed);
+    const selected = [...required, ...optional].slice(0, limit);
     const names = new Set(selected.map((entry) => entry.capability.name));
     return {
       goal: intent.goal,
@@ -79,16 +95,22 @@ export class CapabilityIntelligence {
         .filter((entry) => !names.has(entry.capability.name))
         .map((entry) => ({
           name: entry.capability.name,
-          reason: entry.capability.enabled ? `relevance score ${entry.score.toFixed(3)} below selection` : 'disabled',
+          reason: entry.capability.enabled
+            ? `relevance score ${entry.score.toFixed(3)} below selection`
+            : 'disabled',
         })),
       argumentRequirements: Object.fromEntries(
-        selected.map((entry) => [entry.capability.name, requiredArguments(entry.descriptor?.inputSchema)]),
+        selected.map((entry) => [
+          entry.capability.name,
+          requiredArguments(entry.descriptor?.inputSchema),
+        ]),
       ),
+      resolutions,
     };
   }
 }
 
-function inferCapability(tool: Tool): CapabilityMetadata {
+export function inferCapability(tool: Tool): CapabilityMetadata {
   const text = `${tool.name} ${tool.description} ${JSON.stringify(tool.jsonSchema)}`;
   return {
     id: `tool:${tool.name}`,
@@ -103,18 +125,117 @@ function inferCapability(tool: Tool): CapabilityMetadata {
     cost: tool.kind === 'network' ? 0.6 : tool.kind === 'execute' ? 0.5 : 0.25,
     latency: tool.kind === 'network' ? 0.7 : tool.kind === 'interactive' ? 0.8 : 0.3,
     preconditions: requiredArguments(tool.jsonSchema),
-    effects: tool.kind === 'read' ? ['reads data'] : tool.kind === 'write' ? ['changes data'] : tool.kind === 'execute' ? ['executes an operation'] : [],
+    effects:
+      tool.kind === 'read'
+        ? ['reads data']
+        : tool.kind === 'write'
+          ? ['changes data']
+          : tool.kind === 'execute'
+            ? ['executes an operation']
+            : [],
     limitations: [],
     policyLabels: [tool.kind, ...(tool.destructive ? ['destructive'] : [])],
     enabled: true,
+    provides: inferGenericCapabilities(tool),
   };
+}
+
+export function inferGenericCapabilities(
+  tool: Tool,
+): Exclude<ContextCapability, 'WEB_RETRIEVAL'>[] {
+  const operations = inferOperations(tool).map((operation) => operation.toLowerCase());
+  const properties = Object.keys(
+    tool.jsonSchema.properties && typeof tool.jsonSchema.properties === 'object'
+      ? (tool.jsonSchema.properties as Record<string, unknown>)
+      : {},
+  ).map((property) => property.toLowerCase());
+  const searchable =
+    `${tool.description} ${operations.join(' ')} ${properties.join(' ')}`.toLowerCase();
+  const capabilities: Exclude<ContextCapability, 'WEB_RETRIEVAL'>[] = [];
+
+  const external =
+    tool.kind === 'network' || /\b(web|internet|online|external|url)\b/.test(searchable);
+  if (external && operations.some((operation) => operation.includes('search'))) {
+    capabilities.push('WEB_SEARCH');
+  }
+  if (
+    external &&
+    (operations.some((operation) => operation.includes('fetch')) || properties.includes('url'))
+  ) {
+    capabilities.push('WEB_FETCH');
+  }
+  if (tool.kind === 'read' && properties.includes('path')) capabilities.push('FILE_READ');
+  if (
+    (tool.kind === 'write' || operations.some((operation) => operation.includes('create'))) &&
+    /markdown|\.md\b/.test(searchable)
+  ) {
+    capabilities.push('MARKDOWN_ARTIFACT_CREATE');
+  }
+  if (
+    (tool.kind === 'write' || operations.some((operation) => operation.includes('create'))) &&
+    /\b(document|docx)\b/.test(searchable)
+  ) {
+    capabilities.push('DOCUMENT_ARTIFACT_CREATE');
+  }
+  return dedupeStrings(capabilities) as Exclude<ContextCapability, 'WEB_RETRIEVAL'>[];
+}
+
+function resolveCapabilities(
+  needs: readonly ContextNeed[],
+  metadata: readonly CapabilityMetadata[],
+): CapabilityResolution[] {
+  return needs.map((need) => {
+    const requiredCapabilities = expandCapability(need.requiredCapability);
+    const toolNames: string[] = [];
+    const missing: ContextCapability[] = [];
+    for (const capability of requiredCapabilities) {
+      const candidates = metadata
+        .filter((entry) => entry.enabled && (entry.provides ?? []).includes(capability))
+        .sort(
+          (left, right) =>
+            right.authority - left.authority ||
+            left.cost + left.latency - (right.cost + right.latency),
+        );
+      const selected = candidates[0];
+      if (selected) toolNames.push(selected.name);
+      else missing.push(capability);
+    }
+    return {
+      needId: need.id,
+      requested: need.requiredCapability,
+      requiredCapabilities,
+      status: missing.length === 0 ? 'available' : 'unavailable',
+      toolNames: dedupeStrings(toolNames),
+      reason:
+        missing.length === 0
+          ? `Resolved ${need.requiredCapability} through registered runtime capabilities.`
+          : `No registered runtime capability provides: ${missing.join(', ')}.`,
+    };
+  });
+}
+
+function expandCapability(capability: ContextCapability): ContextCapability[] {
+  return capability === 'WEB_RETRIEVAL' ? ['WEB_SEARCH', 'WEB_FETCH'] : [capability];
 }
 
 function inferOperations(tool: Tool): string[] {
   const operations: string[] = [tool.kind];
   const name = tool.name.toLowerCase();
-  for (const operation of ['read', 'write', 'search', 'fetch', 'create', 'edit', 'delete', 'list', 'execute', 'query', 'retrieve']) {
-    if (name.includes(operation) || tool.description.toLowerCase().includes(operation)) operations.push(operation);
+  for (const operation of [
+    'read',
+    'write',
+    'search',
+    'fetch',
+    'create',
+    'edit',
+    'delete',
+    'list',
+    'execute',
+    'query',
+    'retrieve',
+  ]) {
+    if (name.includes(operation) || tool.description.toLowerCase().includes(operation))
+      operations.push(operation);
   }
   return dedupeStrings(operations);
 }
@@ -138,16 +259,15 @@ function scoreCapability(
     lexicalSimilarity(intent.normalizedRequest, searchable),
   );
   const operation = operationCompatibility(capability.operations, intent.operation);
-  const entities = intent.entities.length === 0
-    ? 0
-    : intent.entities.filter((entity) =>
-        searchable.toLowerCase().includes(entity.value.toLowerCase()),
-      ).length / intent.entities.length;
+  const entities =
+    intent.entities.length === 0
+      ? 0
+      : intent.entities.filter((entity) =>
+          searchable.toLowerCase().includes(entity.value.toLowerCase()),
+        ).length / intent.entities.length;
   const efficiency = 1 - clamp(capability.cost * 0.55 + capability.latency * 0.45);
   const semanticFit = lexical * 0.65 + operation * 0.2 + entities * 0.15;
-  const score = clamp(
-    semanticFit * (0.8 + capability.authority * 0.15 + efficiency * 0.05),
-  );
+  const score = clamp(semanticFit * (0.8 + capability.authority * 0.15 + efficiency * 0.05));
   return {
     capability,
     score,
@@ -191,5 +311,7 @@ function descriptorOf(tool: Tool): ToolDescriptor {
 
 function requiredArguments(schema: Record<string, unknown> | undefined): string[] {
   const required = schema?.required;
-  return Array.isArray(required) ? required.filter((value): value is string => typeof value === 'string') : [];
+  return Array.isArray(required)
+    ? required.filter((value): value is string => typeof value === 'string')
+    : [];
 }

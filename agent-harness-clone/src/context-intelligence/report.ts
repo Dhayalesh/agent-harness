@@ -1,6 +1,7 @@
 import type {
   ContextContract,
   ContextIntelligenceReport,
+  ContextNeedType,
   MemoryType,
   QueryVariant,
   ToolOutcome,
@@ -20,6 +21,12 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
   const providerNames = unique(contract.retrieval.results.map((result) => result.providerId));
   const selectedNames = unique(contract.capabilities.map((entry) => entry.capability.name));
   const finalContext = contract.finalContext;
+  const runtimeIterations = new Set(
+    contract.runtimeRetrieval.map((operation) => operation.iteration),
+  ).size;
+  const successfulRuntimeResults = contract.runtimeRetrieval.filter(
+    (operation) => operation.status === 'succeeded',
+  ).length;
 
   return {
     version: 1,
@@ -32,6 +39,20 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       requiredEntities: contract.requiredEntities.length,
       ambiguities: contract.intent.ambiguity.length,
     },
+    contextNeeds: {
+      total: contract.contextNeeds.length,
+      required: contract.contextNeeds.filter((need) => need.required).length,
+      missing: contract.contextNeeds.filter((need) => need.status === 'missing').length,
+      unavailable: contract.contextNeeds.filter((need) => need.status === 'unavailable').length,
+      clarificationRequired: contract.contextNeeds.filter(
+        (need) => need.status === 'clarification_required',
+      ).length,
+      types: countBy<ContextNeedType>(contract.contextNeeds.map((need) => need.type)),
+      capabilities: unique(contract.contextNeeds.map((need) => need.requiredCapability)).slice(
+        0,
+        NAME_LIMIT,
+      ),
+    },
     query: {
       variants: contract.queryPlan.variants.length,
       transformations: countBy<QueryVariant['kind']>(
@@ -41,11 +62,16 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     retrieval: {
       providers: providerNames.slice(0, NAME_LIMIT),
       providerCount: providerNames.length,
-      iterations: contract.retrieval.iterations.length,
-      results: contract.retrieval.results.length,
+      iterations: contract.retrieval.iterations.length + runtimeIterations,
+      results: contract.retrieval.results.length + successfulRuntimeResults,
       sufficient: contract.retrieval.sufficient,
       insufficiencies: contract.retrieval.insufficiencies.length,
       conflicts: contract.retrieval.conflicts.length,
+      operations: contract.runtimeRetrieval.length,
+      toolNames: unique(contract.runtimeRetrieval.map((operation) => operation.toolName)).slice(
+        0,
+        NAME_LIMIT,
+      ),
     },
     memory: {
       recalled: contract.memories.length,
@@ -79,6 +105,7 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     },
     quality: {
       status: contract.quality.status,
+      decision: contract.quality.decision,
       score: contract.quality.score,
       sufficient: contract.quality.sufficient,
       conflicts: contract.quality.conflicts.length,
@@ -92,8 +119,18 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       sections: finalContext?.sections.length ?? 0,
       tools: finalContext?.tools.length ?? contract.capabilities.length,
       omittedItems: finalContext?.omittedItemIds.length ?? 0,
+      omittedMessages: finalContext?.omittedMessageIds.length ?? 0,
       offloadedArtifacts: contract.offloadedArtifacts.length,
       provenanceRecords: contract.provenance.length,
+    },
+    intervention: {
+      required: !contract.directive.continueToModel,
+      continueToModel: contract.directive.continueToModel,
+      decision: contract.directive.decision,
+      reasonCodes: contract.directive.reasonCodes.slice(0, NAME_LIMIT),
+      clarificationNeeds: contract.directive.clarification
+        .map((entry) => entry.type)
+        .slice(0, NAME_LIMIT),
     },
     reasoning: {
       mode: contract.reasoning.mode,
@@ -121,7 +158,7 @@ function summarizeQualityIssues(
   return [...summaries.values()];
 }
 
-function unique(values: readonly string[]): string[] {
+function unique<Value extends string>(values: readonly Value[]): Value[] {
   return [...new Set(values)];
 }
 

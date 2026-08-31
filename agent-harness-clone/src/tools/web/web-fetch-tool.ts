@@ -152,6 +152,7 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool<WebF
               signal: context.signal,
             })
           : fetched.text;
+      const fetchedAt = new Date(now()).toISOString();
 
       return {
         content: [
@@ -167,6 +168,16 @@ export function createWebFetchTool(options: WebFetchToolOptions = {}): Tool<WebF
           .join('\n'),
         metadata: {
           url: cacheKey,
+          source: {
+            id: `url:${cacheKey}`,
+            name: fetched.title ?? cacheKey,
+            type: 'external',
+            provider: 'web_fetch',
+            authority: 0.7,
+            observedAt: fetchedAt,
+            retrievedAt: fetchedAt,
+            uri: cacheKey,
+          },
           status: fetched.status,
           contentType: fetched.contentType,
           bytes: fetched.bytes,

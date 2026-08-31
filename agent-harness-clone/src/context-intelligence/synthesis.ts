@@ -29,6 +29,7 @@ export class MultiSourceSynthesizer {
     messages: readonly AgentMessage[];
     memories: readonly MemoryItem[];
     retrieval: RetrievalOutcome;
+    observationEvidence: readonly EvidenceItem[];
     observations: readonly ToolObservation[];
     taskState: TaskState;
     queryPlan: QueryPlan;
@@ -118,7 +119,7 @@ export class MultiSourceSynthesizer {
         provenanceValue: memory.provenance,
       }),
     );
-    const evidence = input.retrieval.results.map<EvidenceItem>((result, index) => {
+    const retrievedEvidence = input.retrieval.results.map<EvidenceItem>((result, index) => {
       const base = contextItem({
         kind: 'evidence',
         title: `Evidence from ${result.source.name}`,
@@ -141,13 +142,16 @@ export class MultiSourceSynthesizer {
         undefined
           ? {}
           : {
-              retrievalQuery: input.queryPlan.variants.find(
-                (query) => query.id === result.queryId,
-              )!.query,
+              retrievalQuery: input.queryPlan.variants.find((query) => query.id === result.queryId)!
+                .query,
             }),
         rank: index + 1,
       };
     });
+    const evidence = [...retrievedEvidence, ...input.observationEvidence].map((item, index) => ({
+      ...item,
+      rank: index + 1,
+    }));
     const observations = input.observations.slice(-12).map((observation) =>
       contextItem({
         kind: 'observation',
@@ -248,9 +252,7 @@ function contextItem(input: {
     createdAt,
     ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
     ...(input.claimKeys === undefined ? {} : { claimKeys: input.claimKeys }),
-    ...(input.source.policyLabels === undefined
-      ? {}
-      : { policyLabels: input.source.policyLabels }),
+    ...(input.source.policyLabels === undefined ? {} : { policyLabels: input.source.policyLabels }),
     active: true,
   };
 }
@@ -263,7 +265,9 @@ function renderTaskState(state: TaskState): string {
     ...(state.plan.length
       ? [
           'Plan:',
-          ...state.plan.map((step) => `- [${step.status}] ${step.description} (attempts: ${step.attempts})`),
+          ...state.plan.map(
+            (step) => `- [${step.status}] ${step.description} (attempts: ${step.attempts})`,
+          ),
         ]
       : []),
     ...(state.pendingDecisions.length
@@ -279,7 +283,9 @@ function renderPlans(plan: QueryPlan, tools: ToolPlan, retrieval: RetrievalOutco
   return [
     `Normalized query: ${plan.normalizedQuery}`,
     ...(plan.variants.length > 1
-      ? [`Query variants: ${plan.variants.map((query) => `${query.kind}:${query.query}`).join(' | ')}`]
+      ? [
+          `Query variants: ${plan.variants.map((query) => `${query.kind}:${query.query}`).join(' | ')}`,
+        ]
       : []),
     `Selected capabilities: ${
       tools.selected

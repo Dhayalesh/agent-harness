@@ -38,7 +38,6 @@ import type { Tool } from '../tools/tool.js';
 import { resolveInlineAgent } from './inline-agent.js';
 import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
 import type { ContextIntelligenceEngineOptions } from '../context-intelligence/engine.js';
-import { createContextArtifactReadTool } from '../context-intelligence/artifact-drilldown-tool.js';
 import type { ContextIntelligenceReport } from '../context-intelligence/contracts.js';
 
 /**
@@ -781,10 +780,9 @@ async function prepare(
               ...(payload.agent.contextIntelligence === undefined
                 ? {}
                 : {
-                    config:
-                      payload.agent.contextIntelligence as NonNullable<
-                        ContextIntelligenceEngineOptions['config']
-                      >,
+                    config: payload.agent.contextIntelligence as NonNullable<
+                      ContextIntelligenceEngineOptions['config']
+                    >,
                   }),
               ...(options.artifactStore === undefined
                 ? {}
@@ -1051,9 +1049,6 @@ export function headlessToolCatalogue(
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
     }),
     ...(options.webToolOptions === false ? [] : createWebTools(options.webToolOptions ?? {})),
-    ...(options.artifactStore === undefined
-      ? []
-      : [createContextArtifactReadTool(options.artifactStore)]),
     ...(options.additionalTools ?? []),
   ];
 }

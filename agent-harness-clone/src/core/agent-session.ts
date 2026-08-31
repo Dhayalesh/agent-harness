@@ -51,6 +51,7 @@ import {
   type ContextIntelligenceEngineOptions,
 } from '../context-intelligence/engine.js';
 import type {
+  ContextQualityDecision,
   ContextScope,
   PersistedContextIntelligenceState,
 } from '../context-intelligence/contracts.js';
@@ -109,7 +110,8 @@ export type AgentSessionConfig = {
   /**
    * Complete pre/post model Context Intelligence. Enabled with defaults when
    * omitted; pass `false` only for a compatibility host that explicitly opts out.
-   * The engine consumes tool metadata but never executes or authorizes a tool.
+   * The engine may direct retrieval, but AgentSession remains the only component
+   * that validates, authorizes, and executes a concrete tool.
    */
   contextIntelligence?: ContextIntelligenceEngine | ContextIntelligenceEngineOptions | false;
   /** Restored governed state from the existing SessionStore record. */
@@ -269,7 +271,8 @@ class AgentSessionImpl implements AgentSession {
     const intelligence = config.contextIntelligence;
     if (
       intelligence === false ||
-      (!(intelligence instanceof ContextIntelligenceEngine) && intelligence?.config?.enabled === false)
+      (!(intelligence instanceof ContextIntelligenceEngine) &&
+        intelligence?.config?.enabled === false)
     ) {
       this.contextIntelligence = undefined;
     } else if (intelligence instanceof ContextIntelligenceEngine) {
@@ -395,27 +398,51 @@ class AgentSessionImpl implements AgentSession {
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
           let intelligentContext:
-            | Awaited<ReturnType<ContextIntelligenceEngine['prepare']>>
-            | undefined;
+            Awaited<ReturnType<ContextIntelligenceEngine['prepare']>> | undefined;
           if (this.contextIntelligence) {
             try {
-              intelligentContext = await this.contextIntelligence.prepare({
-                request: prompt,
-                messages: prepared.messages,
-                tools: this.registry.list(),
-                systemPrompt,
-                scope: intelligenceScope,
-                sessionId: this.id,
-                turnId,
-                inputLimit: this.modelCapabilities?.contextWindow ?? 128_000,
-                outputReservation:
-                  this.modelCapabilities?.maxOutputTokens ??
-                  this.limits.maxOutputTokens ??
-                  DEFAULT_LIMITS.maxOutputTokens ??
-                  8_192,
-                signal: this.activeController.signal,
-              });
+              const prepareIntelligence = (): ReturnType<ContextIntelligenceEngine['prepare']> =>
+                this.contextIntelligence!.prepare({
+                  request: prompt,
+                  messages: prepared.messages,
+                  tools: this.registry.list(),
+                  systemPrompt,
+                  scope: intelligenceScope,
+                  sessionId: this.id,
+                  turnId,
+                  inputLimit: this.modelCapabilities?.contextWindow ?? 128_000,
+                  outputReservation:
+                    this.modelCapabilities?.maxOutputTokens ??
+                    this.limits.maxOutputTokens ??
+                    DEFAULT_LIMITS.maxOutputTokens ??
+                    8_192,
+                  signal: this.activeController?.signal ?? AbortSignal.abort(),
+                });
+              intelligentContext = await prepareIntelligence();
+              while (
+                intelligentContext.contract.directive.decision === 'RETRIEVE' &&
+                intelligentContext.contract.directive.actions.length > 0
+              ) {
+                for (const action of intelligentContext.contract.directive.actions) {
+                  this.throwIfAborted();
+                  const call: ToolCallBlock = {
+                    type: 'tool_call',
+                    id: action.id,
+                    name: action.toolName,
+                    input: structuredClone(action.input),
+                  };
+                  yield this.event({ type: 'tool.requested', turnId, call });
+                  const execution = this.executeTool(call, turnId);
+                  while (true) {
+                    const next = await execution.next();
+                    if (next.done) break;
+                    yield next.value;
+                  }
+                }
+                intelligentContext = await prepareIntelligence();
+              }
             } catch (error) {
+              intelligentContext = undefined;
               this.log({
                 level: 'warn',
                 event: 'context-intelligence.lifecycle',
@@ -433,6 +460,22 @@ class AgentSessionImpl implements AgentSession {
               turnId,
               report: contextIntelligenceReport(intelligentContext.contract),
             });
+            if (!intelligentContext.contract.directive.continueToModel) {
+              const decision = intelligentContext.contract.directive.decision;
+              yield this.event({
+                type: 'warning',
+                code: `CONTEXT_${decision}`,
+                message: contextInterventionMessage(decision),
+              });
+              await this.persist();
+              yield this.event({ type: 'turn.completed', turnId, turn, reason: 'end_turn' });
+              yield this.event({
+                type: 'session.completed',
+                reason: 'end_turn',
+                historyMessageCount: this.history.length,
+              });
+              return;
+            }
           }
           const modelMessages = intelligentContext?.finalized.messages ?? prepared.messages;
           const modelTools = intelligentContext?.finalized.tools ?? this.registry.descriptors();
@@ -960,10 +1003,7 @@ class AgentSessionImpl implements AgentSession {
     for (const hook of this.hooks.list()) {
       const hookResult = await hook.beforeTool?.({ sessionId: this.id, turnId }, call);
       if (hookResult && !hookResult.allow) {
-        let result = this.toolError(
-          call.id,
-          hookResult.message ?? `Blocked by hook ${hook.name}`,
-        );
+        let result = this.toolError(call.id, hookResult.message ?? `Blocked by hook ${hook.name}`);
         result = await this.processToolFailure(tool, call, result, turnId);
         this.logToolTerminal(call, turnId, result, lifecycleStarted, {
           event: 'tool.execution.denied',
@@ -1316,9 +1356,7 @@ class AgentSessionImpl implements AgentSession {
         toolCallId: call.id,
         content: processed.result.content,
         isError: true,
-        ...(processed.result.metadata === undefined
-          ? {}
-          : { metadata: processed.result.metadata }),
+        ...(processed.result.metadata === undefined ? {} : { metadata: processed.result.metadata }),
       };
     } catch {
       return result;
@@ -1877,6 +1915,23 @@ function boundedNumber(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.min(1, Math.max(0, value))
     : fallback;
+}
+
+function contextInterventionMessage(decision: ContextQualityDecision): string {
+  switch (decision) {
+    case 'CLARIFY':
+      return 'Context Intelligence requires clarification before the model can continue.';
+    case 'DENY':
+      return 'Context Intelligence denied the requested operation by policy.';
+    case 'CONFLICT':
+      return 'Context Intelligence found unresolved conflicting evidence.';
+    case 'ABSTAIN':
+      return 'Context Intelligence abstained because required evidence could not be obtained.';
+    case 'RETRIEVE':
+      return 'Context Intelligence could not complete its bounded retrieval plan.';
+    case 'ACCEPT':
+      return 'Context Intelligence accepted the active context.';
+  }
 }
 
 function isPromptTooLong(error: unknown): boolean {

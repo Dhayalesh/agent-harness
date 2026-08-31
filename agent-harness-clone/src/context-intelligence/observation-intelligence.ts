@@ -9,6 +9,7 @@ import type {
   ToolOutcome,
 } from './contracts.js';
 import { StructuredResultShaper } from './structured-result-shaper.js';
+import { inferGenericCapabilities } from './capability-intelligence.js';
 import {
   containmentScore,
   dedupeStrings,
@@ -46,10 +47,16 @@ export class ObservationIntelligence {
     const parsed = parseJson(rawContent);
     const outcome = classifyOutcome(input.output, parsed);
     const source = sourceFor(input.tool, input.output, createdAt, this.config);
-    const sourceProvenance = provenance(source, 'retrieved', 'observation-intelligence', [input.toolCallId], {
-      outcome,
-      tool: input.tool.name,
-    });
+    const sourceProvenance = provenance(
+      source,
+      'retrieved',
+      'observation-intelligence',
+      [input.toolCallId],
+      {
+        outcome,
+        tool: input.tool.name,
+      },
+    );
     let content = rawContent;
     let structured: unknown = parsed;
     let offloaded: OffloadedArtifact | undefined;
@@ -97,9 +104,11 @@ export class ObservationIntelligence {
 
     const facts = extractFacts(content, structured);
     const identifiers = extractIdentifiers(structured ?? content);
-    const errors = outcome === 'error' || outcome === 'denied' || outcome === 'malformed'
-      ? [preview(rawContent, 1_000)]
-      : [];
+    const links = extractLinks(parsed, input.output.metadata);
+    const errors =
+      outcome === 'error' || outcome === 'denied' || outcome === 'malformed'
+        ? [preview(rawContent, 1_000)]
+        : [];
     const requiresFollowUp =
       outcome === 'empty' ||
       outcome === 'partial' ||
@@ -125,6 +134,7 @@ export class ObservationIntelligence {
       ...(offloaded === undefined ? {} : { artifactId: offloaded.artifactId }),
       requiresFollowUp,
       ...(followUpReason === undefined ? {} : { followUpReason }),
+      ...(links.length === 0 ? {} : { links }),
       createdAt,
     };
     return {
@@ -153,8 +163,15 @@ function classifyOutcome(output: ToolExecutionResult, parsed: unknown): ToolOutc
   if (output.isError) {
     return /permission|denied|forbidden|unauthori[sz]ed/i.test(output.content) ? 'denied' : 'error';
   }
-  if (!output.content.trim() || output.content.trim() === '[]' || output.content.trim() === '{}') return 'empty';
-  if (output.metadata?.partial === true || output.metadata?.hasMore === true || hasPagination(parsed)) return 'partial';
+  if (!output.content.trim() || output.content.trim() === '[]' || output.content.trim() === '{}')
+    return 'empty';
+  if (
+    output.metadata?.partial === true ||
+    output.metadata?.hasMore === true ||
+    output.metadata?.followed === false ||
+    hasPagination(parsed)
+  )
+    return 'partial';
   if (/^[\[{]/.test(output.content.trim()) && parsed === undefined) return 'malformed';
   return 'success';
 }
@@ -166,9 +183,10 @@ function sourceFor(
   config: ContextIntelligenceConfig,
 ): SourceMetadata {
   const supplied = output.metadata?.source;
-  const metadata = supplied && typeof supplied === 'object' && !Array.isArray(supplied)
-    ? (supplied as Partial<SourceMetadata>)
-    : {};
+  const metadata =
+    supplied && typeof supplied === 'object' && !Array.isArray(supplied)
+      ? (supplied as Partial<SourceMetadata>)
+      : {};
   const configured = config.sourceMetadata.find(
     (source) =>
       source.id === metadata.id ||
@@ -176,29 +194,39 @@ function sourceFor(
       source.name.toLowerCase() === tool.name.toLowerCase(),
   );
   const sourceId = metadata.id ?? configured?.id ?? `tool:${tool.name}`;
+  const genericCapabilities = inferGenericCapabilities(tool);
+  const inferredType = genericCapabilities.some(
+    (capability) => capability === 'WEB_SEARCH' || capability === 'WEB_FETCH',
+  )
+    ? 'external'
+    : genericCapabilities.includes('FILE_READ')
+      ? 'document'
+      : 'tool';
+  const outputProvider =
+    typeof output.metadata?.provider === 'string' ? output.metadata.provider : undefined;
   const authority =
     config.sourceAuthority[sourceId] ??
     config.sourceAuthority[tool.name] ??
     metadata.authority ??
     configured?.authority ??
     tool.contextMetadata?.authority ??
-    0.6;
+    (genericCapabilities.includes('FILE_READ') ? 0.9 : inferredType === 'external' ? 0.65 : 0.6);
   return sourceMetadata({
     id: sourceId,
     name: metadata.name ?? configured?.name ?? tool.name,
-    type: metadata.type ?? configured?.type ?? 'tool',
-    provider: metadata.provider ?? tool.name,
+    type: metadata.type ?? configured?.type ?? inferredType,
+    provider: metadata.provider ?? outputProvider ?? tool.name,
     authority,
     observedAt: metadata.observedAt ?? timestamp,
     retrievedAt: timestamp,
-    ...(metadata.version ?? configured?.version
+    ...((metadata.version ?? configured?.version)
       ? { version: metadata.version ?? configured!.version }
       : {}),
-    ...(metadata.scope ?? configured?.scope
+    ...((metadata.scope ?? configured?.scope)
       ? { scope: metadata.scope ?? configured!.scope }
       : {}),
-    ...(metadata.uri ?? configured?.uri ? { uri: metadata.uri ?? configured!.uri } : {}),
-    ...(metadata.policyLabels ?? configured?.policyLabels
+    ...((metadata.uri ?? configured?.uri) ? { uri: metadata.uri ?? configured!.uri } : {}),
+    ...((metadata.policyLabels ?? configured?.policyLabels)
       ? { policyLabels: metadata.policyLabels ?? configured!.policyLabels }
       : {}),
   });
@@ -212,15 +240,26 @@ function hasPagination(value: unknown): boolean {
 
 function inferIdentifierFields(value: unknown): string[] {
   const records = Array.isArray(value) ? value : value && typeof value === 'object' ? [value] : [];
-  const first = records.find((entry) => entry && typeof entry === 'object' && !Array.isArray(entry)) as Record<string, unknown> | undefined;
-  return first ? Object.keys(first).filter((key) => /(^id$|id$|key|uuid|code|number)$/i.test(key)).slice(0, 8) : [];
+  const first = records.find(
+    (entry) => entry && typeof entry === 'object' && !Array.isArray(entry),
+  ) as Record<string, unknown> | undefined;
+  return first
+    ? Object.keys(first)
+        .filter((key) => /(^id$|id$|key|uuid|code|number)$/i.test(key))
+        .slice(0, 8)
+    : [];
 }
 
 function extractIdentifiers(value: unknown): string[] {
-  if (typeof value === 'string') return dedupeStrings(value.match(/\b(?:[A-Z]{2,}[-_:])?[A-Z0-9]{6,}\b/g) ?? []).slice(0, 50);
+  if (typeof value === 'string')
+    return dedupeStrings(value.match(/\b(?:[A-Z]{2,}[-_:])?[A-Z0-9]{6,}\b/g) ?? []).slice(0, 50);
   const values: string[] = [];
   walk(value, (key, entry) => {
-    if (/(^id$|id$|key|uuid|code|number)$/i.test(key) && ['string', 'number'].includes(typeof entry)) values.push(String(entry));
+    if (
+      /(^id$|id$|key|uuid|code|number)$/i.test(key) &&
+      ['string', 'number'].includes(typeof entry)
+    )
+      values.push(String(entry));
   });
   return dedupeStrings(values).slice(0, 100);
 }
@@ -233,7 +272,22 @@ function extractFacts(content: string, structured: unknown): string[] {
       .map((key) => `${key}: ${JSON.stringify(record[key])}`);
     if (facts.length) return facts;
   }
-  return dedupeStrings(content.split(/(?<=[.!?])\s+|\n+/).filter((line) => line.length >= 4 && line.length <= 500)).slice(0, 20);
+  return dedupeStrings(
+    content.split(/(?<=[.!?])\s+|\n+/).filter((line) => line.length >= 4 && line.length <= 500),
+  ).slice(0, 20);
+}
+
+function extractLinks(value: unknown, metadata: Record<string, unknown> | undefined): string[] {
+  const links: string[] = [];
+  const collect = (entry: unknown): void => {
+    if (typeof entry !== 'string') return;
+    const matches = entry.match(/https?:\/\/[^\s"'<>]+/g) ?? [];
+    links.push(...matches.map((match) => match.replace(/[),.;]+$/, '')));
+  };
+  walk(value, (_key, entry) => collect(entry));
+  walk(metadata, (_key, entry) => collect(entry));
+  collect(metadata?.url);
+  return dedupeStrings(links).slice(0, 50);
 }
 
 function walk(value: unknown, visitor: (key: string, value: unknown) => void, depth = 0): void {
@@ -250,7 +304,9 @@ function walk(value: unknown, visitor: (key: string, value: unknown) => void, de
 
 function observationSummary(content: string, parsed: unknown): string {
   if (parsed !== undefined) {
-    const kind = Array.isArray(parsed) ? `array with ${parsed.length} entries` : 'structured object';
+    const kind = Array.isArray(parsed)
+      ? `array with ${parsed.length} entries`
+      : 'structured object';
     return `Tool returned a ${kind}. Curated result: ${preview(content, 4_000)}`;
   }
   return preview(content, 4_000);

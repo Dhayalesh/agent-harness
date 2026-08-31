@@ -104,7 +104,6 @@ const RESPONSE_PRESENTATION_TOOLS = new Set([
   'create_csv_artifact',
   'create_json_artifact',
   'create_code_artifact',
-  'context_artifact_read',
 ]);
 
 export type InlineAgentOptions = {

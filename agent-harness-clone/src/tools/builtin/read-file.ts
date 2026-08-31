@@ -56,6 +56,14 @@ export function createReadFileTool(
         content: numbered,
         metadata: {
           path: resolved,
+          source: {
+            id: `file:${resolved}`,
+            name: input.path,
+            type: 'document',
+            provider: 'workspace',
+            authority: 0.9,
+            uri: resolved,
+          },
           totalLines: lines.length,
           offset,
           returnedLines: selected.length,

@@ -43,6 +43,39 @@ export type NormalizedIntent = {
   confidence: number;
 };
 
+/** Generic information/capability vocabulary owned by Context Intelligence. */
+export type ContextNeedType =
+  'CURRENT_EXTERNAL_INFORMATION' | 'FILE_INFORMATION' | 'DOCUMENT_CREATION';
+
+export type ContextCapability =
+  | 'WEB_RETRIEVAL'
+  | 'WEB_SEARCH'
+  | 'WEB_FETCH'
+  | 'FILE_READ'
+  | 'MARKDOWN_ARTIFACT_CREATE'
+  | 'DOCUMENT_ARTIFACT_CREATE';
+
+export type ContextNeedStatus = 'satisfied' | 'missing' | 'unavailable' | 'clarification_required';
+
+export type ContextNeed = {
+  id: string;
+  type: ContextNeedType;
+  required: boolean;
+  requiredInformation: readonly string[];
+  missingInformation: readonly string[];
+  reason: string;
+  sourceRequirement: 'external' | 'workspace' | 'any';
+  freshnessRequirement: 'CURRENT' | 'RECENT' | 'ANY';
+  authorityRequirement: 'AUTHORITATIVE' | 'TRUSTED' | 'ANY';
+  scope: ContextScope;
+  evidenceRequirement: 'REQUIRED' | 'SUPPORTING' | 'NONE';
+  requiredCapability: ContextCapability;
+  priority: 'critical' | 'high' | 'normal' | 'low';
+  status: ContextNeedStatus;
+  /** Validated arguments known before capability execution, such as a file path. */
+  inputs: Readonly<Record<string, unknown>>;
+};
+
 export type SourceType =
   | 'user'
   | 'conversation'
@@ -145,6 +178,8 @@ export type EvidenceItem = ContextItem & {
   claims: readonly string[];
   retrievalQuery?: string;
   rank: number;
+  capability?: ContextCapability;
+  observationId?: string;
 };
 
 export type ContextConflict = {
@@ -342,6 +377,17 @@ export type CapabilityMetadata = {
   limitations: readonly string[];
   policyLabels: readonly string[];
   enabled: boolean;
+  /** Generic capabilities implemented by this concrete runtime tool. */
+  provides?: readonly ContextCapability[];
+};
+
+export type CapabilityResolution = {
+  needId: string;
+  requested: ContextCapability;
+  requiredCapabilities: readonly ContextCapability[];
+  status: 'available' | 'unavailable';
+  toolNames: readonly string[];
+  reason: string;
 };
 
 export type SelectedCapability = {
@@ -356,6 +402,30 @@ export type ToolPlan = {
   selected: readonly SelectedCapability[];
   excluded: readonly { name: string; reason: string }[];
   argumentRequirements: Readonly<Record<string, readonly string[]>>;
+  resolutions: readonly CapabilityResolution[];
+};
+
+export type ContextRuntimeAction = {
+  id: string;
+  requestId: string;
+  needId: string;
+  capability: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  toolName: string;
+  input: Readonly<Record<string, unknown>>;
+  reason: string;
+  iteration: number;
+};
+
+export type RuntimeRetrievalOperation = {
+  id: string;
+  requestId: string;
+  needId: string;
+  capability: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  toolName: string;
+  input: Readonly<Record<string, unknown>>;
+  iteration: number;
+  status: 'planned' | 'succeeded' | 'empty' | 'failed' | 'denied';
+  observationId?: string;
 };
 
 export type ToolOutcome = 'success' | 'empty' | 'partial' | 'error' | 'denied' | 'malformed';
@@ -375,6 +445,10 @@ export type ToolObservation = {
   requiresFollowUp: boolean;
   followUpReason?: string;
   createdAt: ISODateTime;
+  requestId?: string;
+  needIds?: readonly string[];
+  capability?: Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
+  links?: readonly string[];
 };
 
 export type OffloadedArtifact = {
@@ -396,6 +470,7 @@ export type ContextBudgetCategory =
   | 'memory'
   | 'retrievalEvidence'
   | 'toolObservations'
+  | 'toolDefinitions'
   | 'taskState'
   | 'safetyPolicy';
 
@@ -441,11 +516,27 @@ export type ContextQualityIssue = {
 
 export type ContextQualityReport = {
   status: ContextQualityStatus;
+  decision: ContextQualityDecision;
   score: number;
   issues: readonly ContextQualityIssue[];
   conflicts: readonly ContextConflict[];
   sufficient: boolean;
   checkedAt: ISODateTime;
+};
+
+export type ContextQualityDecision =
+  'ACCEPT' | 'RETRIEVE' | 'CLARIFY' | 'CONFLICT' | 'DENY' | 'ABSTAIN';
+
+export type ContextRuntimeDirective = {
+  decision: ContextQualityDecision;
+  continueToModel: boolean;
+  actions: readonly ContextRuntimeAction[];
+  reasonCodes: readonly string[];
+  clarification: readonly {
+    needId: string;
+    type: ContextNeedType;
+    missingInformation: readonly string[];
+  }[];
 };
 
 export type FinalContextSection = {
@@ -466,6 +557,7 @@ export type FinalizedContext = {
   quality: ContextQualityReport;
   provenanceIds: readonly string[];
   omittedItemIds: readonly string[];
+  omittedMessageIds: readonly string[];
   offloadedArtifacts: readonly OffloadedArtifact[];
 };
 
@@ -484,6 +576,7 @@ export type ContextContract = {
   scope: ContextScope;
   rawRequest: string;
   intent: NormalizedIntent;
+  contextNeeds: readonly ContextNeed[];
   constraints: readonly string[];
   requiredEntities: readonly IntentEntity[];
   temporal?: TemporalRequirement;
@@ -498,6 +591,7 @@ export type ContextContract = {
   taskState: TaskState;
   queryPlan: QueryPlan;
   retrieval: RetrievalOutcome;
+  runtimeRetrieval: readonly RuntimeRetrievalOperation[];
   reasoning: ReasoningSupport;
   budget: ContextBudgetSnapshot;
   provenance: readonly Provenance[];
@@ -505,6 +599,7 @@ export type ContextContract = {
   offloadedArtifacts: readonly OffloadedArtifact[];
   finalContext?: FinalizedContext;
   quality: ContextQualityReport;
+  directive: ContextRuntimeDirective;
   pendingDecisions: readonly string[];
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
@@ -530,6 +625,15 @@ export type ContextIntelligenceReport = {
     requiredEntities: number;
     ambiguities: number;
   };
+  contextNeeds: {
+    total: number;
+    required: number;
+    missing: number;
+    unavailable: number;
+    clarificationRequired: number;
+    types: Readonly<Partial<Record<ContextNeedType, number>>>;
+    capabilities: readonly ContextCapability[];
+  };
   query: {
     variants: number;
     transformations: Readonly<Partial<Record<QueryVariant['kind'], number>>>;
@@ -542,6 +646,8 @@ export type ContextIntelligenceReport = {
     sufficient: boolean;
     insufficiencies: number;
     conflicts: number;
+    operations: number;
+    toolNames: readonly string[];
   };
   memory: {
     recalled: number;
@@ -572,6 +678,7 @@ export type ContextIntelligenceReport = {
   };
   quality: {
     status: ContextQualityStatus;
+    decision: ContextQualityDecision;
     score: number;
     sufficient: boolean;
     conflicts: number;
@@ -590,8 +697,16 @@ export type ContextIntelligenceReport = {
     sections: number;
     tools: number;
     omittedItems: number;
+    omittedMessages: number;
     offloadedArtifacts: number;
     provenanceRecords: number;
+  };
+  intervention: {
+    required: boolean;
+    continueToModel: boolean;
+    decision: ContextQualityDecision;
+    reasonCodes: readonly string[];
+    clarificationNeeds: readonly ContextNeedType[];
   };
   reasoning: {
     mode: ReasoningSupport['mode'];
