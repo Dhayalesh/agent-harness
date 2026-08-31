@@ -28,6 +28,7 @@ import {
   when,
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
+import { ContextIntelligenceSection } from "../components/ContextIntelligence.jsx";
 
 export function RunDetailPage() {
   const { id } = useParams();
@@ -150,6 +151,8 @@ export function RunDetailPage() {
             ]}
           />
         </SectionCard>
+
+        <ContextIntelligenceSection report={run.contextIntelligence} />
 
         <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
           <SectionCard title="Prompt" bodyClassName="px-5 pb-5 pt-1">

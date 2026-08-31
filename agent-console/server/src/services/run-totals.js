@@ -10,6 +10,7 @@
 import { presentedArtifact } from "./response-artifacts.js";
 import { presentedReasoning } from "./response-reasoning.js";
 import { presentedToolCall } from "./response-tool-calls.js";
+import { contextIntelligenceReportSchema } from "../lib/schemas.js";
 
 /**
  * How many turns of context history a run keeps.
@@ -38,6 +39,7 @@ export class RunTotals {
   #toolActivity = new Map();
   #artifacts = [];
   #context;
+  #contextIntelligence;
   #compactions = 0;
   #recoveries = 0;
   #peakTokens;
@@ -217,6 +219,17 @@ export class RunTotals {
       case "context.compaction.completed":
         this.#compactions += 1;
         break;
+      case "context.intelligence":
+        {
+          const parsed = contextIntelligenceReportSchema.safeParse(
+            event.report,
+          );
+          if (!parsed.success) break;
+          // Last report wins, matching the buffered Harness result: it describes
+          // the curated context that produced the final model turn.
+          this.#contextIntelligence = structuredClone(parsed.data);
+        }
+        break;
       // Counted, not stored in detail: what a reader needs is "the layer had to put
       // something back", and the harness log already holds which categories.
       case "context.recovery":
@@ -355,6 +368,9 @@ export class RunTotals {
       tools: [...this.#tools.values()],
       ...(this.#context
         ? { context: { ...this.#context, compactions: this.#compactions } }
+        : {}),
+      ...(this.#contextIntelligence
+        ? { contextIntelligence: this.#contextIntelligence }
         : {}),
       durationMs,
       ...(failure ? { error: failure } : {}),

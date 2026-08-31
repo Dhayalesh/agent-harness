@@ -23,7 +23,8 @@ The console reads and writes the historical platform collections in place:
 - `agents` stores the agent definition and string ObjectId references:
   `modelProviderId`, ordered `mcpServerIds`, and ordered `skills[].skillId` entries.
   It also carries `stream`, the per-agent response-encoding preference described in
-  [AgentCore behavior](#agentcore-behavior).
+  [AgentCore behavior](#agentcore-behavior), and the validated `contextIntelligence`
+  policy sent to the runtime.
 - `model_providers` stores model configuration and its API credential.
 - `mcp_servers` stores stdio or HTTP MCP configuration and its credentials,
   environment, and headers.
@@ -31,9 +32,11 @@ The console reads and writes the historical platform collections in place:
 
 It adds two console collections in the same database:
 
-- `chats` stores conversation messages and a stable AgentCore runtime session ID.
+- `chats` stores conversation messages, a stable AgentCore runtime session ID, and
+  the latest bounded Context Intelligence report for the selected conversation.
 - `runs` stores invocation status, output, usage, tool counts, timing, and AgentCore
-  metadata. A chat-originated run also has a `chatId`.
+  metadata, including the report that curated its final model turn. A chat-originated
+  run also has a `chatId`.
 
 The intended database is `trueai_agent_platform`. A pathless MongoDB URI falls back to
 that database rather than MongoDB's implicit `test` database. `MONGODB_DB_NAME` overrides
@@ -124,6 +127,11 @@ API client is untouched.
   in `index.html` applies it before React mounts so a reload does not flash white.
 - Theme colours live in `client/tailwind.config.js` as a single brand ramp fed to the
   `heroui()` plugin, not as scattered hex values.
+- Context Intelligence appears as a compact live popover in chat and a full run-detail
+  card covering quality, category budgets, retrieval, memory, capability selection,
+  task state, omissions, and offloading. The wire report contains counts and bounded
+  names only; prompts, evidence, memory content, and tool output remain in their
+  existing governed stores.
 
 One installation detail matters: Tailwind must scan `@heroui/theme` or every HeroUI
 component renders unstyled. That package is a transitive dependency, so the `content`

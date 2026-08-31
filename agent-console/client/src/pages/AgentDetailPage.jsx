@@ -165,6 +165,31 @@ export function AgentDetailPage() {
                   label: "Streaming",
                   value: agent.stream ? "requested" : "off",
                 },
+                {
+                  label: "Context Intelligence",
+                  value:
+                    agent.contextIntelligence?.enabled === false
+                      ? "disabled"
+                      : "enabled",
+                },
+                {
+                  label: "Retrieval iterations",
+                  value:
+                    agent.contextIntelligence?.budgets
+                      ?.maxRetrievalIterations ?? "runtime default",
+                },
+                {
+                  label: "Memory recall",
+                  value:
+                    agent.contextIntelligence?.memory?.recallLimit ??
+                    "runtime default",
+                },
+                {
+                  label: "Exposed tools",
+                  value:
+                    agent.contextIntelligence?.capability?.maximumExposed ??
+                    "runtime default",
+                },
                 { label: "Max turns", value: agent.limits?.maxTurns ?? "—" },
                 {
                   label: "Context window",

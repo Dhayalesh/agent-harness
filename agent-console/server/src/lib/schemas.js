@@ -749,6 +749,161 @@ export const chatMessageSchema = z
     },
   );
 
+const reportCount = z.number().int().nonnegative();
+const reportCountMap = z.record(reportCount);
+
+/**
+ * Content-free Context Intelligence projection emitted by the Harness.
+ *
+ * Nested objects are passthrough so a newer runtime can add a decision without
+ * making an otherwise valid run impossible to save. Required fields are the stable
+ * v1 core the console renders; the full Context Contract deliberately never crosses
+ * this boundary.
+ */
+export const contextIntelligenceReportSchema = z
+  .object({
+    version: z.literal(1),
+    requestId: z.string().min(1).max(200),
+    intent: z
+      .object({
+        operation: z.enum([
+          "answer",
+          "analyze",
+          "create",
+          "update",
+          "delete",
+          "execute",
+          "unknown",
+        ]),
+        complexity: z.enum(["simple", "compound", "complex"]),
+        confidence: z.number().min(0).max(1),
+        constraints: reportCount,
+        requiredEntities: reportCount,
+        ambiguities: reportCount,
+      })
+      .passthrough(),
+    query: z
+      .object({
+        variants: reportCount,
+        transformations: reportCountMap,
+      })
+      .passthrough(),
+    retrieval: z
+      .object({
+        providers: z.array(z.string().max(200)).max(50),
+        providerCount: reportCount,
+        iterations: reportCount,
+        results: reportCount,
+        sufficient: z.boolean(),
+        insufficiencies: reportCount,
+        conflicts: reportCount,
+      })
+      .passthrough(),
+    memory: z
+      .object({ recalled: reportCount, types: reportCountMap })
+      .passthrough(),
+    capabilities: z
+      .object({
+        available: reportCount,
+        selected: reportCount,
+        excluded: reportCount,
+        names: z.array(z.string().max(200)).max(50),
+      })
+      .passthrough(),
+    observations: z
+      .object({
+        total: reportCount,
+        outcomes: reportCountMap,
+        facts: reportCount,
+        identifiers: reportCount,
+        followUps: reportCount,
+        offloaded: reportCount,
+      })
+      .passthrough(),
+    task: z
+      .object({
+        status: z.enum(["active", "completed", "blocked", "failed"]),
+        steps: reportCount,
+        completed: reportCount,
+        pending: reportCount,
+        retries: reportCount,
+        unresolvedIssues: reportCount,
+        pendingDecisions: reportCount,
+      })
+      .passthrough(),
+    quality: z
+      .object({
+        status: z.enum(["passed", "degraded", "insufficient", "rejected"]),
+        score: z.number().min(0).max(1),
+        sufficient: z.boolean(),
+        conflicts: reportCount,
+        issues: z
+          .array(
+            z
+              .object({
+                code: z.string().max(100),
+                severity: z.enum(["info", "warning", "error"]),
+                remediation: z.enum([
+                  "retain",
+                  "prune",
+                  "compress",
+                  "replace",
+                  "retrieve",
+                  "clarify",
+                  "reject",
+                ]),
+                items: reportCount,
+              })
+              .passthrough(),
+          )
+          .max(1000),
+      })
+      .passthrough(),
+    budget: z
+      .object({
+        inputLimit: reportCount,
+        outputReservation: reportCount,
+        safetyMargin: reportCount,
+        availableInput: reportCount,
+        usedInput: reportCount,
+        allocations: z
+          .array(
+            z
+              .object({
+                category: z.string().max(100),
+                maximumTokens: reportCount,
+                usedTokens: reportCount,
+                priority: z.number().finite(),
+              })
+              .passthrough(),
+          )
+          .max(50),
+        exceeded: z.boolean(),
+      })
+      .passthrough(),
+    finalContext: z
+      .object({
+        items: reportCount,
+        evidence: reportCount,
+        sources: reportCount,
+        sections: reportCount,
+        tools: reportCount,
+        omittedItems: reportCount,
+        offloadedArtifacts: reportCount,
+        provenanceRecords: reportCount,
+      })
+      .passthrough(),
+    reasoning: z
+      .object({
+        mode: z.enum(["direct", "react", "alternatives", "tree"]),
+        alternatives: reportCount,
+        planSteps: reportCount,
+      })
+      .passthrough(),
+    updatedAt: z.string().datetime(),
+  })
+  .passthrough();
+
 export const runtimeResultSchema = z
   .object({
     status: z.enum(["success", "error"]),
@@ -876,6 +1031,7 @@ export const runtimeResultSchema = z
       })
       .passthrough()
       .optional(),
+    contextIntelligence: contextIntelligenceReportSchema.optional(),
     events: z.array(z.unknown()).optional(),
     durationMs: z.number().nonnegative(),
     error: z

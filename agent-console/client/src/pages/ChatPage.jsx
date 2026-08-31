@@ -41,6 +41,7 @@ import {
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
 import { ContextIndicator } from "../components/ContextIndicator.js";
+import { ContextIntelligenceIndicator } from "../components/ContextIntelligence.jsx";
 import { applyContextEvent } from "../lib/context-inspector.js";
 import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
@@ -165,6 +166,9 @@ export function ChatPage() {
       compactions: 0,
     };
   }, [live?.context, live?.lastCompaction, chat?.session?.context, selectedAgent]);
+
+  const contextIntelligence =
+    live?.contextIntelligence ?? chat?.session?.contextIntelligence ?? null;
 
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -1112,6 +1116,9 @@ export function ChatPage() {
                         }
                         onCompact={compactContext}
                       />
+                      <ContextIntelligenceIndicator
+                        report={contextIntelligence}
+                      />
                     </div>
                   </div>
                 </form>
@@ -1538,6 +1545,8 @@ const EMPTY_LIVE = {
   warnings: [],
   /** The last `context.usage` this run reported. Null until the first turn measures. */
   context: null,
+  /** Content-free decisions from the Context Intelligence layer. */
+  contextIntelligence: null,
   compactions: 0,
   /** Per-turn readings, so the panel can say when the context filled and what happened. */
   timeline: [],
@@ -1663,6 +1672,12 @@ function applyLiveEvent(live, event) {
     case "context.usage":
     case "context.recovery":
       return { ...current, ...applyContextEvent(current, event) };
+    case "context.intelligence":
+      return {
+        ...current,
+        status: "Context ready",
+        contextIntelligence: event.report ?? current.contextIntelligence,
+      };
     case "context.selection":
       return { ...current, status: "Reducing the context" };
     case "context.verification":

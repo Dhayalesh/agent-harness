@@ -244,6 +244,9 @@ function applyRuntimeResult(run, result, invocation) {
   // Left unset rather than zeroed when the runtime reported none, so "no context
   // layer" stays distinguishable from "an empty context".
   if (result.context) run.context = result.context;
+  if (result.contextIntelligence) {
+    run.contextIntelligence = result.contextIntelligence;
+  }
   run.tools = result.tools ?? [];
   run.artifacts = artifactMetadata(result.artifacts);
   run.harnessSessionId = result.sessionId;

@@ -73,6 +73,9 @@ const runSchema = new mongoose.Schema(
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
     context: { type: contextUsageSchema },
+    // Bounded content-free report from the Harness. Mixed keeps the wire report
+    // forward-compatible while validation happens at the AgentCore boundary.
+    contextIntelligence: mongoose.Schema.Types.Mixed,
     tools: { type: [toolSummarySchema], default: [] },
     artifacts: { type: [mongoose.Schema.Types.Mixed], default: [] },
     agentRuntimeArn: String,
