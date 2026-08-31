@@ -10,7 +10,7 @@ import { createSkillTool, parseSkill, SkillRegistry } from '../skills/skills.js'
 import type { Tool } from '../tools/tool.js';
 import { TempSkillDirectory } from '../skills/temp-skill-directory.js';
 import type { AgentRecord } from './agent-definitions.js';
-import { assertAgentRuntimeSupport } from './agent-support.js';
+import { assertAgentRuntimeSupport, HOST_CONTRIBUTED_TOOL_NAMES } from './agent-support.js';
 import type { SkillRecord } from './skill-definitions.js';
 import { SkillContentStores } from './skill-content.js';
 import type { TemplateRecord } from './template-definitions.js';
@@ -548,7 +548,7 @@ export class PlatformAgentRegistry {
 
   private localToolsFor(record: AgentRecord): Tool[] {
     const available = new Map((this.options.localTools ?? []).map((tool) => [tool.name, tool]));
-    return record.tools.map((name) => {
+    const selected = record.tools.map((name) => {
       const tool = available.get(name);
       if (tool) return tool;
       throw new AgentHarnessError(
@@ -557,6 +557,12 @@ export class PlatformAgentRegistry {
         'AGENT_TOOL_NOT_AVAILABLE',
       );
     });
+    const selectedNames = new Set(selected.map((tool) => tool.name));
+    const contributed = HOST_CONTRIBUTED_TOOL_NAMES.flatMap((name) => {
+      const tool = available.get(name);
+      return tool && !selectedNames.has(name) ? [tool] : [];
+    });
+    return [...selected, ...contributed];
   }
 
   private log(entry: Parameters<LogSink['log']>[0]): void {

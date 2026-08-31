@@ -251,16 +251,20 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
       input.performanceProfiles,
       input.minimumComparableSamples,
     );
-    if (!selected) return undefined;
-    return {
-      needId: need.id,
-      capability: 'ARTIFACT_READ',
-      phase: 'retrieval',
-      toolName: selected.tool.capability.name,
-      input: selected.input,
-      reason: 'Retrieve the exact same-session artifact discovered from canonical metadata.',
-      strategy: operations.length === 0 ? 'initial' : 'alternate_source',
-    };
+    if (selected) {
+      return {
+        needId: need.id,
+        capability: 'ARTIFACT_READ',
+        phase: 'retrieval',
+        toolName: selected.tool.capability.name,
+        input: selected.input,
+        reason:
+          artifactCandidate?.discoveredBy === 'context_offload'
+            ? 'Retrieve the matching same-session artifact discovered from context offload metadata.'
+            : 'Retrieve the matching same-session artifact discovered from canonical metadata.',
+        strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+      };
+    }
   }
 
   const fileResource = resources.find((resource) => resource.sourceKind === 'FILE');

@@ -16,7 +16,8 @@ export const AGENT_RUNTIME_SUPPORT = {
    * Every local tool a host can offer, by the `name` each factory sets.
    *
    * - builtin (`src/tools/builtin/index.ts`): `read_file`, `glob`, `grep`,
-   *   `write_file`, `edit_file`, response artifact tools, `bash`, `powershell`, `todo_write`
+   *   `write_file`, `edit_file`, response artifact tools, `context_artifact_read`,
+   *   `bash`, `powershell`, `todo_write`
    * - web (`src/tools/web/index.ts`): `web_search`, `web_fetch`
    *
    * The plan-mode and `ask_user_question` tools are deliberately absent. Both need
@@ -48,6 +49,7 @@ export const AGENT_RUNTIME_SUPPORT = {
     'todo_write',
     'web_search',
     'web_fetch',
+    'context_artifact_read',
   ] as const,
   /**
    * Every stored limit is acted on: the three become `AgentSessionConfig.limits`
@@ -73,6 +75,14 @@ export const AGENT_RUNTIME_SUPPORT = {
     'contextIntelligence',
   ] as const,
 } as const;
+
+/**
+ * Read-only Harness infrastructure contributed to a resolved session whenever the
+ * host actually built it. These tools are not an expansion of the host catalogue:
+ * absence from `PlatformAgentRegistryOptions.localTools` still means unavailable.
+ * Invocation permission checks remain authoritative for every call.
+ */
+export const HOST_CONTRIBUTED_TOOL_NAMES = ['context_artifact_read'] as const;
 
 /**
  * Tool names the record cannot list, because something else on the record
