@@ -55,6 +55,7 @@ import { ContextNeedIntelligence } from './context-need.js';
 import { EvidenceIntelligence, groupEvidence } from './evidence-intelligence.js';
 import { ContextQualityGate } from './quality-gate.js';
 import { RuntimeRetrievalPlanner } from './runtime-retrieval.js';
+import { AdaptiveRetrievalIntelligence, annotateRuntimeOperations } from './adaptive-retrieval.js';
 import { CrossDocumentIntelligence } from './cross-document.js';
 import { ContextLifecycleManager } from './lifecycle.js';
 import { ContextFeedbackIntelligence } from './feedback.js';
@@ -148,6 +149,7 @@ export class ContextIntelligenceEngine {
   private readonly evidence: EvidenceIntelligence;
   private readonly qualityGate: ContextQualityGate;
   private readonly runtimeRetrieval: RuntimeRetrievalPlanner;
+  private readonly adaptiveRetrieval: AdaptiveRetrievalIntelligence;
   private readonly tasks = new TaskStateManager();
   private readonly lifecycle: ContextLifecycleManager;
   private readonly feedback: ContextFeedbackIntelligence;
@@ -186,16 +188,12 @@ export class ContextIntelligenceEngine {
       this.config.p3.maximumFeedbackRecords,
       this.config.p3.maximumSourceReferencesPerFeedback,
     );
-    this.predictive = new PredictiveContextIntelligence(
-      this.config.p3.maximumPredictiveHints,
-    );
+    this.predictive = new PredictiveContextIntelligence(this.config.p3.maximumPredictiveHints);
     this.performance = new RuntimePerformanceIntelligence(
       options.initialState?.performanceProfiles ?? [],
       this.config.p3.maximumPerformanceProfiles,
     );
-    this.evaluation = new ContextEvaluationIntelligence(
-      this.config.p3.maximumEvaluationOperations,
-    );
+    this.evaluation = new ContextEvaluationIntelligence(this.config.p3.maximumEvaluationOperations);
     this.memoryProvider = new SessionMemoryProvider(options.initialState?.memories ?? []);
     this.memory = new MemoryIntelligence(
       this.config.memory,
@@ -225,6 +223,7 @@ export class ContextIntelligenceEngine {
     this.evidence = new EvidenceIntelligence(this.config);
     this.qualityGate = new ContextQualityGate(this.config);
     this.runtimeRetrieval = new RuntimeRetrievalPlanner(this.config);
+    this.adaptiveRetrieval = new AdaptiveRetrievalIntelligence(this.config);
     this.chunking = new ChunkingIntelligence(this.config.chunking, options.chunkingStrategies);
     this.onTelemetry = options.onTelemetry;
   }
@@ -296,7 +295,11 @@ export class ContextIntelligenceEngine {
         (operation) =>
           operation.requestId === this.activeRequestId &&
           operation.status === 'failed' &&
-          operation.failureClassification !== 'not_found',
+          operation.failureClassification !== 'not_found' &&
+          operation.failureClassification !== 'invalid_input' &&
+          operation.failureClassification !== 'timeout' &&
+          operation.failureClassification !== 'network' &&
+          operation.failureClassification !== 'rate_limited',
       )
       .map((operation) => operation.toolName);
     const toolPlan = this.config.features.capabilityNarrowing
@@ -434,12 +437,7 @@ export class ContextIntelligenceEngine {
       } else preHygiene.push(item);
     }
     this.offloadedState = offloadedArtifacts.slice(-100);
-    const hygiene = await this.hygiene.process(
-      preHygiene,
-      input.signal,
-      input.scope,
-      initialNeeds,
-    );
+    const hygiene = await this.hygiene.process(preHygiene, input.signal, input.scope, initialNeeds);
     for (const item of hygiene.items) {
       this.lifecycle.transition({
         requestId: this.activeRequestId,
@@ -464,6 +462,11 @@ export class ContextIntelligenceEngine {
     }
     const retainedIds = new Set(hygiene.items.map((item) => item.id));
     const admittedEvidence = synthesis.evidence.filter((item) => retainedIds.has(item.id));
+    const adaptiveEvidence = [
+      ...new Map(
+        [...observationAdmission.evaluated, ...admittedEvidence].map((item) => [item.id, item]),
+      ).values(),
+    ];
     const evidenceGroups = groupEvidence(admittedEvidence);
     const predictiveResult = this.config.features.predictiveContext
       ? this.predictive.project(
@@ -489,7 +492,8 @@ export class ContextIntelligenceEngine {
           requestId: this.activeRequestId,
           itemId: predictiveResult.item.id,
           to: 'admitted',
-          reason: 'A dependency-ready planning hint was derived from final admitted evidence and canonical task state.',
+          reason:
+            'A dependency-ready planning hint was derived from final admitted evidence and canonical task state.',
           component: 'predictive-context-intelligence',
           metadata: { planningOnly: true },
         });
@@ -530,18 +534,33 @@ export class ContextIntelligenceEngine {
       (need) => need.required && need.evidenceRequirement === 'REQUIRED',
     );
     const evidenceSufficient = evidenceNeeds.every((need) => need.status === 'satisfied');
+    const combinedConflicts = [...queryResult.outcome.conflicts, ...hygiene.conflicts];
+    const unresolvedEvidenceConflict = combinedConflicts.some(
+      (conflict) => conflict.resolution === 'unresolved',
+    );
     const effectiveRetrieval = {
       ...queryResult.outcome,
-      sufficient: evidenceSufficient,
-      insufficiencies: evidenceSufficient
-        ? []
-        : dedupeStrings([
-            ...queryResult.outcome.insufficiencies,
-            ...evidenceNeeds
-              .filter((need) => need.status !== 'satisfied')
-              .flatMap((need) => need.missingInformation),
-          ]),
+      sufficient: evidenceSufficient && !unresolvedEvidenceConflict,
+      insufficiencies:
+        evidenceSufficient && !unresolvedEvidenceConflict
+          ? []
+          : dedupeStrings([
+              ...queryResult.outcome.insufficiencies,
+              ...(unresolvedEvidenceConflict ? ['unresolved source conflict'] : []),
+              ...evidenceNeeds
+                .filter((need) => need.status !== 'satisfied')
+                .flatMap((need) => need.missingInformation),
+            ]),
     };
+    const adaptivePlanning = this.adaptiveRetrieval.evaluate({
+      requestId: this.activeRequestId,
+      needs: contextNeeds,
+      operations: this.runtimeOperations,
+      observations: this.observationState,
+      evaluatedEvidence: adaptiveEvidence,
+      conflicts: combinedConflicts,
+      elapsedMs: Date.now() - this.requestStartedAt,
+    });
     const runtimeActions = this.runtimeRetrieval.plan({
       requestId: this.activeRequestId,
       intent,
@@ -553,9 +572,36 @@ export class ContextIntelligenceEngine {
       ...(this.config.features.observedPerformanceOptimization
         ? { performanceProfiles: this.performance.snapshot() }
         : {}),
+      adaptive: adaptivePlanning,
       elapsedMs: Date.now() - this.requestStartedAt,
     });
     this.registerRuntimeActions(runtimeActions);
+    const adaptiveRetrieval = this.adaptiveRetrieval.evaluate({
+      requestId: this.activeRequestId,
+      needs: contextNeeds,
+      operations: this.runtimeOperations,
+      observations: this.observationState,
+      evaluatedEvidence: adaptiveEvidence,
+      conflicts: combinedConflicts,
+      elapsedMs: Date.now() - this.requestStartedAt,
+      planningComplete: true,
+    });
+    annotateRuntimeOperations(this.runtimeOperations, adaptiveRetrieval);
+    const latestAttempt = adaptiveRetrieval.attempts.at(-1);
+    this.emit('context-intelligence.retrieval', input, {
+      phase: 'adaptive',
+      retrieval_attempt_count: adaptiveRetrieval.attemptCount,
+      retrieval_strategy: latestAttempt?.strategy,
+      retrieval_result: latestAttempt?.outcome,
+      retrieval_failure_reason:
+        latestAttempt?.outcome === 'RETRIEVAL_SUCCESS' ? undefined : latestAttempt?.outcome,
+      adaptation_reason: latestAttempt?.adaptationReason,
+      previous_strategy: latestAttempt?.previousStrategy,
+      next_strategy: latestAttempt?.nextStrategy,
+      retrieval_budget_remaining: adaptiveRetrieval.remainingRetrievalBudget,
+      evidence_quality: adaptiveRetrieval.evidenceQuality,
+      termination_reason: adaptiveRetrieval.terminationReason,
+    });
     taskState = this.taskState ?? taskState;
     const resourceRecords = this.resources.assess({
       requestId: this.activeRequestId,
@@ -564,12 +610,12 @@ export class ContextIntelligenceEngine {
       offloadedArtifacts: this.offloadedState,
       operations: this.runtimeOperations,
     });
-    const combinedConflicts = [...queryResult.outcome.conflicts, ...hygiene.conflicts];
     const qualityGate = this.qualityGate.evaluate({
       report: { ...hygiene.report, conflicts: combinedConflicts },
       needs: contextNeeds,
       actions: runtimeActions,
       operations: this.runtimeOperations,
+      adaptive: adaptiveRetrieval,
       elapsedMs: Date.now() - this.requestStartedAt,
     });
     this.emit('context-intelligence.hygiene', input, {
@@ -602,6 +648,7 @@ export class ContextIntelligenceEngine {
       needs: contextNeeds,
       actions: runtimeActions,
       operations: this.runtimeOperations,
+      adaptive: adaptiveRetrieval,
       elapsedMs: Date.now() - this.requestStartedAt,
     });
     const activeFinalized: FinalizedContext = {
@@ -711,9 +758,7 @@ export class ContextIntelligenceEngine {
       crossDocument: crossDocumentResult.record,
       lifecycle: requestLifecycle,
       ...(this.config.features.boundedFeedback ? { feedback: feedbackRecords } : {}),
-      ...(predictiveResult === undefined
-        ? {}
-        : { predictiveContext: predictiveResult.projection }),
+      ...(predictiveResult === undefined ? {} : { predictiveContext: predictiveResult.projection }),
       ...(optimization === undefined ? {} : { optimization }),
       ...(evaluation === undefined ? {} : { evaluation }),
       sources: dedupeSources(governedItems.map((item) => item.source)),
@@ -726,6 +771,7 @@ export class ContextIntelligenceEngine {
       queryPlan: queryResult.plan,
       retrieval: effectiveRetrieval,
       runtimeRetrieval: deepClone(this.runtimeOperations),
+      adaptiveRetrieval: deepClone(adaptiveRetrieval),
       resources: deepClone(resourceRecords),
       reasoning,
       budget: activeFinalized.budget,
@@ -826,6 +872,29 @@ export class ContextIntelligenceEngine {
       ...(matchingNeeds.length === 0 ? {} : { needIds: matchingNeeds }),
       ...(capability === undefined ? {} : { capability }),
     };
+    if (action) {
+      observation = {
+        ...observation,
+        provenance: appendProvenance(
+          observation.provenance,
+          'retrieved',
+          'adaptive-retrieval',
+          action.priorOperationIds,
+          {
+            capability: action.capability,
+            retrievalStrategy: action.strategy,
+            reasonSelected: action.reason,
+            resultStatus: observation.outcome,
+            ...(action.adaptationReason === undefined
+              ? {}
+              : { adaptationReason: action.adaptationReason }),
+            ...(action.previousStrategy === undefined
+              ? {}
+              : { previousStrategy: action.previousStrategy }),
+          },
+        ),
+      };
+    }
     const recalledArtifactId =
       action?.capability === 'ARTIFACT_READ' && typeof action.input.artifactId === 'string'
         ? action.input.artifactId
@@ -886,6 +955,7 @@ export class ContextIntelligenceEngine {
         tool: observation.toolName,
         outcome: observation.outcome,
         capability: observation.capability ?? 'unclassified',
+        retrievalStrategy: action?.strategy ?? 'unplanned',
       },
     });
     if (this.observationState.length > 100) this.observationState.shift();
@@ -903,6 +973,7 @@ export class ContextIntelligenceEngine {
         });
         operation.status = runtimeOperationStatus(observation.outcome);
         operation.executionState = resourceOutcome.executionState;
+        operation.retrievalState = retrievalStateForOutcome(observation.outcome);
         operation.resourceState = resourceOutcome.resourceState;
         if (resourceOutcome.resourceCandidates.length > 0) {
           operation.resourceCandidates = resourceOutcome.resourceCandidates;
@@ -948,6 +1019,9 @@ export class ContextIntelligenceEngine {
       identifiers: observation.identifiers.length,
       offloaded: Boolean(processed.offloaded),
       requiresFollowUp: observation.requiresFollowUp,
+      retrieval_strategy: action?.strategy,
+      adaptation_reason: action?.adaptationReason,
+      previous_strategy: action?.previousStrategy,
     });
     return {
       ...processed,
@@ -972,11 +1046,18 @@ export class ContextIntelligenceEngine {
       };
     }
     this.toolActionCount += 1;
+    const plannedOperation = this.runtimeOperations.find(
+      (operation) => operation.status === 'planned' && operation.toolName === input.toolName,
+    );
+    if (plannedOperation) plannedOperation.retrievalState = 'IN_PROGRESS';
     this.emit('context-intelligence.lifecycle', input, {
       phase: 'tool-budget',
       tool: input.toolName,
       used: this.toolActionCount,
       limit,
+      ...(plannedOperation === undefined
+        ? {}
+        : { retrieval_state: 'IN_PROGRESS', operation_id: plannedOperation.id }),
     });
     return { allowed: true, used: this.toolActionCount, limit };
   }
@@ -1009,8 +1090,7 @@ export class ContextIntelligenceEngine {
           ),
       );
       const qualityAccepted =
-        this.lastContract?.directive.decision === 'ACCEPT' &&
-        this.lastContract.quality.sufficient;
+        this.lastContract?.directive.decision === 'ACCEPT' && this.lastContract.quality.sufficient;
       const unresolved = dedupeStrings([
         ...(this.lastContract?.quality.sufficient === false
           ? ['Context quality gate reported insufficiency.']
@@ -1074,14 +1154,11 @@ export class ContextIntelligenceEngine {
       observations: deepClone(this.observationState.slice(-100)),
       offloadedArtifacts: deepClone(this.offloadedState.slice(-100)),
       recentOperations: deepClone(
-        [
-          ...this.recentOperations,
-          ...this.runtimeOperations.map(runtimeOperationSnapshot),
-        ].slice(-200),
+        [...this.recentOperations, ...this.runtimeOperations.map(runtimeOperationSnapshot)].slice(
+          -200,
+        ),
       ),
-      lifecycleEvents: deepClone(
-        this.lifecycle.snapshot().slice(-500).map(lifecycleEventSnapshot),
-      ),
+      lifecycleEvents: deepClone(this.lifecycle.snapshot().slice(-500).map(lifecycleEventSnapshot)),
       ...(this.feedback.snapshot().length === 0
         ? {}
         : {
@@ -1342,9 +1419,16 @@ export class ContextIntelligenceEngine {
         input: deepClone(action.input),
         attemptKey: action.attemptKey,
         strategy: action.strategy,
+        ...(action.adaptationReason === undefined
+          ? {}
+          : { adaptationReason: action.adaptationReason }),
+        ...(action.previousStrategy === undefined
+          ? {}
+          : { previousStrategy: action.previousStrategy }),
         iteration: action.iteration,
         status: 'planned',
         executionState: 'NOT_EXECUTED',
+        retrievalState: action.priorOperationIds.length > 0 ? 'RETRYING' : 'NOT_EXECUTED',
         resourceState: 'NOT_CHECKED',
         startedAt: now(),
       });
@@ -1447,9 +1531,7 @@ function shouldRetrieve(
   return intent.operation === 'answer' && intent.entities.length > 0;
 }
 
-function runtimeOperationSnapshot(
-  operation: RuntimeRetrievalOperation,
-): RuntimeOperationSnapshot {
+function runtimeOperationSnapshot(operation: RuntimeRetrievalOperation): RuntimeOperationSnapshot {
   const {
     input: _contentBearingInput,
     resourceCandidates: _contentBearingCandidates,
@@ -1522,6 +1604,15 @@ function runtimeOperationStatus(
 function executionStateForOutcome(
   outcome: ToolObservation['outcome'],
 ): NonNullable<ContextContract['taskState']['executionHistory'][number]['state']> {
+  if (outcome === 'success' || outcome === 'partial') return 'SUCCESS';
+  if (outcome === 'empty') return 'EMPTY';
+  if (outcome === 'denied') return 'BLOCKED';
+  return 'FAILED';
+}
+
+function retrievalStateForOutcome(
+  outcome: ToolObservation['outcome'],
+): NonNullable<RuntimeRetrievalOperation['retrievalState']> {
   if (outcome === 'success' || outcome === 'partial') return 'SUCCESS';
   if (outcome === 'empty') return 'EMPTY';
   if (outcome === 'denied') return 'BLOCKED';

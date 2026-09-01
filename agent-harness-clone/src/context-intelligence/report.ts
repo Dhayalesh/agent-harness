@@ -4,6 +4,7 @@ import type {
   ContextNeedType,
   MemoryType,
   QueryVariant,
+  RetrievalOutcomeClassification,
   ToolOutcome,
 } from './contracts.js';
 
@@ -68,9 +69,7 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       insufficiencies: contract.retrieval.insufficiencies.length,
       conflicts: contract.retrieval.conflicts.length,
       operations: contract.runtimeRetrieval.length,
-      operationOutcomes: countBy(
-        contract.runtimeRetrieval.map((operation) => operation.status),
-      ),
+      operationOutcomes: countBy(contract.runtimeRetrieval.map((operation) => operation.status)),
       executionStates: countBy(
         contract.runtimeRetrieval.map((operation) => operation.executionState),
       ),
@@ -79,6 +78,21 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
         0,
         NAME_LIMIT,
       ),
+      adaptive: {
+        state: contract.adaptiveRetrieval.state,
+        attemptCount: contract.adaptiveRetrieval.attemptCount,
+        remainingBudget: contract.adaptiveRetrieval.remainingRetrievalBudget,
+        strategies: countBy(contract.adaptiveRetrieval.attempts.map((attempt) => attempt.strategy)),
+        outcomes: countBy(
+          contract.adaptiveRetrieval.attempts
+            .map((attempt) => attempt.outcome)
+            .filter((outcome): outcome is RetrievalOutcomeClassification => outcome !== undefined),
+        ),
+        evidenceQuality: structuredClone(contract.adaptiveRetrieval.evidenceQuality),
+        ...(contract.adaptiveRetrieval.terminationReason === undefined
+          ? {}
+          : { terminationReason: contract.adaptiveRetrieval.terminationReason }),
+      },
     },
     memory: {
       recalled: contract.memories.length,
@@ -171,8 +185,7 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       : {
           prediction: {
             hints: contract.predictiveContext.readyStepIds.length,
-            satisfiedDependencies:
-              contract.predictiveContext.satisfiedDependencyIds.length,
+            satisfiedDependencies: contract.predictiveContext.satisfiedDependencyIds.length,
             evidenceReferences: contract.predictiveContext.evidenceIds.length,
             truncated: contract.predictiveContext.truncated,
           },

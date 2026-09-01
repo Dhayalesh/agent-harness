@@ -1,5 +1,6 @@
 import type { ContextIntelligenceConfig } from './config.js';
 import type {
+  AdaptiveRetrievalSummary,
   ContextNeed,
   ContextQualityIssue,
   ContextQualityReport,
@@ -18,6 +19,7 @@ export class ContextQualityGate {
     needs: readonly ContextNeed[];
     actions: readonly ContextRuntimeAction[];
     operations: readonly RuntimeRetrievalOperation[];
+    adaptive: AdaptiveRetrievalSummary;
     elapsedMs: number;
   }): { report: ContextQualityReport; directive: ContextRuntimeDirective } {
     const missing = input.needs.filter((need) => need.required && need.status !== 'satisfied');
@@ -54,10 +56,12 @@ export class ContextQualityGate {
     const hardBudgetFailure = issues.some(
       (issue) => issue.severity === 'error' && issue.code === 'budget',
     );
+    const missingNeedIds = new Set(missing.map((need) => need.id));
     const authorizationDenied = input.operations.some(
       (operation) =>
-        operation.status === 'denied' ||
-        operation.failureClassification === 'authorization_denied',
+        missingNeedIds.has(operation.needId) &&
+        (operation.status === 'denied' ||
+          operation.failureClassification === 'authorization_denied'),
     );
     const exhausted =
       input.elapsedMs >= this.config.budgets.maxLoopMilliseconds ||
@@ -66,25 +70,33 @@ export class ContextQualityGate {
       input.operations.reduce((maximum, operation) => Math.max(maximum, operation.iteration), 0) >=
         this.config.budgets.maxRetrievalIterations;
 
-    const decision = hardPolicyFailure || authorizationDenied
+    const adaptiveClarification =
+      input.adaptive.terminationReason === 'CLARIFICATION_REQUIRED' ||
+      input.adaptive.terminationReason === 'INVALID_REFERENCE';
+    const adaptiveAccessBlocked = input.adaptive.terminationReason === 'ACCESS_BLOCKED';
+    const decision = hardPolicyFailure
       ? ('DENY' as const)
       : hardBudgetFailure
         ? ('ABSTAIN' as const)
         : input.actions.length > 0
-        ? input.operations.length > 0
-          ? ('RETRIEVE_AGAIN' as const)
-          : ('RETRIEVE' as const)
-        : clarification.length > 0
-          ? ('CLARIFY' as const)
-          : unavailable.length > 0
-            ? this.config.quality.unavailablePolicy === 'clarify'
-              ? ('CLARIFY' as const)
-              : ('ABSTAIN' as const)
-            : unresolvedConflict
-              ? ('CONFLICT' as const)
-              : missing.length > 0
-                ? ('ABSTAIN' as const)
-                : ('ACCEPT' as const);
+          ? input.operations.length > 0
+            ? ('RETRIEVE_AGAIN' as const)
+            : ('RETRIEVE' as const)
+          : clarification.length > 0 || adaptiveClarification
+            ? ('CLARIFY' as const)
+            : authorizationDenied || adaptiveAccessBlocked
+              ? this.config.quality.unavailablePolicy === 'clarify'
+                ? ('CLARIFY' as const)
+                : ('ABSTAIN' as const)
+              : unavailable.length > 0
+                ? this.config.quality.unavailablePolicy === 'clarify'
+                  ? ('CLARIFY' as const)
+                  : ('ABSTAIN' as const)
+                : unresolvedConflict
+                  ? ('CONFLICT' as const)
+                  : missing.length > 0
+                    ? ('ABSTAIN' as const)
+                    : ('ACCEPT' as const);
     const continueToModel =
       decision === 'ACCEPT' ||
       (decision === 'CONFLICT' && this.config.quality.conflictPolicy === 'proceed');
@@ -121,6 +133,9 @@ export class ContextQualityGate {
       ...(unavailable.length > 0 ? ['capability_unavailable'] : []),
       ...(unresolvedConflict ? ['unresolved_conflict'] : []),
       ...(exhausted && missing.length > 0 ? ['retrieval_budget_exhausted'] : []),
+      ...(input.adaptive.terminationReason === undefined
+        ? []
+        : [input.adaptive.terminationReason.toLowerCase()]),
       ...(missing.length > 0 ? ['required_evidence_missing'] : []),
     ]);
     return {

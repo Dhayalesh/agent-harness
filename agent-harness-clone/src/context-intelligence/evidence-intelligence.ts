@@ -26,6 +26,8 @@ export type RejectedEvidence = {
 };
 
 export type EvidenceAdmissionResult = {
+  /** All measured candidates, including those rejected from active context. */
+  evaluated: readonly EvidenceItem[];
   admitted: readonly EvidenceItem[];
   groups: readonly EvidenceGroup[];
   rejected: readonly RejectedEvidence[];
@@ -79,7 +81,9 @@ export class EvidenceIntelligence {
     const candidates = evaluated.filter((item) => item.evaluation.admitted);
     const clusters: Array<{ strongest: EvidenceItem; members: EvidenceItem[] }> = [];
     for (const candidate of candidates.sort(byEvidenceUtility)) {
-      const cluster = clusters.find(({ strongest }) => equivalentEvidence(strongest, candidate, this.config));
+      const cluster = clusters.find(({ strongest }) =>
+        equivalentEvidence(strongest, candidate, this.config),
+      );
       if (!cluster) {
         clusters.push({ strongest: candidate, members: [candidate] });
         continue;
@@ -94,7 +98,9 @@ export class EvidenceIntelligence {
 
     const admitted: EvidenceItem[] = [];
     let usedTokens = 0;
-    for (const cluster of clusters.sort((left, right) => byEvidenceUtility(left.strongest, right.strongest))) {
+    for (const cluster of clusters.sort((left, right) =>
+      byEvidenceUtility(left.strongest, right.strongest),
+    )) {
       const candidate = cluster.strongest;
       if (admitted.length >= this.config.budgets.maxRetrievalResults) {
         rejected.push({
@@ -116,6 +122,7 @@ export class EvidenceIntelligence {
       usedTokens += candidate.tokenEstimate;
     }
     return {
+      evaluated,
       admitted,
       groups: groupEvidence(admitted, clusters),
       rejected,
@@ -144,9 +151,8 @@ function evidenceFromObservation(
   const entityCoverage =
     intent.entities.length === 0
       ? 0
-      : intent.entities.filter((entity) =>
-          normalizedContent.includes(entity.value.toLowerCase()),
-        ).length / intent.entities.length;
+      : intent.entities.filter((entity) => normalizedContent.includes(entity.value.toLowerCase()))
+          .length / intent.entities.length;
   const taskRelevance = taskState
     ? Math.max(
         ...taskState.plan
@@ -206,26 +212,36 @@ function evidenceFromObservation(
   );
   const provenanceComplete = Boolean(
     observation.provenance.id &&
-      observation.source.id &&
-      observation.source.name &&
-      observation.source.type &&
-      (observation.source.retrievedAt || observation.source.observedAt) &&
-      observation.provenance.steps.some((step) => step.operation === 'retrieved') &&
-      (!['file', 'document', 'web', 'external', 'artifact'].includes(observation.source.type) ||
-        observation.source.uri),
+    observation.source.id &&
+    observation.source.name &&
+    observation.source.type &&
+    (observation.source.retrievedAt || observation.source.observedAt) &&
+    observation.provenance.steps.some((step) => step.operation === 'retrieved') &&
+    (!['file', 'document', 'web', 'external', 'artifact'].includes(observation.source.type) ||
+      observation.source.uri),
   );
   const discovery =
     observation.capability === 'WEB_SEARCH' ||
     observation.capability === 'FILE_DISCOVERY' ||
     observation.capability === 'ARTIFACT_DISCOVERY';
   const confidence =
-    observation.outcome === 'partial' ? 0.62 : discovery ? 0.58 : observation.outcome === 'success' ? 0.9 : 0.5;
+    observation.outcome === 'partial'
+      ? 0.62
+      : discovery
+        ? 0.58
+        : observation.outcome === 'success'
+          ? 0.9
+          : 0.5;
   const reasons = dedupeStrings([
-    ...(relevance < config.retrieval.relevanceThreshold ? ['relevance below admission threshold'] : []),
+    ...(relevance < config.retrieval.relevanceThreshold
+      ? ['relevance below admission threshold']
+      : []),
     ...(authority < authorityRequired ? ['source authority below requirement'] : []),
     ...(freshness < freshnessRequired ? ['source freshness below requirement'] : []),
     ...(!provenanceComplete ? ['provenance incomplete'] : []),
-    ...(looksPoisoned(observation.content) ? ['untrusted content contains instruction-like poisoning'] : []),
+    ...(looksPoisoned(observation.content)
+      ? ['untrusted content contains instruction-like poisoning']
+      : []),
     ...(discovery
       ? ['discovery observations identify candidates but are not admissible source evidence']
       : []),
@@ -249,8 +265,7 @@ function evidenceFromObservation(
     ...observation.source,
     authority,
     evidenceIdentity,
-    extractionContext:
-      observation.source.extractionContext ?? `tool observation ${observation.id}`,
+    extractionContext: observation.source.extractionContext ?? `tool observation ${observation.id}`,
   };
   return {
     id: `evidence:${observation.id}`,
@@ -305,10 +320,7 @@ function evidenceFromObservation(
   };
 }
 
-function evidenceSourceMatchesNeed(
-  need: ContextNeed,
-  source: ToolObservation['source'],
-): boolean {
+function evidenceSourceMatchesNeed(need: ContextNeed, source: ToolObservation['source']): boolean {
   const reference = [need.inputs.reference, need.inputs.path, need.inputs.artifactId].find(
     (value): value is string => typeof value === 'string' && value.trim().length > 0,
   );
@@ -319,16 +331,10 @@ function evidenceSourceMatchesNeed(
   const normalized = reference.toLowerCase();
   return [source.id, source.name, source.uri]
     .filter((value): value is string => typeof value === 'string')
-    .some(
-      (value) =>
-        value.toLowerCase() === normalized || basename(value) === basename(reference),
-    );
+    .some((value) => value.toLowerCase() === normalized || basename(value) === basename(reference));
 }
 
-function evaluatedAuthority(
-  source: ToolObservation['source'],
-  intent: NormalizedIntent,
-): number {
+function evaluatedAuthority(source: ToolObservation['source'], intent: NormalizedIntent): number {
   if (
     (source.sourceKind !== 'WEB' && source.type !== 'web' && source.type !== 'external') ||
     !source.uri
@@ -343,14 +349,17 @@ function evaluatedAuthority(
       const normalized = entity.value.toLowerCase().replace(/[^a-z0-9]/g, '');
       return normalized.length >= 2 && host.replace(/[^a-z0-9]/g, '').includes(normalized);
     });
-    const primaryPath = /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(
-      url.pathname,
-    );
-    const officialRequired = intent.instructionSegments.retrievalInstructions.some((entry) =>
-      /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(entry),
-    ) || /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(
-      intent.instructionSegments.userIntent,
-    );
+    const primaryPath =
+      /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(
+        url.pathname,
+      );
+    const officialRequired =
+      intent.instructionSegments.retrievalInstructions.some((entry) =>
+        /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(entry),
+      ) ||
+      /\b(?:official|authoritative|primary source|vendor documentation)\b/i.test(
+        intent.instructionSegments.userIntent,
+      );
     if (officialRequired && entityMatch && primaryPath) return Math.max(source.authority, 0.88);
     if (officialRequired && entityMatch) return Math.max(source.authority, 0.82);
     if (entityMatch && primaryPath) return Math.max(source.authority, 0.8);
@@ -376,8 +385,9 @@ export function groupEvidence(
   return [...groups.entries()].map(([claimKey, entries]) => {
     const strongest = [...entries].sort(byEvidenceUtility)[0]!;
     const duplicateMembers =
-      duplicateClusters?.find((cluster) => cluster.strongest.evidenceIdentity === strongest.evidenceIdentity)
-        ?.members ?? [];
+      duplicateClusters?.find(
+        (cluster) => cluster.strongest.evidenceIdentity === strongest.evidenceIdentity,
+      )?.members ?? [];
     const evidenceIdentities = dedupeStrings([
       ...entries.map((entry) => entry.evidenceIdentity),
       ...duplicateMembers.map((entry) => entry.evidenceIdentity),
@@ -390,10 +400,7 @@ export function groupEvidence(
         ...duplicateMembers.map((entry) => entry.id),
       ]),
       provenanceIds: dedupeStrings(
-        entries.flatMap((entry) => [
-          entry.provenance.id,
-          ...(entry.supportingProvenanceIds ?? []),
-        ]),
+        entries.flatMap((entry) => [entry.provenance.id, ...(entry.supportingProvenanceIds ?? [])]),
       ),
       strongestEvidenceId: strongest.id,
       duplicateCount: duplicateMembers.length > 0 ? duplicateMembers.length - 1 : 0,
@@ -443,7 +450,8 @@ function equivalentEvidence(
 }
 
 function extractClaimKeys(claim: string): string[] {
-  if (!/[=:]|\b(?:is|was|were|equals?|reported|totals?|amount|status|version)\b/i.test(claim)) return [];
+  if (!/[=:]|\b(?:is|was|were|equals?|reported|totals?|amount|status|version)\b/i.test(claim))
+    return [];
   const key = claim
     .toLowerCase()
     .replace(/https?:\/\/\S+/g, ' ')
@@ -467,9 +475,7 @@ function looksPoisoned(content: string): boolean {
   );
 }
 
-function countRelationships(
-  entries: readonly EvidenceItem[],
-): EvidenceGroup['relationships'] {
+function countRelationships(entries: readonly EvidenceItem[]): EvidenceGroup['relationships'] {
   const counts: Partial<Record<EvidenceItem['relationship'], number>> = {};
   for (const entry of entries) counts[entry.relationship] = (counts[entry.relationship] ?? 0) + 1;
   return counts;

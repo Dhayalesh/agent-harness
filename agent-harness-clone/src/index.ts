@@ -604,6 +604,7 @@ export {
 } from './context-intelligence/config-schema.js';
 export type { ContextIntelligenceConfigWire } from './context-intelligence/config-schema.js';
 export type {
+  AdaptiveRetrievalSummary,
   CapabilityMetadata,
   CapabilityResolution,
   ConflictGroup,
@@ -671,16 +672,22 @@ export type {
   ResourceCandidate,
   ResourceRecord,
   ResourceState,
+  RetrievalAdaptationStrategy,
+  RetrievalAttemptAssessment,
+  RetrievalEvidenceQuality,
   RetrievalIteration,
   RetrievalMode,
   RetrievalObservation,
   RetrievalOutcome,
+  RetrievalOutcomeClassification,
   RetrievalPlan,
   RetrievalProvider,
   RetrievalProviderMetadata,
   RetrievalRequest,
   RetrievalResult,
   RetrievalReranker,
+  RetrievalState,
+  RetrievalTerminationReason,
   RuntimeOptimizationSummary,
   RuntimeOperationSnapshot,
   RuntimePerformanceProfile,
@@ -764,6 +771,10 @@ export { ObservationIntelligence } from './context-intelligence/observation-inte
 export { EvidenceIntelligence } from './context-intelligence/evidence-intelligence.js';
 export { ContextQualityGate } from './context-intelligence/quality-gate.js';
 export { RuntimeRetrievalPlanner } from './context-intelligence/runtime-retrieval.js';
+export {
+  AdaptiveRetrievalIntelligence,
+  annotateRuntimeOperations,
+} from './context-intelligence/adaptive-retrieval.js';
 export {
   observeResourceOperation,
   ResourceIntelligence,

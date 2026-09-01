@@ -36,7 +36,8 @@ export class ContextNeedIntelligence {
           type: 'CURRENT_EXTERNAL_INFORMATION',
           requiredInformation: ['current externally observable state'],
           missingInformation: ['current external evidence'],
-          reason: 'The request depends on externally observable information or information that can change after model training.',
+          reason:
+            'The request depends on externally observable information or information that can change after model training.',
           sourceRequirement: 'external',
           sourceKinds: ['WEB'],
           freshnessRequirement: currentExternalFreshnessRequirement(intent),
@@ -62,38 +63,38 @@ export class ContextNeedIntelligence {
     ) {
       const references = fileReferences.length > 0 ? fileReferences : [undefined];
       for (const referenceEntry of references) {
-        const storedContextReference =
-          referenceEntry?.kind === 'name' && explicitSource !== 'FILE';
-        needs.push(createNeed({
-          requestId,
-          type: 'FILE_INFORMATION',
-          requiredInformation: ['workspace file contents'],
-          missingInformation: [referenceEntry ? 'file evidence' : 'file path'],
-          reason: referenceEntry
-            ? 'The requested answer depends on the contents of a user-identified workspace file.'
-            : 'The request asks for file contents but does not identify the file to read.',
-          sourceRequirement: storedContextReference ? 'any' : 'workspace',
-          sourceKinds: storedContextReference ? ['FILE', 'ARTIFACT'] : ['FILE'],
-          freshnessRequirement: freshnessRequirement(intent),
-          authorityRequirement: 'AUTHORITATIVE',
-          evidenceRequirement: 'REQUIRED',
-          requiredCapability: 'FILE_READ',
-          priority: 'high',
-          scope,
-          status: referenceEntry ? 'missing' : 'clarification_required',
-          inputs: referenceEntry
-            ? {
-                reference: referenceEntry.reference,
-                referenceKind: referenceEntry.kind,
-                referenceOrigin: referenceEntry.origin,
-                ...(referenceEntry.kind === 'path' ? { path: referenceEntry.reference } : {}),
-              }
-            : {},
-          prerequisiteCapabilities:
-            referenceEntry?.kind === 'name' ? ['FILE_DISCOVERY'] : [],
-          alternativeCapabilities: storedContextReference ? ['ARTIFACT_READ'] : [],
-          ...(referenceEntry === undefined ? {} : { identity: referenceEntry.reference }),
-        }));
+        const storedContextReference = referenceEntry?.kind === 'name' && explicitSource !== 'FILE';
+        needs.push(
+          createNeed({
+            requestId,
+            type: 'FILE_INFORMATION',
+            requiredInformation: ['workspace file contents'],
+            missingInformation: [referenceEntry ? 'file evidence' : 'file path'],
+            reason: referenceEntry
+              ? 'The requested answer depends on the contents of a user-identified workspace file.'
+              : 'The request asks for file contents but does not identify the file to read.',
+            sourceRequirement: storedContextReference ? 'any' : 'workspace',
+            sourceKinds: storedContextReference ? ['FILE', 'ARTIFACT'] : ['FILE'],
+            freshnessRequirement: freshnessRequirement(intent),
+            authorityRequirement: 'AUTHORITATIVE',
+            evidenceRequirement: 'REQUIRED',
+            requiredCapability: 'FILE_READ',
+            priority: 'high',
+            scope,
+            status: referenceEntry ? 'missing' : 'clarification_required',
+            inputs: referenceEntry
+              ? {
+                  reference: referenceEntry.reference,
+                  referenceKind: referenceEntry.kind,
+                  referenceOrigin: referenceEntry.origin,
+                  ...(referenceEntry.kind === 'path' ? { path: referenceEntry.reference } : {}),
+                }
+              : {},
+            prerequisiteCapabilities: referenceEntry?.kind === 'name' ? ['FILE_DISCOVERY'] : [],
+            alternativeCapabilities: storedContextReference ? ['ARTIFACT_READ'] : [],
+            ...(referenceEntry === undefined ? {} : { identity: referenceEntry.reference }),
+          }),
+        );
       }
     }
 
@@ -122,7 +123,8 @@ export class ContextNeedIntelligence {
           type: 'DOCUMENT_CREATION',
           requiredInformation: ['requested document output capability'],
           missingInformation: ['runtime document creation capability'],
-          reason: 'The requested deliverable must be created through an available runtime capability.',
+          reason:
+            'The requested deliverable must be created through an available runtime capability.',
           sourceRequirement: 'any',
           sourceKinds: ['ARTIFACT'],
           freshnessRequirement: 'NONE',
@@ -185,8 +187,7 @@ export class ContextNeedIntelligence {
           (kind) =>
             checkedKinds.has(kind as ResourceRecord['sourceKind']) &&
             needResources.some(
-              (resource) =>
-                resource.sourceKind === kind && resource.state === 'VERIFIED_MISSING',
+              (resource) => resource.sourceKind === kind && resource.state === 'VERIFIED_MISSING',
             ),
         )
       ) {
@@ -390,14 +391,26 @@ function identifyGenericSourceNeed(
 }
 
 function explicitGenericSource(request: string): ContextSourceKind | undefined {
-  if (/\b(?:database|data\s*base|data warehouse|warehouse|sql|table|system of record)\b/i.test(request))
+  if (
+    /\b(?:database|data\s*base|data warehouse|warehouse|sql|table|system of record)\b/i.test(
+      request,
+    )
+  )
     return 'DATABASE';
   if (/\b(?:mcp|model context protocol)(?:\s+(?:server|tool|resource|source))?\b/i.test(request))
     return 'MCP';
   if (/\b(?:api|rest|graphql|endpoint|web service)\b/i.test(request)) return 'API';
-  if (/\b(?:from (?:your |the )?memory|remember what|previously (?:said|stored|learned)|my saved preference)\b/i.test(request))
+  if (
+    /\b(?:from (?:your |the )?memory|remember what|previously (?:said|stored|learned)|my saved preference)\b/i.test(
+      request,
+    )
+  )
     return 'MEMORY';
-  if (/\b(?:task state|task status|pending work|completed work|next action|unresolved questions?)\b/i.test(request))
+  if (
+    /\b(?:task state|task status|pending work|completed work|next action|unresolved questions?)\b/i.test(
+      request,
+    )
+  )
     return 'TASK_STATE';
   if (/\b(?:artifact|generated report|generated document)\b/i.test(request)) return 'ARTIFACT';
   if (/\b(?:application context|project context|workspace context)\b/i.test(request))
@@ -421,9 +434,7 @@ function requiresCurrentExternalInformation(
   const evidenceRequested = /\b(sources?|evidence|verify|look up)\b/i.test(request);
   const explicitlyLocal =
     Boolean(extractFileReference(intent.originalRequest)) ||
-    /\b(?:project|workspace|repository|repo|codebase|task|conversation|session)\b/i.test(
-      request,
-    );
+    /\b(?:project|workspace|repository|repo|codebase|task|conversation|session)\b/i.test(request);
   return (
     hasExternalUri ||
     stronglyExternal ||
@@ -466,9 +477,8 @@ function extractFileReferences(request: string): ExplicitFileReference[] {
   const references: ExplicitFileReference[] = [];
   const candidates = dedupeStrings([
     ...(directive.match(/`([^`\r\n]+)`/g) ?? []).map((value) => value.slice(1, -1).trim()),
-    ...(directive.match(
-      /(?<![A-Za-z0-9_\\/])(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g,
-    ) ?? []),
+    ...(directive.match(/(?<![A-Za-z0-9_\\/])(?:[A-Za-z]:[\\/]|\.\.?[\\/]|\/)[^\s"'<>|?*]+/g) ??
+      []),
     ...(
       directive.match(
         /(?:^|\s)([\w.-]+(?:[\\/][\w .-]+)*\.[A-Za-z0-9]{1,12})(?=\s|$|[,.):;"'])/g,
@@ -479,8 +489,7 @@ function extractFileReferences(request: string): ExplicitFileReference[] {
     if (!isConcreteFileReference(candidate, directive)) continue;
     references.push({
       reference: candidate,
-      kind:
-        /^[A-Za-z]:[\\/]|^\.\.?[\\/]|^\/|[\\/]/.test(candidate) ? 'path' : 'name',
+      kind: /^[A-Za-z]:[\\/]|^\.\.?[\\/]|^\/|[\\/]/.test(candidate) ? 'path' : 'name',
       origin: 'explicit_user_reference',
     });
   }
@@ -503,9 +512,10 @@ function isConcreteFileReference(candidate: string, request: string): boolean {
   const quotedReadTarget =
     quoted &&
     !/[\\/]/.test(candidate) &&
-    new RegExp(`\\b(?:read|open|inspect|review|summari[sz]e|use|extract|get)\\b.{0,40}${escaped}`, 'i').test(
-      request,
-    );
+    new RegExp(
+      `\\b(?:read|open|inspect|review|summari[sz]e|use|extract|get)\\b.{0,40}${escaped}`,
+      'i',
+    ).test(request);
   return referenceCue.test(request) || quotedReadTarget;
 }
 
@@ -551,13 +561,19 @@ function freshnessRequirement(intent: NormalizedIntent): ContextFreshnessRequire
   return 'ANY';
 }
 
-function currentExternalFreshnessRequirement(intent: NormalizedIntent): ContextFreshnessRequirement {
+function currentExternalFreshnessRequirement(
+  intent: NormalizedIntent,
+): ContextFreshnessRequirement {
   const required = freshnessRequirement(intent);
   return required === 'ANY' ? 'CURRENT' : required;
 }
 
 function authorityRequirement(request: string): ContextNeed['authorityRequirement'] {
-  if (/\b(?:official|authoritative|primary source|system of record|vendor documentation)\b/i.test(request))
+  if (
+    /\b(?:official|authoritative|primary source|system of record|vendor documentation)\b/i.test(
+      request,
+    )
+  )
     return 'AUTHORITATIVE';
   if (/\b(?:trusted|verified|reliable|evidence|source)\b/i.test(request)) return 'TRUSTED';
   return 'ANY';
@@ -585,7 +601,7 @@ function needSatisfied(
   const freshnessRequired = minimumFreshness(need.freshnessRequirement);
   const fetchAvailable = resolution?.requiredCapabilities.includes('WEB_FETCH') ?? false;
   return evidence.some((item) => {
-    const sourceKind = item.source.sourceKind ?? sourceKindForType(item.source.type);
+    const sourceKind = item.source.sourceKind ?? contextSourceKindForType(item.source.type);
     if (!need.sourceKinds.includes(sourceKind)) return false;
     if (!evidenceMatchesResourceReference(need, item)) return false;
     if (item.authority < authorityRequired || item.freshness < freshnessRequired) return false;
@@ -622,10 +638,7 @@ function evidenceMatchesResourceReference(need: ContextNeed, item: EvidenceItem)
     value.toLowerCase();
   return [item.source.id, item.source.name, item.source.uri]
     .filter((value): value is string => typeof value === 'string')
-    .some(
-      (value) =>
-        value.toLowerCase() === normalized || basename(value) === basename(reference),
-    );
+    .some((value) => value.toLowerCase() === normalized || basename(value) === basename(reference));
 }
 
 function minimumFreshness(requirement: ContextFreshnessRequirement): number {
@@ -644,7 +657,7 @@ function minimumFreshness(requirement: ContextFreshnessRequirement): number {
   }
 }
 
-function sourceKindForType(type: EvidenceItem['source']['type']): ContextSourceKind {
+export function contextSourceKindForType(type: EvidenceItem['source']['type']): ContextSourceKind {
   switch (type) {
     case 'file':
     case 'document':

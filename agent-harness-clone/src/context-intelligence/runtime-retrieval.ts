@@ -1,5 +1,6 @@
 import type { ContextIntelligenceConfig } from './config.js';
 import type {
+  AdaptiveRetrievalSummary,
   ContextCapability,
   ContextNeed,
   ContextRuntimeAction,
@@ -8,12 +9,15 @@ import type {
   RuntimePerformanceProfile,
   RuntimeRetrievalOperation,
   ResourceRecord,
+  RetrievalAdaptationStrategy,
   SelectedCapability,
   ToolObservation,
   ToolPlan,
 } from './contracts.js';
 import { rankRuntimeCandidates } from './runtime-performance.js';
 import { dedupeStrings, id, stableHash, uniqueTerms } from './utils.js';
+
+const MAXIMUM_IDENTICAL_TRANSIENT_RETRIES = 1;
 
 /** Plans bounded calls to concrete tools already registered with AgentSession. */
 export class RuntimeRetrievalPlanner {
@@ -28,6 +32,7 @@ export class RuntimeRetrievalPlanner {
     operations: readonly RuntimeRetrievalOperation[];
     resources?: readonly ResourceRecord[];
     performanceProfiles?: readonly RuntimePerformanceProfile[];
+    adaptive?: AdaptiveRetrievalSummary;
     elapsedMs: number;
   }): ContextRuntimeAction[] {
     if (!this.config.features.retrieval) return [];
@@ -52,9 +57,18 @@ export class RuntimeRetrievalPlanner {
     );
     const actions: ContextRuntimeAction[] = [];
     for (const need of input.needs) {
-      if (need.status !== 'missing' || actions.length >= remainingActions) continue;
+      if (actions.length >= remainingActions) continue;
       const needOperations = requestOperations.filter((operation) => operation.needId === need.id);
-      if (needOperations.some((operation) => operation.status === 'denied')) continue;
+      const adaptiveNeed = input.adaptive?.needs.find(
+        (assessment) => assessment.needId === need.id,
+      );
+      const strategies =
+        adaptiveNeed?.recommendedStrategies ??
+        (needOperations.length === 0 ? (['INITIAL'] as const) : []);
+      const unresolvedConflict =
+        need.status === 'satisfied' && adaptiveNeed?.outcome === 'SOURCE_CONFLICT';
+      if (need.status !== 'missing' && !unresolvedConflict) continue;
+      if (strategies.length === 0 || adaptiveNeed?.terminationReason !== undefined) continue;
       const action = this.planNeed({
         requestId: input.requestId,
         need,
@@ -66,6 +80,10 @@ export class RuntimeRetrievalPlanner {
         performanceProfiles: input.performanceProfiles ?? [],
         minimumComparableSamples: this.config.p3.minimumComparableSamples,
         iteration: iterations + 1,
+        strategies,
+        ...(adaptiveNeed?.adaptationReason === undefined
+          ? {}
+          : { adaptationReason: adaptiveNeed.adaptationReason }),
       });
       if (action) actions.push(action);
     }
@@ -83,6 +101,8 @@ export class RuntimeRetrievalPlanner {
     performanceProfiles: readonly RuntimePerformanceProfile[];
     minimumComparableSamples: number;
     iteration: number;
+    strategies: readonly RetrievalAdaptationStrategy[];
+    adaptationReason?: string;
   }): ContextRuntimeAction | undefined {
     const base =
       input.need.type === 'CURRENT_EXTERNAL_INFORMATION'
@@ -92,7 +112,18 @@ export class RuntimeRetrievalPlanner {
           : planGenericReadAction(input);
     if (!base) return undefined;
     const attemptKey = stableHash({ toolName: base.toolName, input: base.input });
-    if (input.operations.some((operation) => operation.attemptKey === attemptKey)) return undefined;
+    const identical = input.operations.filter((operation) => operation.attemptKey === attemptKey);
+    const identicalTransientRetries = identical.filter(
+      (operation) => operation.strategy === 'TRANSIENT_RETRY',
+    ).length;
+    if (
+      identical.length > 0 &&
+      (base.strategy !== 'TRANSIENT_RETRY' ||
+        identicalTransientRetries >= MAXIMUM_IDENTICAL_TRANSIENT_RETRIES)
+    ) {
+      return undefined;
+    }
+    const previous = input.operations.at(-1);
     return {
       ...base,
       id: id('context_action'),
@@ -100,6 +131,8 @@ export class RuntimeRetrievalPlanner {
       attemptKey,
       iteration: input.iteration,
       priorOperationIds: input.operations.map((operation) => operation.id),
+      ...(input.adaptationReason === undefined ? {} : { adaptationReason: input.adaptationReason }),
+      ...(previous === undefined ? {} : { previousStrategy: previous.strategy }),
     };
   }
 }
@@ -115,6 +148,8 @@ type PlannerInput = {
   performanceProfiles: readonly RuntimePerformanceProfile[];
   minimumComparableSamples: number;
   iteration: number;
+  strategies: readonly RetrievalAdaptationStrategy[];
+  adaptationReason?: string;
 };
 
 type PlannedAction = Omit<
@@ -141,18 +176,33 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
   const suppliedUrl = need.inputs.url;
   if (typeof suppliedUrl === 'string') {
     const prior = operations.filter((operation) => operation.capability === 'WEB_FETCH');
-    if (prior.some((operation) => operation.input.url === suppliedUrl)) return undefined;
-    const mapped = actionInput(fetchTool, { url: suppliedUrl, query: intent.normalizedRequest });
-    if (!mapped) return undefined;
-    return {
-      needId: need.id,
-      capability: 'WEB_FETCH',
-      phase: 'retrieval',
-      toolName: fetchTool.capability.name,
-      input: mapped,
-      reason: 'Fetch the supplied URL as source evidence.',
-      strategy: prior.length === 0 ? 'initial' : 'alternate_source',
-    };
+    for (const strategy of strategiesFor(input, ['SOURCE_SWITCH', 'TRANSIENT_RETRY'])) {
+      const selected = toolForStrategy(
+        toolPlan,
+        'WEB_FETCH',
+        { url: suppliedUrl, query: intent.normalizedRequest },
+        operations,
+        input.performanceProfiles,
+        input.minimumComparableSamples,
+        strategy,
+      );
+      if (!selected) continue;
+      return {
+        needId: need.id,
+        capability: 'WEB_FETCH',
+        phase: 'retrieval',
+        toolName: selected.tool.capability.name,
+        input: selected.input,
+        reason:
+          prior.length === 0
+            ? 'Fetch the supplied URL as source evidence.'
+            : strategy === 'TRANSIENT_RETRY'
+              ? 'Retry the same supplied URL once after a transient capability failure.'
+              : 'Use another compatible fetch capability for the supplied URL.',
+        strategy,
+      };
+    }
+    return undefined;
   }
   if (!searchTool) return undefined;
 
@@ -170,45 +220,86 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       .filter((url): url is string => typeof url === 'string'),
   );
   const nextUrl = successfulSearch
-    ? rankedWebCandidates(successfulSearch.links ?? [], intent)
-        .find((url) => !hasCanonicalUrl(attemptedUrls, url))
+    ? rankedWebCandidates(successfulSearch.links ?? [], intent).find(
+        (url) => !hasCanonicalUrl(attemptedUrls, url),
+      )
     : undefined;
   if (nextUrl) {
-    const mapped = actionInput(fetchTool, { url: nextUrl, query: intent.normalizedRequest });
-    if (!mapped) return undefined;
-    return {
-      needId: need.id,
-      capability: 'WEB_FETCH',
-      phase: 'retrieval',
-      toolName: fetchTool.capability.name,
-      input: mapped,
-      reason: 'Fetch the highest-ranked unexamined search result as source evidence.',
-      strategy: 'alternate_source',
-    };
+    for (const strategy of strategiesFor(input, ['ADDITIONAL_EVIDENCE', 'SOURCE_SWITCH'])) {
+      const selected = unattemptedTool(
+        toolPlan,
+        'WEB_FETCH',
+        { url: nextUrl, query: intent.normalizedRequest },
+        operations,
+        input.performanceProfiles,
+        input.minimumComparableSamples,
+      );
+      if (!selected) continue;
+      return {
+        needId: need.id,
+        capability: 'WEB_FETCH',
+        phase: 'retrieval',
+        toolName: selected.tool.capability.name,
+        input: selected.input,
+        reason:
+          strategy === 'ADDITIONAL_EVIDENCE'
+            ? 'Fetch the highest-ranked unexamined candidate as complementary evidence.'
+            : 'Change to the highest-ranked unexamined source candidate.',
+        strategy,
+      };
+    }
+    return undefined;
   }
 
-  const searchAttempts = operations.filter(
-    (operation) => operation.capability === 'WEB_SEARCH',
-  );
-  const query = refinedQuery(intent.normalizedRequest, searchAttempts.length, searchObservations);
-  const mapped = actionInput(searchTool, { query, maxResults: 5 });
-  if (!mapped) return undefined;
-  return {
-    needId: need.id,
-    capability: 'WEB_SEARCH',
-    phase: 'discovery',
-    toolName: searchTool.capability.name,
-    input: mapped,
-    reason:
-      searchAttempts.length === 0
-        ? 'Obtain source candidates for the missing external evidence.'
-        : 'Change the query because prior candidates did not close the evidence gap.',
-    strategy: searchAttempts.length === 0 ? 'initial' : 'refined_query',
-  };
+  const searchAttempts = operations.filter((operation) => operation.capability === 'WEB_SEARCH');
+  for (const strategy of strategiesFor(input, [
+    'RETRIEVAL_BROADEN',
+    'RETRIEVAL_NARROW',
+    'QUERY_REWRITE',
+    'SOURCE_SWITCH',
+    'ADDITIONAL_EVIDENCE',
+    'TRANSIENT_RETRY',
+  ])) {
+    const query =
+      strategy === 'INITIAL' || strategy === 'SOURCE_SWITCH' || strategy === 'RETRIEVAL_BROADEN'
+        ? intent.normalizedRequest
+        : refinedQuery(intent.normalizedRequest, searchAttempts.length, searchObservations);
+    const maxResults =
+      strategy === 'RETRIEVAL_BROADEN' ? Math.min(20, 5 + searchAttempts.length * 5) : 5;
+    const selected = toolForStrategy(
+      toolPlan,
+      'WEB_SEARCH',
+      { query, maxResults },
+      operations,
+      input.performanceProfiles,
+      input.minimumComparableSamples,
+      strategy,
+    );
+    if (!selected) continue;
+    return {
+      needId: need.id,
+      capability: 'WEB_SEARCH',
+      phase: 'discovery',
+      toolName: selected.tool.capability.name,
+      input: selected.input,
+      reason:
+        strategy === 'INITIAL'
+          ? 'Obtain source candidates for the missing external evidence.'
+          : strategy === 'RETRIEVAL_BROADEN'
+            ? 'Relax the result-count constraint after an empty or missing result.'
+            : strategy === 'SOURCE_SWITCH'
+              ? 'Use another compatible search capability after the prior result was insufficient.'
+              : strategy === 'TRANSIENT_RETRY'
+                ? 'Retry the unchanged search once after a transient capability failure.'
+                : 'Refine the retrieval request around the unresolved evidence gap.',
+      strategy,
+    };
+  }
+  return undefined;
 }
 
 function planFileAction(input: PlannerInput): PlannedAction | undefined {
-  const { need, toolPlan, observations, operations, resources } = input;
+  const { need, toolPlan, observations, resources } = input;
   const path = need.inputs.path;
   const reference = need.inputs.reference;
   const referenceKind = need.inputs.referenceKind;
@@ -241,23 +332,20 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
         artifactId: explicitArtifactId,
         referenceOrigin: 'explicit_user_reference',
       };
-      const selected = unattemptedTool(
-        toolPlan,
-        'ARTIFACT_READ',
-        generic,
-        operations,
-        input.performanceProfiles,
-        input.minimumComparableSamples,
-      );
-      if (selected) {
+      const planned = firstToolForStrategies(input, toolPlan, 'ARTIFACT_READ', generic, [
+        'SOURCE_SWITCH',
+        'ADDITIONAL_EVIDENCE',
+        'TRANSIENT_RETRY',
+      ]);
+      if (planned) {
         return {
           needId: need.id,
           capability: 'ARTIFACT_READ',
           phase: 'retrieval',
-          toolName: selected.tool.capability.name,
-          input: selected.input,
+          toolName: planned.selected.tool.capability.name,
+          input: planned.selected.input,
           reason: 'Retrieve the explicitly identified artifact by user-supplied artifact ID.',
-          strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+          strategy: planned.strategy,
         };
       }
     }
@@ -273,26 +361,23 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
               ? 'context_offload'
               : 'explicit_user_reference',
         };
-        const selected = unattemptedTool(
-          toolPlan,
-          'ARTIFACT_READ',
-          generic,
-          operations,
-          input.performanceProfiles,
-          input.minimumComparableSamples,
-        );
-        if (selected) {
+        const planned = firstToolForStrategies(input, toolPlan, 'ARTIFACT_READ', generic, [
+          'ADDITIONAL_EVIDENCE',
+          'SOURCE_SWITCH',
+          'TRANSIENT_RETRY',
+        ]);
+        if (planned) {
           return {
             needId: need.id,
             capability: 'ARTIFACT_READ',
             phase: 'retrieval',
-            toolName: selected.tool.capability.name,
-            input: selected.input,
+            toolName: planned.selected.tool.capability.name,
+            input: planned.selected.input,
             reason:
               candidate.discoveredBy === 'context_offload'
                 ? 'Retrieve the matching same-session artifact discovered from context offload metadata.'
                 : 'Retrieve the matching same-session artifact discovered from canonical metadata.',
-            strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+            strategy: planned.strategy,
           };
         }
       }
@@ -311,26 +396,23 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
       : undefined;
   const resolvedPath = typeof path === 'string' ? path : discoveredPath;
   if (need.sourceKinds.includes('FILE') && resolvedPath) {
-    const selected = unattemptedTool(
-      toolPlan,
-      'FILE_READ',
-      { path: resolvedPath },
-      operations,
-      input.performanceProfiles,
-      input.minimumComparableSamples,
-    );
-    if (!selected) return undefined;
+    const planned = firstToolForStrategies(input, toolPlan, 'FILE_READ', { path: resolvedPath }, [
+      'ADDITIONAL_EVIDENCE',
+      'SOURCE_SWITCH',
+      'TRANSIENT_RETRY',
+    ]);
+    if (!planned) return undefined;
     return {
       needId: need.id,
       capability: 'FILE_READ',
       phase: 'retrieval',
-      toolName: selected.tool.capability.name,
-      input: selected.input,
+      toolName: planned.selected.tool.capability.name,
+      input: planned.selected.input,
       reason:
         typeof path === 'string'
           ? 'Read the exact path explicitly supplied by the user.'
           : 'Read the unique workspace path returned by resource discovery.',
-      strategy: operations.length === 0 ? 'initial' : 'alternate_capability',
+      strategy: planned.strategy,
     };
   }
 
@@ -344,73 +426,127 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
     return undefined;
   }
   const discoveryInput = { pattern: exactFilenamePattern(reference), path: '.', maxResults: 20 };
-  const discovery = unattemptedTool(
-    toolPlan,
-    'FILE_DISCOVERY',
-    discoveryInput,
-    operations,
-    input.performanceProfiles,
-    input.minimumComparableSamples,
-  );
-  if (!discovery) return undefined;
+  const planned = firstToolForStrategies(input, toolPlan, 'FILE_DISCOVERY', discoveryInput, [
+    'SOURCE_SWITCH',
+    'TRANSIENT_RETRY',
+  ]);
+  if (!planned) return undefined;
   return {
     needId: need.id,
     capability: 'FILE_DISCOVERY',
     phase: 'discovery',
-    toolName: discovery.tool.capability.name,
-    input: discovery.input,
+    toolName: planned.selected.tool.capability.name,
+    input: planned.selected.input,
     reason: 'Discover the actual workspace resource before attempting file retrieval.',
-    strategy: operations.length === 0 ? 'initial' : 'alternate_capability',
+    strategy: planned.strategy,
   };
 }
 
 function planGenericReadAction(input: PlannerInput): PlannedAction | undefined {
-  const capability = executableCapabilityFor(input.need.requiredCapability);
-  if (!capability || capability === 'FILE_READ' || capability === 'WEB_SEARCH' || capability === 'WEB_FETCH') {
+  const initialCapability = executableCapabilityFor(input.need.requiredCapability);
+  if (
+    !initialCapability ||
+    initialCapability === 'FILE_READ' ||
+    initialCapability === 'WEB_SEARCH' ||
+    initialCapability === 'WEB_FETCH'
+  ) {
     return undefined;
   }
-  const selected = toolForCapability(
-    input.toolPlan,
-    capability,
-    input.performanceProfiles,
-    input.minimumComparableSamples,
-  );
-  if (!selected || !isReadOnly(selected)) return undefined;
-  const prior = input.operations.filter((operation) => operation.capability === capability);
-  const genericInputs = { ...input.need.inputs } as Record<string, unknown>;
-  if (prior.length > 0 && typeof genericInputs.query === 'string') {
-    genericInputs.query = refinedGenericQuery(
-      genericInputs.query,
-      prior.length,
-      input.observations.filter((observation) => observation.needIds?.includes(input.need.id)),
-    );
+  const capabilities = compatibleCapabilities(input, initialCapability);
+  for (const requestedStrategy of input.strategies) {
+    const strategy = input.operations.length === 0 ? ('INITIAL' as const) : requestedStrategy;
+    const orderedCapabilities =
+      strategy === 'SOURCE_SWITCH'
+        ? [
+            ...capabilities.filter(
+              (capability) =>
+                !input.operations.some((operation) => operation.capability === capability),
+            ),
+            ...capabilities,
+          ]
+        : capabilities;
+    for (const capability of orderedCapabilities) {
+      const prior = input.operations.filter((operation) => operation.capability === capability);
+      const genericInputs = { ...input.need.inputs } as Record<string, unknown>;
+      if (strategy === 'RETRIEVAL_BROADEN') {
+        genericInputs.maxResults = Math.min(100, 20 + input.operations.length * 20);
+      }
+      if (
+        typeof genericInputs.query === 'string' &&
+        (strategy === 'RETRIEVAL_NARROW' ||
+          strategy === 'QUERY_REWRITE' ||
+          strategy === 'ADDITIONAL_EVIDENCE' ||
+          strategy === 'QUERY_DECOMPOSITION')
+      ) {
+        genericInputs.query = refinedGenericQuery(
+          genericInputs.query,
+          Math.max(1, prior.length),
+          input.observations.filter((observation) => observation.needIds?.includes(input.need.id)),
+        );
+      }
+      const selected = toolForStrategy(
+        input.toolPlan,
+        capability,
+        genericInputs,
+        input.operations,
+        input.performanceProfiles,
+        input.minimumComparableSamples,
+        strategy,
+      );
+      if (!selected || !isReadOnly(selected.tool)) continue;
+      return {
+        needId: input.need.id,
+        capability,
+        phase: 'retrieval',
+        toolName: selected.tool.capability.name,
+        input: selected.input,
+        reason:
+          strategy === 'INITIAL'
+            ? `Acquire missing ${input.need.sourceKinds.join('/')} evidence through a registered read capability.`
+            : strategy === 'SOURCE_SWITCH'
+              ? 'Use another compatible registered source or capability after the prior attempt.'
+              : strategy === 'RETRIEVAL_BROADEN'
+                ? 'Relax the retrieval result constraint after an empty or missing result.'
+                : strategy === 'TRANSIENT_RETRY'
+                  ? 'Retry the unchanged operation once after a transient failure.'
+                  : 'Change the retrieval request around the unresolved evidence gap.',
+        strategy,
+      };
+    }
   }
-  const mapped = actionInput(selected, genericInputs);
-  if (!mapped) return undefined;
-  const previousTools = new Set(prior.map((operation) => operation.toolName));
-  return {
-    needId: input.need.id,
-    capability,
-    phase: 'retrieval',
-    toolName: selected.capability.name,
-    input: mapped,
-    reason:
-      prior.length === 0
-        ? `Acquire missing ${input.need.sourceKinds.join('/')} evidence through a registered read capability.`
-        : 'Use a changed query or alternate registered capability after an insufficient observation.',
-    strategy:
-      prior.length === 0
-        ? 'initial'
-        : previousTools.has(selected.capability.name)
-          ? 'refined_query'
-          : 'alternate_capability',
-  };
+  return undefined;
 }
 
 function executableCapabilityFor(
   capability: ContextCapability,
 ): ExecutableContextCapability | undefined {
   return capability === 'WEB_RETRIEVAL' ? undefined : capability;
+}
+
+function strategiesFor(
+  input: PlannerInput,
+  supported: readonly RetrievalAdaptationStrategy[],
+): RetrievalAdaptationStrategy[] {
+  if (input.operations.length === 0 && input.strategies.includes('INITIAL')) return ['INITIAL'];
+  return input.strategies.filter((strategy) => supported.includes(strategy));
+}
+
+function compatibleCapabilities(
+  input: PlannerInput,
+  initial: ExecutableContextCapability,
+): ExecutableContextCapability[] {
+  const resolution = input.toolPlan.resolutions.find(
+    (candidate) => candidate.needId === input.need.id,
+  );
+  const declared = resolution?.permittedCapabilities ?? resolution?.requiredCapabilities ?? [];
+  return [
+    ...new Set<ExecutableContextCapability>([
+      initial,
+      ...declared.filter(
+        (capability): capability is ExecutableContextCapability => capability !== 'WEB_RETRIEVAL',
+      ),
+    ]),
+  ];
 }
 
 function toolForCapability(
@@ -431,12 +567,8 @@ function toolForCapability(
     ...matching.filter((entry) => resolutionNames.has(entry.capability.name)),
     ...matching.filter((entry) => !resolutionNames.has(entry.capability.name)),
   ];
-  return rankRuntimeCandidates(
-    ordered,
-    capability,
-    performanceProfiles,
-    minimumComparableSamples,
-  ).candidates[0];
+  return rankRuntimeCandidates(ordered, capability, performanceProfiles, minimumComparableSamples)
+    .candidates[0];
 }
 
 function unattemptedTool(
@@ -463,6 +595,72 @@ function unattemptedTool(
   return undefined;
 }
 
+function toolForStrategy(
+  toolPlan: ToolPlan,
+  capability: ExecutableContextCapability,
+  genericInput: Readonly<Record<string, unknown>>,
+  operations: readonly RuntimeRetrievalOperation[],
+  performanceProfiles: readonly RuntimePerformanceProfile[],
+  minimumComparableSamples: number,
+  strategy: RetrievalAdaptationStrategy,
+): { tool: SelectedCapability; input: Record<string, unknown> } | undefined {
+  if (strategy !== 'TRANSIENT_RETRY') {
+    return unattemptedTool(
+      toolPlan,
+      capability,
+      genericInput,
+      operations,
+      performanceProfiles,
+      minimumComparableSamples,
+    );
+  }
+  const prior = [...operations]
+    .reverse()
+    .find(
+      (operation) =>
+        operation.capability === capability &&
+        operation.strategy !== 'TRANSIENT_RETRY' &&
+        (operation.failureClassification === 'timeout' ||
+          operation.failureClassification === 'network' ||
+          operation.failureClassification === 'rate_limited'),
+    );
+  if (!prior) return undefined;
+  const tool = toolPlan.selected.find(
+    (candidate) =>
+      candidate.capability.name === prior.toolName &&
+      candidate.capability.provides?.includes(capability),
+  );
+  if (!tool || !isReadOnly(tool)) return undefined;
+  return { tool, input: { ...prior.input } };
+}
+
+function firstToolForStrategies(
+  input: PlannerInput,
+  toolPlan: ToolPlan,
+  capability: ExecutableContextCapability,
+  genericInput: Readonly<Record<string, unknown>>,
+  supported: readonly RetrievalAdaptationStrategy[],
+):
+  | {
+      strategy: RetrievalAdaptationStrategy;
+      selected: { tool: SelectedCapability; input: Record<string, unknown> };
+    }
+  | undefined {
+  for (const strategy of strategiesFor(input, supported)) {
+    const selected = toolForStrategy(
+      toolPlan,
+      capability,
+      genericInput,
+      input.operations,
+      input.performanceProfiles,
+      input.minimumComparableSamples,
+      strategy,
+    );
+    if (selected) return { strategy, selected };
+  }
+  return undefined;
+}
+
 function toolsForCapability(
   toolPlan: ToolPlan,
   capability: ExecutableContextCapability,
@@ -484,18 +682,18 @@ function toolsForCapability(
     ...matching.filter((entry) => !resolutionNames.has(entry.capability.name)),
   ];
   return [
-    ...rankRuntimeCandidates(
-      ordered,
-      capability,
-      performanceProfiles,
-      minimumComparableSamples,
-    ).candidates,
+    ...rankRuntimeCandidates(ordered, capability, performanceProfiles, minimumComparableSamples)
+      .candidates,
   ];
 }
 
 function isReadOnly(selected: SelectedCapability): boolean {
   if (selected.capability.policyLabels.includes('destructive')) return false;
-  if (selected.capability.effects.some((effect) => /\b(change|write|delete|create|execute)\b/i.test(effect)))
+  if (
+    selected.capability.effects.some((effect) =>
+      /\b(change|write|delete|create|execute)\b/i.test(effect),
+    )
+  )
     return false;
   return (
     selected.capability.kind === 'read' ||
@@ -530,7 +728,8 @@ function actionInput(
     if (target) output[target] = value;
   }
   if (properties.length === 0) {
-    for (const [key, value] of Object.entries(generic)) if (value !== undefined) output[key] = value;
+    for (const [key, value] of Object.entries(generic))
+      if (value !== undefined) output[key] = value;
   }
   if (required.some((name) => output[name] === undefined)) return undefined;
   return output;
@@ -551,7 +750,9 @@ function matchingProperty(genericName: string, properties: readonly string[]): s
     properties.some((property) => property.toLowerCase() === candidate.toLowerCase()),
   )
     ? properties.find((property) =>
-        aliases[genericName]?.some((candidate) => candidate.toLowerCase() === property.toLowerCase()),
+        aliases[genericName]?.some(
+          (candidate) => candidate.toLowerCase() === property.toLowerCase(),
+        ),
       )
     : undefined;
 }
@@ -573,11 +774,15 @@ function webAuthorityScore(url: string, terms: ReadonlySet<string>): number {
   try {
     const parsed = new URL(url);
     const hostTerms = uniqueTerms(parsed.hostname.replace(/^www\./i, '').replaceAll('.', ' '));
-    const hostMatch = hostTerms.filter((term) => terms.has(term)).length / Math.max(1, hostTerms.length);
+    const hostMatch =
+      hostTerms.filter((term) => terms.has(term)).length / Math.max(1, hostTerms.length);
     const institutional = /\.(?:gov|edu)(?:\.[a-z]{2})?$/i.test(parsed.hostname) ? 0.35 : 0;
-    const primaryPath = /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(parsed.pathname)
-      ? 0.15
-      : 0;
+    const primaryPath =
+      /\/(?:docs?|documentation|developer|reference|releases?|newsroom|press)(?:\/|$)/i.test(
+        parsed.pathname,
+      )
+        ? 0.15
+        : 0;
     const insecure = parsed.protocol === 'https:' ? 0 : 0.1;
     return hostMatch * 0.5 + institutional + primaryPath - insecure;
   } catch {
@@ -627,7 +832,11 @@ function refinedQuery(
     'current authoritative release notes',
     'vendor documentation verified facts',
   ];
-  return dedupeStrings([base, strategies[Math.min(attempt, strategies.length - 1)] ?? '', ...missingTerms])
+  return dedupeStrings([
+    base,
+    strategies[Math.min(attempt, strategies.length - 1)] ?? '',
+    ...missingTerms,
+  ])
     .join(' ')
     .slice(0, 400);
 }

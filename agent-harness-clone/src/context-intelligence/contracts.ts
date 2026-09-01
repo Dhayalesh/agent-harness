@@ -104,14 +104,7 @@ export type ContextCapability =
 
 export type ExecutableContextCapability = Exclude<ContextCapability, 'WEB_RETRIEVAL'>;
 export type ContextFreshnessRequirement =
-  | 'CURRENT'
-  | 'LATEST'
-  | 'RECENT'
-  | 'TODAY'
-  | 'THIS_WEEK'
-  | 'HISTORICAL'
-  | 'ANY'
-  | 'NONE';
+  'CURRENT' | 'LATEST' | 'RECENT' | 'TODAY' | 'THIS_WEEK' | 'HISTORICAL' | 'ANY' | 'NONE';
 export type ContextAuthorityRequirement = 'AUTHORITATIVE' | 'TRUSTED' | 'ANY';
 export type ContextSourceRequirement =
   | 'external'
@@ -388,12 +381,7 @@ export type TaskExecutionRecord = {
   receiptId?: string;
   stepId?: string;
   state: ExecutionState;
-  disposition:
-    | 'COMPLETED'
-    | 'COMPLETED_WITH_NO_EVIDENCE'
-    | 'FAILED'
-    | 'BLOCKED'
-    | 'NOT_EXECUTED';
+  disposition: 'COMPLETED' | 'COMPLETED_WITH_NO_EVIDENCE' | 'FAILED' | 'BLOCKED' | 'NOT_EXECUTED';
   reason?: string;
   at: ISODateTime;
 };
@@ -686,9 +674,112 @@ export type ContextRuntimeAction = {
   /** Stable fingerprint used to prevent identical failed retries. */
   attemptKey: string;
   reason: string;
-  strategy: 'initial' | 'refined_query' | 'alternate_source' | 'alternate_capability';
+  strategy: RetrievalAdaptationStrategy;
+  /** Why this strategy is preferable to repeating the prior attempt. */
+  adaptationReason?: string;
+  previousStrategy?: RetrievalAdaptationStrategy;
   iteration: number;
   priorOperationIds: readonly string[];
+};
+
+/** Generic result of evaluating one retrieval attempt. */
+export type RetrievalOutcomeClassification =
+  | 'NO_RESULT'
+  | 'EMPTY_RESULT'
+  | 'LOW_RELEVANCE'
+  | 'INSUFFICIENT_EVIDENCE'
+  | 'STALE_EVIDENCE'
+  | 'SOURCE_CONFLICT'
+  | 'TOOL_FAILURE'
+  | 'ACCESS_FAILURE'
+  | 'INVALID_REFERENCE'
+  | 'RETRIEVAL_SUCCESS';
+
+/**
+ * Strategy vocabulary for Priority 1. Query transformations are intentionally
+ * abstract here; deeper rewrite intelligence remains outside this layer.
+ */
+export type RetrievalAdaptationStrategy =
+  | 'INITIAL'
+  | 'QUERY_REWRITE'
+  | 'QUERY_EXPANSION'
+  | 'QUERY_DECOMPOSITION'
+  | 'SOURCE_SWITCH'
+  | 'RETRIEVAL_BROADEN'
+  | 'RETRIEVAL_NARROW'
+  | 'ADDITIONAL_EVIDENCE'
+  | 'TRANSIENT_RETRY';
+
+export type RetrievalState =
+  | 'NOT_EXECUTED'
+  | 'IN_PROGRESS'
+  | 'SUCCESS'
+  | 'EMPTY'
+  | 'FAILED'
+  | 'RETRYING'
+  | 'EXHAUSTED'
+  | 'BLOCKED';
+
+export type RetrievalTerminationReason =
+  | 'SUFFICIENT_EVIDENCE'
+  | 'GROUNDING_SATISFIED'
+  | 'RETRIEVAL_BUDGET_EXHAUSTED'
+  | 'NO_USEFUL_ADAPTATION'
+  | 'CLARIFICATION_REQUIRED'
+  | 'CAPABILITY_UNAVAILABLE'
+  | 'ACCESS_BLOCKED'
+  | 'INVALID_REFERENCE'
+  | 'UNRESOLVED_SOURCE_CONFLICT'
+  | 'SAFE_CONTINUATION_IMPOSSIBLE';
+
+/** Values are present only when they were measured by the evidence layer. */
+export type RetrievalEvidenceQuality = {
+  evidenceCount: number;
+  relevance?: number;
+  authority?: number;
+  freshness?: number;
+  confidence?: number;
+  provenanceCompleteness?: number;
+  conflictCount: number;
+  sufficient: boolean;
+};
+
+export type RetrievalAttemptAssessment = {
+  operationId: string;
+  needId: string;
+  attemptNumber: number;
+  state: RetrievalState;
+  capability: ExecutableContextCapability;
+  toolName: string;
+  strategy: RetrievalAdaptationStrategy;
+  outcome?: RetrievalOutcomeClassification;
+  reason: string;
+  adaptationReason?: string;
+  previousStrategy?: RetrievalAdaptationStrategy;
+  nextStrategy?: RetrievalAdaptationStrategy;
+  remainingRetrievalBudget: number;
+  evidenceQuality: RetrievalEvidenceQuality;
+  contributedEvidence: boolean;
+  terminationReason?: RetrievalTerminationReason;
+};
+
+export type RetrievalNeedAssessment = {
+  needId: string;
+  state: RetrievalState;
+  outcome?: RetrievalOutcomeClassification;
+  recommendedStrategies: readonly RetrievalAdaptationStrategy[];
+  adaptationReason?: string;
+  terminationReason?: RetrievalTerminationReason;
+};
+
+export type AdaptiveRetrievalSummary = {
+  state: RetrievalState;
+  attemptCount: number;
+  remainingRetrievalBudget: number;
+  attempts: readonly RetrievalAttemptAssessment[];
+  needs: readonly RetrievalNeedAssessment[];
+  evidenceQuality: RetrievalEvidenceQuality;
+  terminationReason?: RetrievalTerminationReason;
 };
 
 export type ToolFailureClassification =
@@ -719,13 +810,22 @@ export type RuntimeRetrievalOperation = {
   toolName: string;
   input: Readonly<Record<string, unknown>>;
   attemptKey: string;
-  strategy: ContextRuntimeAction['strategy'];
+  strategy: RetrievalAdaptationStrategy;
+  adaptationReason?: string;
+  previousStrategy?: RetrievalAdaptationStrategy;
+  nextStrategy?: RetrievalAdaptationStrategy;
   iteration: number;
   status: 'planned' | 'succeeded' | 'empty' | 'failed' | 'denied';
   executionState: ExecutionState;
   resourceState: ResourceState;
   resourceCandidates?: readonly ResourceCandidate[];
   failureClassification?: ToolFailureClassification;
+  retrievalResult?: RetrievalOutcomeClassification;
+  retrievalState?: RetrievalState;
+  remainingRetrievalBudget?: number;
+  evidenceQuality?: RetrievalEvidenceQuality;
+  contributedEvidence?: boolean;
+  terminationReason?: RetrievalTerminationReason;
   observationId?: string;
   startedAt: ISODateTime;
   completedAt?: ISODateTime;
@@ -810,11 +910,7 @@ export type ContextLifecycleEvent = {
 };
 
 export type ContextFeedbackCategory =
-  | 'retrieval'
-  | 'tool_choice'
-  | 'memory'
-  | 'overflow'
-  | 'quality_gate';
+  'retrieval' | 'tool_choice' | 'memory' | 'overflow' | 'quality_gate';
 
 export type ContextFeedbackOutcome =
   | 'useful'
@@ -888,10 +984,7 @@ export type RuntimeOptimizationSummary = {
   durationSamples: number;
   costSamples: number;
   unavailableReason?:
-    | 'disabled'
-    | 'no_runtime_operations'
-    | 'insufficient_comparable_samples'
-    | 'no_observed_cost';
+    'disabled' | 'no_runtime_operations' | 'insufficient_comparable_samples' | 'no_observed_cost';
 };
 
 export type PredictiveContextProjection = {
@@ -929,10 +1022,7 @@ export type ContextEvaluationSnapshot = {
   }[];
   unavailable: readonly {
     metric: 'retrieval_recall' | 'answer_accuracy' | 'observed_cost';
-    reason:
-      | 'no_relevance_ground_truth'
-      | 'no_accuracy_ground_truth'
-      | 'no_observed_cost';
+    reason: 'no_relevance_ground_truth' | 'no_accuracy_ground_truth' | 'no_observed_cost';
   }[];
   evaluatedAt: ISODateTime;
 };
@@ -1000,13 +1090,7 @@ export type ContextQualityReport = {
 };
 
 export type ContextQualityDecision =
-  | 'ACCEPT'
-  | 'RETRIEVE'
-  | 'RETRIEVE_AGAIN'
-  | 'CLARIFY'
-  | 'CONFLICT'
-  | 'DENY'
-  | 'ABSTAIN';
+  'ACCEPT' | 'RETRIEVE' | 'RETRIEVE_AGAIN' | 'CLARIFY' | 'CONFLICT' | 'DENY' | 'ABSTAIN';
 
 export type ContextRuntimeDirective = {
   decision: ContextQualityDecision;
@@ -1086,6 +1170,7 @@ export type ContextContract = {
   queryPlan: QueryPlan;
   retrieval: RetrievalOutcome;
   runtimeRetrieval: readonly RuntimeRetrievalOperation[];
+  adaptiveRetrieval: AdaptiveRetrievalSummary;
   resources: readonly ResourceRecord[];
   reasoning: ReasoningSupport;
   budget: ContextBudgetSnapshot;
@@ -1161,12 +1246,19 @@ export type ContextIntelligenceReport = {
     insufficiencies: number;
     conflicts: number;
     operations: number;
-    operationOutcomes?: Readonly<
-      Partial<Record<RuntimeRetrievalOperation['status'], number>>
-    >;
+    operationOutcomes?: Readonly<Partial<Record<RuntimeRetrievalOperation['status'], number>>>;
     executionStates?: Readonly<Partial<Record<ExecutionState, number>>>;
     resourceStates?: Readonly<Partial<Record<ResourceState, number>>>;
     toolNames: readonly string[];
+    adaptive: {
+      state: RetrievalState;
+      attemptCount: number;
+      remainingBudget: number;
+      strategies: Readonly<Partial<Record<RetrievalAdaptationStrategy, number>>>;
+      outcomes: Readonly<Partial<Record<RetrievalOutcomeClassification, number>>>;
+      evidenceQuality: RetrievalEvidenceQuality;
+      terminationReason?: RetrievalTerminationReason;
+    };
   };
   memory: {
     recalled: number;

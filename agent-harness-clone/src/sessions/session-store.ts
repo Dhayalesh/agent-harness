@@ -161,6 +161,16 @@ const EXECUTABLE_CONTEXT_CAPABILITIES = new Set([
   'DOCUMENT_ARTIFACT_CREATE',
 ]);
 const RUNTIME_STRATEGIES = new Set([
+  'INITIAL',
+  'QUERY_REWRITE',
+  'QUERY_EXPANSION',
+  'QUERY_DECOMPOSITION',
+  'SOURCE_SWITCH',
+  'RETRIEVAL_BROADEN',
+  'RETRIEVAL_NARROW',
+  'ADDITIONAL_EVIDENCE',
+  'TRANSIENT_RETRY',
+  // Legacy v1 values accepted and normalized during restore.
   'initial',
   'refined_query',
   'alternate_source',
@@ -176,6 +186,40 @@ const RESOURCE_STATES = new Set([
   'RETRIEVAL_FAILED',
   'RETRIEVED_EMPTY',
   'RETRIEVED_SUCCESSFULLY',
+]);
+const RETRIEVAL_RESULTS = new Set([
+  'NO_RESULT',
+  'EMPTY_RESULT',
+  'LOW_RELEVANCE',
+  'INSUFFICIENT_EVIDENCE',
+  'STALE_EVIDENCE',
+  'SOURCE_CONFLICT',
+  'TOOL_FAILURE',
+  'ACCESS_FAILURE',
+  'INVALID_REFERENCE',
+  'RETRIEVAL_SUCCESS',
+]);
+const RETRIEVAL_STATES = new Set([
+  'NOT_EXECUTED',
+  'IN_PROGRESS',
+  'SUCCESS',
+  'EMPTY',
+  'FAILED',
+  'RETRYING',
+  'EXHAUSTED',
+  'BLOCKED',
+]);
+const RETRIEVAL_TERMINATION_REASONS = new Set([
+  'SUFFICIENT_EVIDENCE',
+  'GROUNDING_SATISFIED',
+  'RETRIEVAL_BUDGET_EXHAUSTED',
+  'NO_USEFUL_ADAPTATION',
+  'CLARIFICATION_REQUIRED',
+  'CAPABILITY_UNAVAILABLE',
+  'ACCESS_BLOCKED',
+  'INVALID_REFERENCE',
+  'UNRESOLVED_SOURCE_CONFLICT',
+  'SAFE_CONTINUATION_IMPOSSIBLE',
 ]);
 const FAILURE_CLASSIFICATIONS = new Set([
   'authorization_denied',
@@ -327,11 +371,20 @@ function isValidOperationSnapshots(value: unknown): boolean {
     'toolName',
     'attemptKey',
     'strategy',
+    'adaptationReason',
+    'previousStrategy',
+    'nextStrategy',
     'iteration',
     'status',
     'executionState',
     'resourceState',
     'failureClassification',
+    'retrievalResult',
+    'retrievalState',
+    'remainingRetrievalBudget',
+    'evidenceQuality',
+    'contributedEvidence',
+    'terminationReason',
     'observationId',
     'startedAt',
     'completedAt',
@@ -353,6 +406,9 @@ function isValidOperationSnapshots(value: unknown): boolean {
       isBoundedString(operation.toolName, 200) &&
       isBoundedString(operation.attemptKey, 300) &&
       isOneOf(operation.strategy, RUNTIME_STRATEGIES) &&
+      isOptionalBoundedString(operation.adaptationReason, 1_000) &&
+      isOptionalOneOf(operation.previousStrategy, RUNTIME_STRATEGIES) &&
+      isOptionalOneOf(operation.nextStrategy, RUNTIME_STRATEGIES) &&
       Number.isInteger(operation.iteration) &&
       isFiniteNonNegative(operation.iteration) &&
       isOneOf(operation.status, RUNTIME_STATUSES) &&
@@ -360,6 +416,13 @@ function isValidOperationSnapshots(value: unknown): boolean {
       isOptionalOneOf(operation.resourceState, RESOURCE_STATES) &&
       isBoundedString(operation.startedAt, 100) &&
       isOptionalOneOf(operation.failureClassification, FAILURE_CLASSIFICATIONS) &&
+      isOptionalOneOf(operation.retrievalResult, RETRIEVAL_RESULTS) &&
+      isOptionalOneOf(operation.retrievalState, RETRIEVAL_STATES) &&
+      isOptionalFiniteNonNegative(operation.remainingRetrievalBudget) &&
+      isValidRetrievalEvidenceQuality(operation.evidenceQuality) &&
+      (operation.contributedEvidence === undefined ||
+        typeof operation.contributedEvidence === 'boolean') &&
+      isOptionalOneOf(operation.terminationReason, RETRIEVAL_TERMINATION_REASONS) &&
       isOptionalBoundedString(operation.observationId, 300) &&
       isOptionalBoundedString(operation.completedAt, 100) &&
       isOptionalFiniteNonNegative(operation.durationMs) &&
@@ -374,6 +437,7 @@ function normalizeOperationSnapshots(
 ): PersistedContextIntelligenceState['recentOperations'] {
   return operations.map((operation) => {
     const status = String(operation.status);
+    const strategy = normalizeRetrievalStrategy(String(operation.strategy));
     const phase =
       operation.phase ??
       (operation.capability === 'WEB_SEARCH' ||
@@ -401,10 +465,46 @@ function normalizeOperationSnapshots(
           : executionState === 'NOT_EXECUTED'
             ? 'NOT_CHECKED'
             : 'RETRIEVAL_FAILED');
-    return { ...operation, phase, executionState, resourceState } as NonNullable<
+    return { ...operation, strategy, phase, executionState, resourceState } as NonNullable<
       PersistedContextIntelligenceState['recentOperations']
     >[number];
   });
+}
+
+function normalizeRetrievalStrategy(value: string): string {
+  if (value === 'initial') return 'INITIAL';
+  if (value === 'refined_query') return 'QUERY_REWRITE';
+  if (value === 'alternate_source' || value === 'alternate_capability') return 'SOURCE_SWITCH';
+  return value;
+}
+
+function isValidRetrievalEvidenceQuality(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const quality = value as Record<string, unknown>;
+  return (
+    hasOnlyKeys(
+      quality,
+      new Set([
+        'evidenceCount',
+        'relevance',
+        'authority',
+        'freshness',
+        'confidence',
+        'provenanceCompleteness',
+        'conflictCount',
+        'sufficient',
+      ]),
+    ) &&
+    isFiniteNonNegative(quality.evidenceCount) &&
+    isOptionalUnit(quality.relevance) &&
+    isOptionalUnit(quality.authority) &&
+    isOptionalUnit(quality.freshness) &&
+    isOptionalUnit(quality.confidence) &&
+    isOptionalUnit(quality.provenanceCompleteness) &&
+    isFiniteNonNegative(quality.conflictCount) &&
+    typeof quality.sufficient === 'boolean'
+  );
 }
 
 function isValidLifecycleSnapshots(value: unknown): boolean {
@@ -622,10 +722,7 @@ function isValidLatency(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const latency = value as Record<string, unknown>;
   return (
-    hasOnlyKeys(
-      latency,
-      new Set(['samples', 'totalMs', 'meanMs', 'minimumMs', 'maximumMs']),
-    ) &&
+    hasOnlyKeys(latency, new Set(['samples', 'totalMs', 'meanMs', 'minimumMs', 'maximumMs'])) &&
     isNonNegativeInteger(latency.samples) &&
     isFiniteNonNegative(latency.totalMs) &&
     isOptionalFiniteNonNegative(latency.meanMs) &&
@@ -665,6 +762,13 @@ function isOptionalOneOf(value: unknown, values: ReadonlySet<string>): boolean {
 
 function isOptionalFiniteNonNegative(value: unknown): boolean {
   return value === undefined || isFiniteNonNegative(value);
+}
+
+function isOptionalUnit(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1)
+  );
 }
 
 function isOptionalBoundedString(value: unknown, maximumLength: number): boolean {
