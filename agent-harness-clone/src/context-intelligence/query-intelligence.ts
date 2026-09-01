@@ -369,8 +369,21 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   const systemToolInstructions: string[] = [];
   const formattingInstructions: string[] = [];
   const informationRequirements: string[] = [];
+  let formattingFieldSection = false;
 
   for (const clause of clauses) {
+    if (isFormattingFieldSectionStart(clause)) {
+      formattingInstructions.push(clause);
+      formattingFieldSection = true;
+      continue;
+    }
+    if (formattingFieldSection) {
+      if (isFormattingFieldDescriptor(clause)) {
+        formattingInstructions.push(clause);
+        continue;
+      }
+      formattingFieldSection = false;
+    }
     if (isSystemToolInstruction(clause) || isValidationInstruction(clause)) {
       systemToolInstructions.push(clause);
       continue;
@@ -395,14 +408,9 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     if (subject) informationRequirements.push(subject);
   }
 
-  const boundedRequirements = dedupeStrings(informationRequirements)
+  const requirements = dedupeStrings(informationRequirements)
     .filter((entry) => entry.length >= 2)
     .slice(0, 12);
-  const fallback = cleanInformationRequirement(
-    clauses.find((clause) => !isSystemToolInstruction(clause)) ?? value,
-  );
-  const requirements =
-    boundedRequirements.length > 0 ? boundedRequirements : [fallback].filter(Boolean);
   const userIntent = normalizeQuery(requirements.join('; '));
   return {
     userIntent,
@@ -435,10 +443,7 @@ function cleanInformationRequirement(value: string): string {
         /^\s*(?:please\s+)?(?:find|search(?:\s+for)?|look\s+up|browse(?:\s+for)?|retrieve|fetch|tell\s+me|show\s+me|give\s+me|research|investigate)\b\s*/i,
         '',
       )
-      .replace(
-        OUTPUT_DIRECTIVE,
-        ' ',
-      )
+      .replace(OUTPUT_DIRECTIVE, ' ')
       .replace(RETRIEVAL_DIRECTIVE, ' ')
       .replace(/\b(?:cite|include)\s+(?:the\s+)?sources?\b/gi, ' ')
       .replace(/\s+/g, ' '),
@@ -446,16 +451,37 @@ function cleanInformationRequirement(value: string): string {
 }
 
 function isSystemToolInstruction(value: string): boolean {
-  return /\b(system prompt|developer instructions?|tool instructions?|available tools?|tool registry|permission mode|authorization policy|test harness|execution prompt|ignore previous|chain[- ]of[- ]thought)\b/i.test(
-    value,
-  ) ||
+  return (
+    /\b(system prompt|developer instructions?|tool instructions?|available tools?|tool registry|permission mode|authorization policy|test harness|execution prompt|ignore previous|chain[- ]of[- ]thought|runtime diagnostic|purpose of (?:this|the) test)\b/i.test(
+      value,
+    ) ||
     /^(?:context entry|environment context|instructions?|rules?|non-negotiable|acceptance criteria)\s*:?$/i.test(
       value,
     ) ||
     /^(?:scenario|test case|expected|actual|incorrect|correct|failure|invariant|validation|example)\s*\d*\s*:/i.test(
       value,
     ) ||
-    /^(?:expected|actual|never|must not)\s*(?:→|->|:)/i.test(value);
+    /^(?:expected|actual|never|must not)\s*(?:→|->|:)/i.test(value)
+  );
+}
+
+function isFormattingFieldSectionStart(value: string): boolean {
+  return /^(?:(?:at\s+the\s+end|finally)\s*,?\s*)?(?:report|output|return|respond|present)(?:\s+(?:the\s+)?following)?\s*:?$/i.test(
+    value,
+  );
+}
+
+function isFormattingFieldDescriptor(value: string): boolean {
+  const descriptor = value.replace(/[:：]\s*$/, '').trim();
+  return (
+    descriptor.length > 0 &&
+    descriptor.length <= 100 &&
+    descriptor.split(/\s+/).length <= 12 &&
+    !/[.!?]/.test(descriptor) &&
+    !/^(?:what|which|who|when|where|why|how|find|research|investigate|explain|describe|compare)\b/i.test(
+      descriptor,
+    )
+  );
 }
 
 function isFormattingInstruction(value: string): boolean {
@@ -485,7 +511,8 @@ function isValidationInstruction(value: string): boolean {
     ) ||
     /^(?:evaluate|classify|adapt|retry|retrieve again|change strategy)\b.{0,160}\b(?:retrieval|result|evidence|strategy|telemetry|attempt)\b/i.test(
       value,
-    )
+    ) ||
+    /^(?:pass\s*\/\s*fail|runtime telemetry|execution state|retrieval state)\s*[.:]?$/i.test(value)
   );
 }
 
@@ -496,9 +523,17 @@ function isAnaphoricRetrievalWrapper(value: string): boolean {
 }
 
 function isTaskInstruction(value: string): boolean {
-  return /^(?:must|never|only|ensure|do not|don't|without|before|after|limit|maximum|minimum)\b/i.test(
-    value,
-  ) || /\b(?:do not run tests|no test execution|do not clone|preserve backward compatibility)\b/i.test(value);
+  return (
+    /^(?:must|never|only|ensure|do not|don't|without|before|after|limit|maximum|minimum)\b/i.test(
+      value,
+    ) ||
+    /^(?:then\s+)?(?:execute|run|invoke|call)\b.{0,160}\b(?:retrieval|search|fetch|tool|capabilit(?:y|ies))\b/i.test(
+      value,
+    ) ||
+    /\b(?:do not run tests|no test execution|do not clone|preserve backward compatibility)\b/i.test(
+      value,
+    )
+  );
 }
 
 function normalizeQuery(value: string): string {
