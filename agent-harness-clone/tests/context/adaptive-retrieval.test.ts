@@ -634,3 +634,37 @@ function selectedCapability(
     },
   };
 }
+
+test('stops after one sufficient attempt without false adaptation', () => {
+  const successfulOperation = operation({ status: 'succeeded', executionState: 'SUCCESS' });
+  const successfulObservation = observation({ requiresFollowUp: false });
+  const summary = evaluator.evaluate({
+    requestId: 'request-1',
+    needs: [need('satisfied')],
+    operations: [successfulOperation],
+    observations: [successfulObservation],
+    evaluatedEvidence: [evidence()],
+    conflicts: [],
+    elapsedMs: 1,
+    planningComplete: true,
+  });
+
+  assert.equal(summary.attemptCount, 1);
+  assert.equal(summary.attempts[0]?.outcome, 'RETRIEVAL_SUCCESS');
+  assert.equal(summary.attempts[0]?.adaptationReason, undefined);
+  assert.equal(summary.attempts[0]?.nextStrategy, undefined);
+  assert.deepEqual(summary.needs[0]?.recommendedStrategies, []);
+  assert.equal(summary.terminationReason, 'SUFFICIENT_EVIDENCE');
+
+  const actions = planner().plan({
+    requestId: 'request-1',
+    intent,
+    needs: [need('satisfied')],
+    toolPlan: webToolPlan(['search-a']),
+    observations: [successfulObservation],
+    operations: [successfulOperation],
+    adaptive: summary,
+    elapsedMs: 1,
+  });
+  assert.deepEqual(actions, []);
+});

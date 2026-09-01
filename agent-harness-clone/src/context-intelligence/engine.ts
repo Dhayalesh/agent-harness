@@ -846,8 +846,10 @@ export class ContextIntelligenceEngine {
     sessionId: string;
     turnId: string;
     executionDurationMs?: number;
+    /** Exact schema-parsed value passed to tool.execute; omitted if execution never began. */
+    actualToolInput?: unknown;
   }): Promise<ProcessedObservation> {
-    const { executionDurationMs, ...observationInput } = input;
+    const { executionDurationMs, actualToolInput, ...observationInput } = input;
     const processed = await this.observations.process({
       ...observationInput,
       intent: this.lastContract?.intent ?? this.query.understand(input.tool.description),
@@ -888,6 +890,7 @@ export class ContextIntelligenceEngine {
             resultStatus: observation.outcome,
             rawRequestId: action.requestId,
             contextNeedId: action.needId,
+            ...(actualToolInput === undefined ? {} : { actualToolInput }),
             ...(action.retrievalInput === undefined
               ? {}
               : {
@@ -984,6 +987,9 @@ export class ContextIntelligenceEngine {
     if (action) {
       const operation = this.runtimeOperations.find((entry) => entry.id === action.id);
       if (operation) {
+        if (actualToolInput !== undefined) {
+          operation.actualInput = structuredClone(actualToolInput);
+        }
         const resourceOutcome = observeResourceOperation({
           action,
           observation,
@@ -1030,6 +1036,10 @@ export class ContextIntelligenceEngine {
         ...(observation.followUpReason === undefined ? {} : { issue: observation.followUpReason }),
       });
     }
+    const observedOperation =
+      action === undefined
+        ? undefined
+        : this.runtimeOperations.find((operation) => operation.id === action.id);
     this.emit('context-intelligence.observation', input, {
       tool: input.tool.name,
       outcome: observation.outcome,
@@ -1037,7 +1047,12 @@ export class ContextIntelligenceEngine {
       identifiers: observation.identifiers.length,
       offloaded: Boolean(processed.offloaded),
       requiresFollowUp: observation.requiresFollowUp,
+      retrieval_attempt_number: observedOperation?.iteration,
       retrieval_strategy: action?.strategy,
+      retrieval_request: action?.retrievalInput?.retrievalRequest,
+      actual_tool_input: actualToolInput,
+      retrieval_state: observedOperation?.retrievalState,
+      retrieval_failure_reason: observedOperation?.failureClassification,
       adaptation_reason: action?.adaptationReason,
       previous_strategy: action?.previousStrategy,
     });
@@ -1555,6 +1570,7 @@ function shouldRetrieve(
 function runtimeOperationSnapshot(operation: RuntimeRetrievalOperation): RuntimeOperationSnapshot {
   const {
     input: _contentBearingInput,
+    actualInput: _contentBearingActualInput,
     resourceCandidates: _contentBearingCandidates,
     ...snapshot
   } = operation;

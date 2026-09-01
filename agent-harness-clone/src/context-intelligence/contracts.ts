@@ -832,7 +832,10 @@ export type RuntimeRetrievalOperation = {
   capability: ExecutableContextCapability;
   phase: ContextRuntimeAction['phase'];
   toolName: string;
+  /** Capability input planned and validated by Context Intelligence. */
   input: Readonly<Record<string, unknown>>;
+  /** Exact schema-parsed input passed to tool.execute; absent when execution never started. */
+  actualInput?: unknown;
   attemptKey: string;
   strategy: RetrievalAdaptationStrategy;
   retrievalInput?: RetrievalInputTrace;

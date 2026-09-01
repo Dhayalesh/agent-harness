@@ -67,7 +67,9 @@ Show the Actual Tool Call.
 Show the Actual Input.
 Show the Observation.
 Show the Evidence.
+Determine what evidence is missing.
 Show the Evaluation.
+Explain why.
 Show the Grounding Decision.
 Report runtime telemetry.
 Report PASS or FAIL.
@@ -365,11 +367,20 @@ function retrievalMetadata(
   };
 }
 
-function runtimeTools(captured: {
-  searches: SearchInput[];
-  fetches: FetchInput[];
-}): [Tool<SearchInput>, Tool<FetchInput>] {
-  const searchSchema = z.object({ query: z.string().max(400), maxResults: z.number().optional() });
+function runtimeTools(
+  captured: {
+    searches: SearchInput[];
+    fetches: FetchInput[];
+  },
+  options: { failFirstSearch?: boolean; transformSearchQuery?: boolean } = {},
+): [Tool<SearchInput>, Tool<FetchInput>] {
+  const baseSearchSchema = z.object({
+    query: z.string().max(400),
+    maxResults: z.number().optional(),
+  });
+  const searchSchema = options.transformSearchQuery
+    ? baseSearchSchema.transform((input) => ({ ...input, query: input.query.toUpperCase() }))
+    : baseSearchSchema;
   const fetchSchema = z.object({ url: z.string().url(), prompt: z.string().max(400).optional() });
   return [
     {
@@ -390,6 +401,12 @@ function runtimeTools(captured: {
       contextMetadata: retrievalMetadata('web_search', 'WEB_SEARCH'),
       async execute(input) {
         captured.searches.push(structuredClone(input));
+        if (options.failFirstSearch && captured.searches.length === 1) {
+          return {
+            content: 'Invalid input for web_search query.',
+            isError: true,
+          };
+        }
         return {
           content: JSON.stringify({
             results: [
@@ -432,7 +449,10 @@ function runtimeTools(captured: {
   ];
 }
 
-async function executeRuntimePrompt(prompt: string): Promise<{
+async function executeRuntimePrompt(
+  prompt: string,
+  options: { failFirstSearch?: boolean } = {},
+): Promise<{
   searches: SearchInput[];
   fetches: FetchInput[];
 }> {
@@ -444,7 +464,7 @@ async function executeRuntimePrompt(prompt: string): Promise<{
         { type: 'completed', stopReason: 'end_turn' },
       ],
     ]),
-    tools: runtimeTools(captured),
+    tools: runtimeTools(captured, options),
     permissionHandler: new AllowAllPermissionHandler(),
     contextIntelligence: {
       config: {
@@ -523,7 +543,7 @@ test('a prompt over 400 characters with a short information need produces a boun
   assert.equal(query, action?.retrievalInput?.retrievalRequest);
 });
 
-test('a genuinely long compound information need uses semantic decomposition', () => {
+test('a genuinely long compound information need compacts the authoritative request first', () => {
   const request = [
     'Compare the latest official AWS production guidance for generative AI agent security',
     'AWS production guidance for generative AI agent memory',
@@ -540,7 +560,9 @@ test('a genuinely long compound information need uses semantic decomposition', (
   const action = plan(intent, contextNeed(intent), capabilities)[0];
 
   assert.ok(action);
-  assert.equal(action.retrievalInput?.construction, 'decomposed_information_need');
+  assert.equal(action.retrievalInput?.construction, 'semantic_compaction');
+  assert.equal(action.retrievalInput?.informationNeed, intent.normalizedRequest);
+  assert.equal(action.input.query, action.retrievalInput?.retrievalRequest);
   assert.ok(String(action.input.query).length <= 120);
   assert.notEqual(action.input.query, request);
 });
@@ -564,8 +586,8 @@ test('AgentSession executes clean web_search and search-result-derived web_fetch
 
 for (const scenario of [
   {
-    name: 'latest documentation request',
-    informationNeed: 'Find the latest AWS AgentCore documentation.',
+    name: 'latest official information request',
+    informationNeed: 'Find the latest official AWS information about AgentCore.',
   },
   {
     name: 'comparison request',
@@ -771,6 +793,7 @@ test('provenance distinguishes raw request, information need, actual request, an
     sessionId: 'session-1',
     turnId: 'turn-1',
     executionDurationMs: 1,
+    actualToolInput: parsed,
   });
   const second = await engine.prepare(prepareInput);
   const observed = second.contract.observations.find((entry) => entry.toolCallId === action.id);
@@ -830,6 +853,7 @@ test('a failed runtime retrieval remains failed and produces no evidence', async
     sessionId: 'session-1',
     turnId: 'turn-1',
     executionDurationMs: 1,
+    actualToolInput: parsed,
   });
   const second = await engine.prepare(prepareInput);
   const failed = second.contract.runtimeRetrieval.find((entry) => entry.id === action.id);
@@ -845,4 +869,252 @@ test('instruction-only input does not fall back to the raw prompt as a retrieval
 
   assert.equal(intent.instructionSegments.informationRequirements.length, 0);
   assert.equal(intent.normalizedRequest, '');
+});
+
+test('AgentSession executes a clean changed query after a genuine first-attempt failure', async () => {
+  const normalizedRetrievalRequest = resolver.resolve(diagnosticPrompt).normalizedRequest;
+  const captured = await executeRuntimePrompt(diagnosticPrompt, { failFirstSearch: true });
+
+  assert.ok(captured.searches.length >= 2, 'the failed first search must trigger another search');
+  const first = captured.searches[0]!;
+  const second = captured.searches[1]!;
+
+  assert.equal(first.query, normalizedRetrievalRequest);
+  assert.notEqual(second.query, first.query);
+  assert.match(second.query, /AWS AgentCore/i);
+  for (const actual of [first.query, second.query]) {
+    assert.equal(actual.toLowerCase().includes('evidence is missing'), false);
+    assert.equal(actual.toLowerCase().includes('explain why'), false);
+    assert.equal(actual.toLowerCase().includes('runtime telemetry'), false);
+    assert.equal(actual.toLowerCase().includes('grounding decision'), false);
+  }
+
+  assert.ok(captured.fetches.length >= 1, 'successful adapted search must lead to web_fetch');
+  assert.equal(captured.fetches[0]?.url, selectedResultUrl);
+  assert.equal(captured.fetches[0]?.prompt, normalizedRetrievalRequest);
+});
+
+test('runtime provenance and telemetry preserve every actual adaptive attempt', async () => {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const [search, fetch] = runtimeTools(captured, { failFirstSearch: true });
+  const telemetry: Array<{ event: string; data: Readonly<Record<string, unknown>> }> = [];
+  const engine = new ContextIntelligenceEngine({
+    config: { query: { capabilityQueryLengths: { WEB_SEARCH: 400, WEB_FETCH: 400 } } },
+    onTelemetry(event) {
+      telemetry.push({ event: event.event, data: event.data });
+    },
+  });
+  const prepareInput = {
+    request: diagnosticPrompt,
+    messages: [],
+    tools: [search, fetch] as Tool[],
+    systemPrompt: '',
+    scope: { conversationId: 'conversation-1', taskId: 'task-1', namespaces: ['test'] },
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    inputLimit: 128_000,
+    outputReservation: 8_192,
+    signal: new AbortController().signal,
+  };
+  let latest = await engine.prepare(prepareInput);
+
+  for (let index = 0; index < 6; index += 1) {
+    const action = latest.contract.directive.actions[0];
+    if (!action) break;
+    const toolContext = {
+      sessionId: 'session-1',
+      turnId: 'turn-1',
+      toolCallId: action.id,
+      workingDirectory: '.',
+      signal: new AbortController().signal,
+      messages: [],
+      reportProgress() {},
+    };
+    if (action.toolName === search.name) {
+      const parsed = search.inputSchema.parse(action.input);
+      const output = await search.execute(parsed, toolContext);
+      await engine.processObservation({
+        tool: search,
+        toolCallId: action.id,
+        output,
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        executionDurationMs: 1,
+        actualToolInput: parsed,
+      });
+    } else {
+      assert.equal(action.toolName, fetch.name);
+      const parsed = fetch.inputSchema.parse(action.input);
+      const output = await fetch.execute(parsed, toolContext);
+      await engine.processObservation({
+        tool: fetch,
+        toolCallId: action.id,
+        output,
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        executionDurationMs: 1,
+        actualToolInput: parsed,
+      });
+    }
+    latest = await engine.prepare(prepareInput);
+  }
+
+  assert.equal(latest.contract.directive.actions.length, 0, 'a terminal retrieval decision must stop retrieval');
+  const operations = latest.contract.runtimeRetrieval;
+  const searchOperations = operations.filter((entry) => entry.capability === 'WEB_SEARCH');
+  const fetchOperations = operations.filter((entry) => entry.capability === 'WEB_FETCH');
+
+  assert.equal(searchOperations.length, 2);
+  assert.equal(fetchOperations.length, 1);
+  assert.deepEqual(searchOperations[0]?.input, captured.searches[0]);
+  assert.deepEqual(searchOperations[0]?.actualInput, captured.searches[0]);
+  assert.deepEqual(searchOperations[1]?.input, captured.searches[1]);
+  assert.deepEqual(searchOperations[1]?.actualInput, captured.searches[1]);
+  assert.deepEqual(fetchOperations[0]?.input, captured.fetches[0]);
+  assert.deepEqual(fetchOperations[0]?.actualInput, captured.fetches[0]);
+  assert.equal(searchOperations[0]?.strategy, 'INITIAL');
+  assert.notEqual(searchOperations[1]?.strategy, 'INITIAL');
+  assert.equal(searchOperations[1]?.previousStrategy, 'INITIAL');
+  assert.ok(searchOperations[1]?.adaptationReason);
+  assert.notEqual(searchOperations[1]?.retrievalInput?.retrievalRequest, searchOperations[0]?.retrievalInput?.retrievalRequest);
+  assert.equal(searchOperations[0]?.retrievalResult, 'TOOL_FAILURE');
+  assert.equal(searchOperations[0]?.contributedEvidence, false);
+  assert.equal(fetchOperations[0]?.status, 'succeeded');
+  assert.notEqual(fetchOperations[0]?.retrievalResult, undefined);
+  assert.notEqual(fetchOperations[0]?.evidenceQuality, undefined);
+  assert.equal(typeof fetchOperations[0]?.contributedEvidence, 'boolean');
+  assert.ok(fetchOperations[0]?.terminationReason);
+
+  for (const operation of operations) {
+    assert.equal(
+      operation.input[operation.retrievalInput?.argumentName ?? ''],
+      operation.retrievalInput?.retrievalRequest,
+    );
+    const observed = latest.contract.observations.find(
+      (entry) => entry.id === operation.observationId,
+    );
+    const provenance = observed?.provenance.steps.find(
+      (step) => step.details?.normalizedRetrievalRequest !== undefined,
+    );
+    assert.equal(provenance?.details?.capability, operation.capability);
+    assert.equal(provenance?.details?.retrievalStrategy, operation.strategy);
+    assert.equal(
+      provenance?.details?.normalizedRetrievalRequest,
+      operation.retrievalInput?.retrievalRequest,
+    );
+    assert.equal(provenance?.details?.resultStatus, observed?.outcome);
+    assert.deepEqual(provenance?.details?.actualToolInput, operation.actualInput);
+  }
+
+  const attemptTelemetry = telemetry.filter(
+    (event) => event.event === 'context-intelligence.observation' && event.data.retrieval_attempt_number !== undefined,
+  );
+  const firstTelemetry = attemptTelemetry.find(
+    (event) => event.data.retrieval_attempt_number === 1 && event.data.tool === 'web_search',
+  );
+  const secondTelemetry = attemptTelemetry.find(
+    (event) => event.data.retrieval_attempt_number === 2 && event.data.tool === 'web_search',
+  );
+  assert.deepEqual(firstTelemetry?.data.actual_tool_input, captured.searches[0]);
+  assert.deepEqual(secondTelemetry?.data.actual_tool_input, captured.searches[1]);
+  assert.equal(firstTelemetry?.data.retrieval_failure_reason, 'invalid_input');
+  assert.notEqual(firstTelemetry?.data.retrieval_request, secondTelemetry?.data.retrieval_request);
+
+  const adaptiveTelemetry = telemetry.filter(
+    (event) => event.event === 'context-intelligence.retrieval' && event.data.phase === 'adaptive',
+  );
+  assert.ok(adaptiveTelemetry.some((event) => event.data.retrieval_attempt_count === 1));
+  assert.ok(adaptiveTelemetry.some((event) => event.data.retrieval_attempt_count === 2));
+  const terminalTelemetry = adaptiveTelemetry.at(-1)?.data;
+  for (const field of [
+    'retrieval_attempt_count',
+    'retrieval_strategy',
+    'retrieval_result',
+    'retrieval_budget_remaining',
+    'evidence_quality',
+    'termination_reason',
+  ]) {
+    assert.notEqual(terminalTelemetry?.[field], undefined, field);
+  }
+});
+
+test('AgentSession records schema-normalized input as the actual tool input', async () => {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const telemetry: Array<{ event: string; data: Readonly<Record<string, unknown>> }> = [];
+  const engine = new ContextIntelligenceEngine({
+    onTelemetry(event) {
+      telemetry.push({ event: event.event, data: event.data });
+    },
+  });
+  const session = createAgentSession({
+    provider: new ScriptedModelProvider([
+      [
+        { type: 'text_delta', delta: 'Project Aurora answer.' },
+        { type: 'completed', stopReason: 'end_turn' },
+      ],
+    ]),
+    tools: runtimeTools(captured, { transformSearchQuery: true }),
+    permissionHandler: new AllowAllPermissionHandler(),
+    contextIntelligence: engine,
+  });
+
+  const request = 'Use current web information to answer:\n\nWhat is AWS AgentCore?';
+  for await (const _event of session.run({ prompt: request })) {
+    // Consume the complete retrieval loop.
+  }
+
+  const normalizedRequest = resolver.resolve(request).normalizedRequest;
+  assert.equal(
+    captured.searches[0]?.query,
+    normalizedRequest.toUpperCase(),
+    JSON.stringify({ telemetry, captured }),
+  );
+  const searchTelemetry = telemetry.find(
+    (event) =>
+      event.event === 'context-intelligence.observation' && event.data.tool === 'web_search',
+  );
+  assert.equal(searchTelemetry?.data.retrieval_request, normalizedRequest);
+  assert.deepEqual(searchTelemetry?.data.actual_tool_input, captured.searches[0]);
+  assert.notEqual(searchTelemetry?.data.actual_tool_input, searchTelemetry?.data.retrieval_request);
+});
+
+test('pre-execution validation failure records no actual tool input', async () => {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const [baseSearch, fetch] = runtimeTools(captured);
+  const invalidSearch: Tool<SearchInput> = {
+    ...baseSearch,
+    inputSchema: z.object({
+      query: z.string().refine(() => false, 'rejected before execution'),
+      maxResults: z.number().optional(),
+    }),
+  };
+  const telemetry: Array<{ event: string; data: Readonly<Record<string, unknown>> }> = [];
+  const engine = new ContextIntelligenceEngine({
+    onTelemetry(event) {
+      telemetry.push({ event: event.event, data: event.data });
+    },
+  });
+  const session = createAgentSession({
+    provider: new ScriptedModelProvider([]),
+    tools: [invalidSearch, fetch],
+    permissionHandler: new AllowAllPermissionHandler(),
+    contextIntelligence: engine,
+  });
+
+  for await (const _event of session.run({
+    prompt: 'Use current web information to answer:\n\nWhat is AWS AgentCore?',
+  })) {
+    // Consume validation failures until the existing retrieval budget terminates the loop.
+  }
+
+  assert.deepEqual(captured.searches, [], 'tool.execute must not run after schema rejection');
+  const rejectedAttempts = telemetry.filter(
+    (event) =>
+      event.event === 'context-intelligence.observation' && event.data.tool === 'web_search',
+  );
+  assert.ok(rejectedAttempts.length > 0);
+  for (const attempt of rejectedAttempts) {
+    assert.equal(attempt.data.actual_tool_input, undefined);
+    assert.equal(attempt.data.retrieval_failure_reason, 'invalid_input');
+  }
 });

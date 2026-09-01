@@ -861,3 +861,102 @@ Do not use model memory.
     'core information need must be in the extracted requirements',
   );
 });
+
+// ---------------------------------------------------------------------------
+// Test 19 – A diagnostic envelope captures its information need once; later
+//           evaluation/reporting imperatives remain control-plane metadata
+// ---------------------------------------------------------------------------
+test('TC-19 diagnostic evaluation imperatives do not extend the information need', () => {
+  const prompt = `
+RUNTIME RETRIEVAL VALIDATION
+
+What is AWS AgentCore?
+
+Determine what evidence is missing.
+Explain why.
+Record the actual tool input.
+Report runtime telemetry.
+Show the grounding decision.
+`.trim();
+
+  const intent = resolver.resolve(prompt);
+
+  assert.equal(intent.normalizedRequest, 'What is AWS AgentCore?');
+  assert.deepEqual(intent.instructionSegments.informationRequirements, [
+    'What is AWS AgentCore?',
+  ]);
+  assert.ok(intent.instructionSegments.systemToolInstructions.length > 0);
+});
+
+// ---------------------------------------------------------------------------
+// Test 20 – Capability compaction starts from the authoritative requested
+//           value even if a parallel intent representation is inconsistent
+// ---------------------------------------------------------------------------
+test('TC-20 canonical requested value wins over contaminated secondary candidates', () => {
+  const canonical = resolver.resolve(
+    'Describe Project Aurora deployment architecture, security controls, observability requirements, operational limits, and supported production environments.',
+  );
+  const intent: NormalizedIntent = {
+    ...canonical,
+    instructionSegments: {
+      ...canonical.instructionSegments,
+      informationRequirements: [
+        'Determine what evidence is missing.',
+        'Explain why the validation passes or fails.',
+        canonical.normalizedRequest,
+      ],
+    },
+  };
+
+  const candidates = buildRetrievalRequestCandidates({
+    intent,
+    requested: canonical.normalizedRequest,
+    maximumLength: 80,
+    maximumCandidates: 4,
+  });
+  const first = candidates[0];
+
+  assert.ok(first, 'a bounded canonical candidate must be produced');
+  assert.equal(first.informationNeed, canonical.normalizedRequest);
+  assert.equal(first.construction, 'semantic_compaction');
+  assert.ok(first.query.length <= 80);
+  assert.match(first.query, /Project Aurora/i);
+  assert.equal(first.query.toLowerCase().includes('evidence is missing'), false);
+  assert.equal(first.query.toLowerCase().includes('validation passes or fails'), false);
+});
+
+// ---------------------------------------------------------------------------
+// Test 21 – Diagnostic isolation applies to compound directives while
+//           preserving multiple genuine information questions
+// ---------------------------------------------------------------------------
+test('TC-21 diagnostic isolation is consistent across compound directive branches', () => {
+  const retrievalDirective = resolver.resolve(`
+RUNTIME RETRIEVAL VALIDATION
+What is Project Aurora?
+Determine what evidence is missing using the available web tools.
+`.trim());
+  assert.equal(retrievalDirective.normalizedRequest, 'What is Project Aurora?');
+  assert.equal(retrievalDirective.instructionSegments.retrievalInstructions.length, 0);
+
+  const formattingDirective = resolver.resolve(`
+RUNTIME RETRIEVAL VALIDATION
+What is Project Aurora?
+Explain why and return the result as JSON.
+`.trim());
+  assert.equal(formattingDirective.normalizedRequest, 'What is Project Aurora?');
+  assert.ok(formattingDirective.instructionSegments.formattingInstructions.length > 0);
+
+  const multipleQuestions = resolver.resolve(`
+RUNTIME RETRIEVAL VALIDATION
+What is Project Aurora?
+How is it deployed?
+`.trim());
+  assert.deepEqual(multipleQuestions.instructionSegments.informationRequirements, [
+    'What is Project Aurora?',
+    'How is it deployed?',
+  ]);
+  assert.equal(
+    multipleQuestions.normalizedRequest,
+    'What is Project Aurora? How is it deployed?',
+  );
+});

@@ -257,7 +257,7 @@ export function buildRetrievalRequestCandidates(input: {
   const requested = normalizeQuery(input.requested ?? input.intent.normalizedRequest);
   const modifiers = retrievalModifiers([
     input.intent.normalizedRequest,
-    ...input.intent.instructionSegments.informationRequirements,
+    ...input.intent.instructionSegments.retrievalInstructions,
   ]);
   const requirements = dedupeStrings(
     input.intent.instructionSegments.informationRequirements
@@ -276,7 +276,6 @@ export function buildRetrievalRequestCandidates(input: {
       .filter((variant) => variant.kind !== 'original')
       .map((variant) => withRetrievalModifiers(variant.query, modifiers)),
   );
-  const requestedFits = maximumLength === undefined || requested.length <= maximumLength;
   const ordered: Array<{
     value: string;
     construction: RetrievalRequestCandidate['construction'];
@@ -291,12 +290,15 @@ export function buildRetrievalRequestCandidates(input: {
     }
   };
 
-  if (input.preferDecomposition || !requestedFits) {
+  if (input.preferDecomposition) {
     add(decomposed, 'decomposed_information_need');
     add(variants, 'query_variant');
     add(requirements, 'decomposed_information_need');
     add([requested], 'normalized_intent');
   } else {
+    // The requested value is the authoritative retrieval request. Capability-specific
+    // compaction must start from it rather than replacing it with a parallel intent
+    // representation merely because the original value exceeds a tool limit.
     add([requested], 'normalized_intent');
     add(variants, 'query_variant');
     add(requirements, 'decomposed_information_need');
@@ -369,6 +371,7 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   const diagnosticEnvelope = clauses.some(isDiagnosticEnvelopeSignal);
   let formattingFieldSection = false;
   let awaitingInformationRequirement = false;
+  let diagnosticInformationRequirementCaptured = false;
 
   for (const clause of clauses) {
     if (isFormattingFieldSectionStart(clause)) {
@@ -390,13 +393,42 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     if (isFormattingInstruction(clause)) {
       formattingInstructions.push(clause);
       const subject = informationBeforeDirective(clause, OUTPUT_DIRECTIVE);
-      if (subject) informationRequirements.push(subject);
+      const accepted =
+        subject &&
+        acceptsDiagnosticInformationRequirement({
+          diagnosticEnvelope,
+          awaitingInformationRequirement,
+          diagnosticInformationRequirementCaptured,
+          candidate: subject,
+          explicitInformationRequirement: isExplicitInformationRequirement(clause),
+        });
+      if (subject && accepted) {
+        informationRequirements.push(subject);
+        if (diagnosticEnvelope) diagnosticInformationRequirementCaptured = true;
+      } else if (subject && diagnosticEnvelope) {
+        systemToolInstructions.push(clause);
+      }
       continue;
     }
     if (isRetrievalInstruction(clause)) {
-      retrievalInstructions.push(clause);
       const subject = informationBeforeDirective(clause, RETRIEVAL_DIRECTIVE);
-      if (subject) informationRequirements.push(subject);
+      const accepted =
+        subject &&
+        acceptsDiagnosticInformationRequirement({
+          diagnosticEnvelope,
+          awaitingInformationRequirement,
+          diagnosticInformationRequirementCaptured,
+          candidate: subject,
+          explicitInformationRequirement: isExplicitInformationRequirement(clause),
+        });
+      if (subject && accepted) {
+        informationRequirements.push(subject);
+        if (diagnosticEnvelope) diagnosticInformationRequirementCaptured = true;
+      } else if (subject && diagnosticEnvelope) {
+        systemToolInstructions.push(clause);
+        continue;
+      }
+      retrievalInstructions.push(clause);
       if (introducesInformationRequirement(clause)) awaitingInformationRequirement = true;
       continue;
     }
@@ -406,15 +438,20 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     }
 
     const explicitInformationRequirement = isExplicitInformationRequirement(clause);
+    const acceptsInformationRequirement = acceptsDiagnosticInformationRequirement({
+      diagnosticEnvelope,
+      awaitingInformationRequirement,
+      diagnosticInformationRequirementCaptured,
+      candidate: clause,
+      explicitInformationRequirement,
+    });
     const subject =
-      diagnosticEnvelope && (awaitingInformationRequirement || explicitInformationRequirement)
+      diagnosticEnvelope && acceptsInformationRequirement
         ? normalizeExplicitInformationRequirement(clause)
         : cleanInformationRequirement(clause);
-    if (
-      subject &&
-      (!diagnosticEnvelope || awaitingInformationRequirement || explicitInformationRequirement)
-    ) {
+    if (subject && acceptsInformationRequirement) {
       informationRequirements.push(subject);
+      if (diagnosticEnvelope) diagnosticInformationRequirementCaptured = true;
     } else if (subject && diagnosticEnvelope) {
       systemToolInstructions.push(clause);
     }
@@ -435,6 +472,27 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     formattingInstructions: dedupeStrings(formattingInstructions).slice(0, 30),
     informationRequirements: requirements.map(normalizeQuery),
   };
+}
+
+function acceptsDiagnosticInformationRequirement(input: {
+  diagnosticEnvelope: boolean;
+  awaitingInformationRequirement: boolean;
+  diagnosticInformationRequirementCaptured: boolean;
+  candidate: string;
+  explicitInformationRequirement: boolean;
+}): boolean {
+  if (!input.diagnosticEnvelope) return true;
+  if (input.awaitingInformationRequirement) return true;
+  if (!input.explicitInformationRequirement) return false;
+  if (!input.diagnosticInformationRequirementCaptured) return true;
+  return isInterrogativeInformationRequirement(input.candidate);
+}
+
+function isInterrogativeInformationRequirement(value: string): boolean {
+  const requirement = normalizeExplicitInformationRequirement(value);
+  return /^(?:what|which|who|whom|whose|when|where|why|how|is|are|was|were|do|does|did|can|could|should|would|will|has|have|had)\b[\s\S]*\?$/i.test(
+    requirement,
+  );
 }
 
 function isDiagnosticEnvelopeSignal(value: string): boolean {

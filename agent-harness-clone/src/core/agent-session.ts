@@ -1231,6 +1231,7 @@ class AgentSessionImpl implements AgentSession {
             sessionId: this.id,
             turnId,
             executionDurationMs: Date.now() - toolStarted,
+            actualToolInput: parsed.data,
           });
           output = processed.result;
         } catch (error) {
@@ -1318,6 +1319,7 @@ class AgentSessionImpl implements AgentSession {
         result,
         turnId,
         Date.now() - toolStarted,
+        parsed.data,
       );
       this.log({
         level: 'error',
@@ -1394,6 +1396,7 @@ class AgentSessionImpl implements AgentSession {
     result: ToolResultBlock,
     turnId: string,
     executionDurationMs?: number,
+    actualToolInput?: unknown,
   ): Promise<ToolResultBlock> {
     if (!this.contextIntelligence) return result;
     try {
@@ -1408,6 +1411,7 @@ class AgentSessionImpl implements AgentSession {
         sessionId: this.id,
         turnId,
         ...(executionDurationMs === undefined ? {} : { executionDurationMs }),
+        ...(actualToolInput === undefined ? {} : { actualToolInput }),
       });
       return {
         type: 'tool_result',
