@@ -265,7 +265,7 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
     // Priority 2: Exactly one artifact candidate from passive discovery
     if (artifactResource && artifactResource.candidates.length === 1) {
       const candidate = artifactResource.candidates[0];
-      if (candidate.artifactId) {
+      if (candidate && candidate.artifactId) {
         const generic = {
           artifactId: candidate.artifactId,
           referenceOrigin:
