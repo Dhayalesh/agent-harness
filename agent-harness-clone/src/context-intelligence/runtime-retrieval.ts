@@ -226,45 +226,81 @@ function planFileAction(input: PlannerInput): PlannedAction | undefined {
       (observation.outcome === 'success' || observation.outcome === 'partial'),
   );
   if (alreadySucceeded) return undefined;
-  const artifactResource = resources.find(
-    (resource) => resource.sourceKind === 'ARTIFACT' && resource.state === 'FOUND',
-  );
-  const artifactCandidate = artifactResource?.candidates.length === 1
-    ? artifactResource.candidates[0]
-    : undefined;
-  const explicitArtifactId =
-    typeof need.inputs.artifactId === 'string' ? need.inputs.artifactId : undefined;
-  const artifactId = explicitArtifactId ?? artifactCandidate?.artifactId;
-  if (need.sourceKinds.includes('ARTIFACT') && artifactId) {
-    const generic = {
-      artifactId,
-      referenceOrigin:
-        artifactCandidate?.discoveredBy === 'context_offload'
-          ? 'context_offload'
-          : 'explicit_user_reference',
-    };
-    const selected = unattemptedTool(
-      toolPlan,
-      'ARTIFACT_READ',
-      generic,
-      operations,
-      input.performanceProfiles,
-      input.minimumComparableSamples,
+
+  // ARTIFACT RETRIEVAL PATH
+  if (need.sourceKinds.includes('ARTIFACT')) {
+    const explicitArtifactId =
+      typeof need.inputs.artifactId === 'string' ? need.inputs.artifactId : undefined;
+    const artifactResource = resources.find(
+      (resource) => resource.sourceKind === 'ARTIFACT' && resource.state === 'FOUND',
     );
-    if (selected) {
-      return {
-        needId: need.id,
-        capability: 'ARTIFACT_READ',
-        phase: 'retrieval',
-        toolName: selected.tool.capability.name,
-        input: selected.input,
-        reason:
-          artifactCandidate?.discoveredBy === 'context_offload'
-            ? 'Retrieve the matching same-session artifact discovered from context offload metadata.'
-            : 'Retrieve the matching same-session artifact discovered from canonical metadata.',
-        strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+
+    // Priority 1: Explicit artifactId from user (e.g., artifact://abc123)
+    if (explicitArtifactId) {
+      const generic = {
+        artifactId: explicitArtifactId,
+        referenceOrigin: 'explicit_user_reference',
       };
+      const selected = unattemptedTool(
+        toolPlan,
+        'ARTIFACT_READ',
+        generic,
+        operations,
+        input.performanceProfiles,
+        input.minimumComparableSamples,
+      );
+      if (selected) {
+        return {
+          needId: need.id,
+          capability: 'ARTIFACT_READ',
+          phase: 'retrieval',
+          toolName: selected.tool.capability.name,
+          input: selected.input,
+          reason: 'Retrieve the explicitly identified artifact by user-supplied artifact ID.',
+          strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+        };
+      }
     }
+
+    // Priority 2: Exactly one artifact candidate from passive discovery
+    if (artifactResource && artifactResource.candidates.length === 1) {
+      const candidate = artifactResource.candidates[0];
+      if (candidate.artifactId) {
+        const generic = {
+          artifactId: candidate.artifactId,
+          referenceOrigin:
+            candidate.discoveredBy === 'context_offload'
+              ? 'context_offload'
+              : 'explicit_user_reference',
+        };
+        const selected = unattemptedTool(
+          toolPlan,
+          'ARTIFACT_READ',
+          generic,
+          operations,
+          input.performanceProfiles,
+          input.minimumComparableSamples,
+        );
+        if (selected) {
+          return {
+            needId: need.id,
+            capability: 'ARTIFACT_READ',
+            phase: 'retrieval',
+            toolName: selected.tool.capability.name,
+            input: selected.input,
+            reason:
+              candidate.discoveredBy === 'context_offload'
+                ? 'Retrieve the matching same-session artifact discovered from context offload metadata.'
+                : 'Retrieve the matching same-session artifact discovered from canonical metadata.',
+            strategy: operations.length === 0 ? 'initial' : 'alternate_source',
+          };
+        }
+      }
+    }
+
+    // Priority 3: Multiple candidates - requires clarification
+    // Do not create an action; let quality gate convert need.status to clarification_required
+    // The ContextNeedIntelligence.assess() method will detect multiple candidates and update status
   }
 
   const fileResource = resources.find((resource) => resource.sourceKind === 'FILE');
