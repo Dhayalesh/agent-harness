@@ -141,16 +141,35 @@ test('maps failures to explicit adaptations and terminal decisions', () => {
   );
   assert.equal(lowRelevance.needs[0]?.recommendedStrategies[0], 'RETRIEVAL_NARROW');
 
+  // invalid_input without a query-like argument (e.g. a bad file path reference) → INVALID_REFERENCE
   const invalid = assessmentFor(
     operation({
       status: 'failed',
       executionState: 'FAILED',
       failureClassification: 'invalid_input',
+      input: { path: '/nonexistent/bad-path.txt' },
     }),
     observation({ outcome: 'error' }),
   );
   assert.deepEqual(invalid.needs[0]?.recommendedStrategies, []);
   assert.equal(invalid.terminationReason, 'INVALID_REFERENCE');
+
+  // invalid_input with a query-like argument (e.g. an oversized search query) → TOOL_FAILURE
+  // Decomposition comes first because the query itself is the source of the invalidity.
+  const invalidQuery = assessmentFor(
+    operation({
+      status: 'failed',
+      executionState: 'FAILED',
+      failureClassification: 'invalid_input',
+      // Short query: not oversized → QUERY_REWRITE first; QUERY_DECOMPOSITION second
+      input: { query: intent.normalizedRequest, maxResults: 5 },
+    }),
+    observation({ outcome: 'error' }),
+  );
+  assert.deepEqual(invalidQuery.needs[0]?.recommendedStrategies.slice(0, 2), [
+    'QUERY_REWRITE',
+    'QUERY_DECOMPOSITION',
+  ]);
 
   const access = assessmentFor(
     operation({

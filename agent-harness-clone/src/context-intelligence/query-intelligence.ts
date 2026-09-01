@@ -11,18 +11,35 @@ export interface QueryTransformer {
   ): Promise<readonly string[]>;
 }
 
+export type RetrievalRequestCandidate = {
+  query: string;
+  informationNeed: string;
+  construction:
+    | 'normalized_intent'
+    | 'query_variant'
+    | 'decomposed_information_need'
+    | 'semantic_compaction';
+  semanticallyCompacted: boolean;
+};
+
 export class IntentResolver {
   resolve(rawRequest: string): NormalizedIntent {
     const originalRequest = rawRequest.trim();
-    const instructionSegments = segmentRequest(originalRequest);
-    const informationText = instructionSegments.informationRequirements.join(' ').trim();
-    const normalizedRequest = normalizeQuery(informationText || instructionSegments.userIntent);
+    const segmented = segmentRequest(originalRequest);
+    const informationText = segmented.informationRequirements.join(' ').trim();
+    const normalizedRequest = withRetrievalModifiers(
+      normalizeQuery(informationText || segmented.userIntent),
+      retrievalModifiers([...segmented.retrievalInstructions, informationText]),
+    );
+    const instructionSegments = { ...segmented, userIntent: normalizedRequest };
     const entities = extractEntities(normalizedRequest);
     const constraints = extractConstraints(
       [...instructionSegments.taskInstructions, originalRequest].join('\n'),
     );
     const temporal = extractTemporal(normalizedRequest);
-    const clauses = splitClauses(normalizedRequest);
+    const clauses = instructionSegments.informationRequirements.flatMap(
+      decomposeInformationRequirement,
+    );
     const ambiguity: string[] = [];
     if (normalizedRequest.length < 4)
       ambiguity.push('The request is too short to establish intent.');
@@ -178,7 +195,7 @@ export class QueryIntelligence {
         .filter((entry) => entry.length > 0 && preservesLockedValues(entry, intent));
     if (intent.normalizedRequest.length < this.config.minimumRewriteLength)
       return [intent.normalizedRequest];
-    return [normalizeQuery(`${intent.goal} ${intent.constraints.join(' ')}`)];
+    return [intent.normalizedRequest];
   }
 
   private async expand(
@@ -216,9 +233,91 @@ export class QueryIntelligence {
     }
     if (intent.complexity === 'simple') return [];
     return intent.instructionSegments.informationRequirements
-      .flatMap(splitClauses)
+      .flatMap(decomposeInformationRequirement)
       .filter((entry) => uniqueTerms(entry).length >= 2);
   }
+}
+
+/**
+ * Constructs tool-ready semantic retrieval requests without treating the raw
+ * request as a capability argument. A long need is decomposed first; semantic
+ * keyword compaction is the final fallback and preserves known entities,
+ * freshness/authority requirements, quoted phrases, and negations.
+ */
+export function buildRetrievalRequestCandidates(input: {
+  intent: NormalizedIntent;
+  plan?: QueryPlan;
+  requested?: string;
+  maximumLength?: number;
+  maximumCandidates?: number;
+  preferDecomposition?: boolean;
+}): RetrievalRequestCandidate[] {
+  const maximumLength =
+    input.maximumLength !== undefined && Number.isFinite(input.maximumLength)
+      ? Math.max(1, Math.floor(input.maximumLength))
+      : undefined;
+  const maximumCandidates = Math.max(1, Math.floor(input.maximumCandidates ?? 8));
+  const requested = normalizeQuery(input.requested ?? input.intent.normalizedRequest);
+  const modifiers = retrievalModifiers([
+    ...input.intent.instructionSegments.retrievalInstructions,
+    input.intent.normalizedRequest,
+  ]);
+  const requirements = dedupeStrings(
+    input.intent.instructionSegments.informationRequirements
+      .flatMap((requirement) =>
+        input.preferDecomposition ? decomposeInformationRequirement(requirement) : [requirement],
+      )
+      .map((requirement) => withRetrievalModifiers(requirement, modifiers)),
+  );
+  const decomposed = dedupeStrings(
+    input.intent.instructionSegments.informationRequirements
+      .flatMap(decomposeInformationRequirement)
+      .map((requirement) => withRetrievalModifiers(requirement, modifiers)),
+  );
+  const variants = dedupeStrings(
+    (input.plan?.variants ?? [])
+      .filter((variant) => variant.kind !== 'original')
+      .map((variant) => withRetrievalModifiers(variant.query, modifiers)),
+  );
+  const requestedFits = maximumLength === undefined || requested.length <= maximumLength;
+  const ordered: Array<{
+    value: string;
+    construction: RetrievalRequestCandidate['construction'];
+    informationNeed: string;
+  }> = [];
+  const add = (
+    values: readonly string[],
+    construction: RetrievalRequestCandidate['construction'],
+  ) => {
+    for (const value of values) {
+      ordered.push({ value, construction, informationNeed: value });
+    }
+  };
+
+  if (input.preferDecomposition || !requestedFits) {
+    add(decomposed, 'decomposed_information_need');
+    add(variants, 'query_variant');
+    add(requirements, 'decomposed_information_need');
+    add([requested], 'normalized_intent');
+  } else {
+    add([requested], 'normalized_intent');
+    add(variants, 'query_variant');
+    add(requirements, 'decomposed_information_need');
+  }
+
+  const output: RetrievalRequestCandidate[] = [];
+  for (const candidate of ordered) {
+    const fitted = fitSemanticQuery(candidate.value, maximumLength, input.intent, modifiers);
+    if (!fitted || output.some((entry) => normalizeQuery(entry.query) === fitted.query)) continue;
+    output.push({
+      query: fitted.query,
+      informationNeed: candidate.informationNeed,
+      construction: fitted.compacted ? 'semantic_compaction' : candidate.construction,
+      semanticallyCompacted: fitted.compacted,
+    });
+    if (output.length >= maximumCandidates) break;
+  }
+  return output;
 }
 
 function variant(
@@ -272,19 +371,19 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   const informationRequirements: string[] = [];
 
   for (const clause of clauses) {
-    if (isSystemToolInstruction(clause)) {
+    if (isSystemToolInstruction(clause) || isValidationInstruction(clause)) {
       systemToolInstructions.push(clause);
       continue;
     }
     if (isFormattingInstruction(clause)) {
       formattingInstructions.push(clause);
-      const subject = cleanInformationRequirement(clause);
+      const subject = informationBeforeDirective(clause, OUTPUT_DIRECTIVE);
       if (subject) informationRequirements.push(subject);
       continue;
     }
     if (isRetrievalInstruction(clause)) {
       retrievalInstructions.push(clause);
-      const subject = cleanInformationRequirement(clause);
+      const subject = informationBeforeDirective(clause, RETRIEVAL_DIRECTIVE);
       if (subject) informationRequirements.push(subject);
       continue;
     }
@@ -302,34 +401,48 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   const fallback = cleanInformationRequirement(
     clauses.find((clause) => !isSystemToolInstruction(clause)) ?? value,
   );
-  const requirements = boundedRequirements.length > 0 ? boundedRequirements : [fallback].filter(Boolean);
-  const userIntent = normalizeQuery(requirements.join('; ').slice(0, 4_000));
+  const requirements =
+    boundedRequirements.length > 0 ? boundedRequirements : [fallback].filter(Boolean);
+  const userIntent = normalizeQuery(requirements.join('; '));
   return {
     userIntent,
     taskInstructions: dedupeStrings(taskInstructions).slice(0, 50),
     retrievalInstructions: dedupeStrings(retrievalInstructions).slice(0, 30),
     systemToolInstructions: dedupeStrings(systemToolInstructions).slice(0, 30),
     formattingInstructions: dedupeStrings(formattingInstructions).slice(0, 30),
-    informationRequirements: requirements.map((entry) => normalizeQuery(entry).slice(0, 1_000)),
+    informationRequirements: requirements.map(normalizeQuery),
   };
+}
+
+const OUTPUT_DIRECTIVE =
+  /\s+(?:and\s+)?(?:return|respond|format|present|output|render|write)\b[\s\S]*$/i;
+const RETRIEVAL_DIRECTIVE =
+  /\s+(?:using|via|with)\s+(?:the\s+)?(?:available\s+)?(?:web|internet|browser|search|tools?|capabilit(?:y|ies)|mcp)\b[\s\S]*$/i;
+
+function informationBeforeDirective(value: string, directive: RegExp): string {
+  const match = directive.exec(value);
+  if (!match || match.index === 0) return '';
+  const subject = cleanInformationRequirement(value.slice(0, match.index));
+  return isAnaphoricRetrievalWrapper(subject) ? '' : subject;
 }
 
 function cleanInformationRequirement(value: string): string {
   return normalizeQuery(
     value
       .replace(/```[\s\S]*?```/g, ' ')
-      .replace(/\b(?:please\s+)?(?:find|search(?:\s+for)?|look\s+up|browse(?:\s+for)?|retrieve|fetch|tell\s+me|show\s+me|give\s+me)\b\s*/i, '')
+      .replace(/^\s*(?:question|research question|information need|topic)\s*:\s*/i, '')
       .replace(
-        /\s+(?:and\s+)?(?:return|respond|format|present|output|write)\b[\s\S]*$/i,
-        ' ',
+        /^\s*(?:please\s+)?(?:find|search(?:\s+for)?|look\s+up|browse(?:\s+for)?|retrieve|fetch|tell\s+me|show\s+me|give\s+me|research|investigate)\b\s*/i,
+        '',
       )
       .replace(
-        /\s+(?:using|via|with)\s+(?:the\s+)?(?:web|internet|browser|search|available\s+tools?|mcp\s+tools?)[\s\S]*$/i,
+        OUTPUT_DIRECTIVE,
         ' ',
       )
+      .replace(RETRIEVAL_DIRECTIVE, ' ')
       .replace(/\b(?:cite|include)\s+(?:the\s+)?sources?\b/gi, ' ')
       .replace(/\s+/g, ' '),
-  ).slice(0, 1_000);
+  );
 }
 
 function isSystemToolInstruction(value: string): boolean {
@@ -352,8 +465,33 @@ function isFormattingInstruction(value: string): boolean {
 }
 
 function isRetrievalInstruction(value: string): boolean {
-  return /\b(?:search|browse|look\s+up|retrieve|fetch|verify|cite|source)\b.{0,80}\b(?:web|internet|online|official|source|documentation|database|api|mcp)\b/i.test(
-    value,
+  return (
+    /\b(?:search|browse|look\s+up|retrieve|fetch|verify|cite|source|use|using|via)\b.{0,120}\b(?:web|internet|online|official|authoritative|source|documentation|database|api|mcp|tools?|capabilit(?:y|ies))\b/i.test(
+      value,
+    ) ||
+    /^(?:research|answer|investigate)\s+(?:this|the)\s+(?:question|topic|request)\b.{0,120}\b(?:web|internet|online|source|information)\b/i.test(
+      value,
+    )
+  );
+}
+
+function isValidationInstruction(value: string): boolean {
+  return (
+    /^(?:if|when)\s+(?:the\s+)?(?:first|prior|previous|next)?\s*(?:retrieval|attempt|result)\b/i.test(
+      value,
+    ) ||
+    /\b(?:prove|demonstrate|validate|report|show)\b.{0,100}\b(?:adaptive retrieval|attempt\s*\d+|runtime telemetry|grounding gate|execution state|retrieval state)\b/i.test(
+      value,
+    ) ||
+    /^(?:evaluate|classify|adapt|retry|retrieve again|change strategy)\b.{0,160}\b(?:retrieval|result|evidence|strategy|telemetry|attempt)\b/i.test(
+      value,
+    )
+  );
+}
+
+function isAnaphoricRetrievalWrapper(value: string): boolean {
+  return /^(?:research|answer|investigate)?\s*(?:this|the)\s+(?:question|topic|request)$/i.test(
+    normalizeQuery(value).replace(/[:.?]+$/, ''),
   );
 }
 
@@ -371,6 +509,73 @@ function normalizeQuery(value: string): string {
     .trim();
 }
 
+function retrievalModifiers(values: readonly string[]): string[] {
+  const text = values.join(' ');
+  return dedupeStrings([
+    ...(text.match(
+      /\b(?:today|current|currently|latest|recent|newest|up[ -]to[ -]date|as of\s+\d{4}(?:-\d{2}-\d{2})?)\b/gi,
+    ) ?? []),
+    ...(text.match(
+      /\b(?:official|authoritative|primary source|first-party|trusted|verified)\b/gi,
+    ) ?? []),
+    ...(text.match(/\b\d{4}-\d{2}-\d{2}\b/g) ?? []),
+  ]).map(normalizeQuery);
+}
+
+function withRetrievalModifiers(value: string, modifiers: readonly string[]): string {
+  const normalized = normalizeQuery(value);
+  const lower = normalized.toLowerCase();
+  const missing = modifiers.filter((modifier) => !lower.includes(modifier.toLowerCase()));
+  return normalizeQuery([normalized, ...missing].filter(Boolean).join(' '));
+}
+
+function fitSemanticQuery(
+  value: string,
+  maximumLength: number | undefined,
+  intent: NormalizedIntent,
+  modifiers: readonly string[],
+): { query: string; compacted: boolean } | undefined {
+  const normalized = normalizeQuery(value);
+  if (!normalized) return undefined;
+  if (maximumLength === undefined || normalized.length <= maximumLength) {
+    return { query: normalized, compacted: false };
+  }
+
+  const protectedPhrases = dedupeStrings([
+    ...intent.entities
+      .map((entity) => entity.value)
+      .filter((entity) => normalized.toLowerCase().includes(entity.toLowerCase())),
+    ...(normalized.match(/"[^"]+"|'[^']+'/g) ?? []).map((phrase) =>
+      phrase.replace(/^['"]|['"]$/g, ''),
+    ),
+    ...modifiers,
+    ...(normalized.match(
+      /\b(?:not|without|exclude|excluding|except)\b(?:\s+[\p{L}\p{N}_.:/\\-]+){0,6}/giu,
+    ) ?? []),
+  ]).map(normalizeQuery);
+  let compact = '';
+  for (const phrase of protectedPhrases) {
+    const next = appendUniqueSemanticPart(compact, phrase);
+    if (next.length > maximumLength) return undefined;
+    compact = next;
+  }
+  for (const term of uniqueTerms(normalized)) {
+    const next = appendUniqueSemanticPart(compact, term);
+    if (next.length <= maximumLength) compact = next;
+  }
+  compact = normalizeQuery(compact);
+  return compact ? { query: compact, compacted: true } : undefined;
+}
+
+function appendUniqueSemanticPart(current: string, part: string): string {
+  const normalizedPart = normalizeQuery(part);
+  if (!normalizedPart) return current;
+  const currentTerms = new Set(uniqueTerms(current));
+  const newTerms = uniqueTerms(normalizedPart);
+  if (newTerms.length > 0 && newTerms.every((term) => currentTerms.has(term))) return current;
+  return normalizeQuery(`${current} ${normalizedPart}`);
+}
+
 function splitClauses(value: string): string[] {
   return dedupeStrings(
     value
@@ -379,6 +584,19 @@ function splitClauses(value: string): string[] {
         /(?:[;\n]|\s+\band\b\s+(?=(?:compare|find|show|explain|analy[sz]e|create|update|list|check)\b))/i,
       ),
   );
+}
+
+function decomposeInformationRequirement(value: string): string[] {
+  const ordinary = splitClauses(value);
+  if (ordinary.length > 1) return ordinary;
+  const comparisonBody = normalizeQuery(value)
+    .replace(/^\s*(?:research|compare|contrast|evaluate|analy[sz]e)\s+/i, '')
+    .replace(/\s+and\s+(?:compare|contrast|evaluate|analy[sz]e)(?:\s+them)?[.!?]*$/i, '');
+  const parts = comparisonBody
+    .split(/\s*,\s*/)
+    .map((part) => normalizeQuery(part.replace(/^(?:and|versus|vs\.?)\s+/i, '')))
+    .filter((part) => uniqueTerms(part).length > 0);
+  return parts.length >= 3 ? dedupeStrings(parts) : ordinary;
 }
 
 function extractEntities(value: string): NormalizedIntent['entities'] {
@@ -459,7 +677,7 @@ function expectedEvidence(intent: NormalizedIntent): string[] {
   return dedupeStrings([
     ...intent.entities.map((entity) => entity.value),
     ...(intent.temporal?.requiresCurrentData ? ['current authoritative state'] : []),
-    ...intent.constraints,
+    ...retrievalModifiers(intent.instructionSegments.retrievalInstructions),
   ]);
 }
 

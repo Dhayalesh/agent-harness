@@ -707,8 +707,8 @@ export type {
 } from './context-intelligence/contracts.js';
 export { contextIntelligenceReport } from './context-intelligence/report.js';
 export { ContextNeedIntelligence } from './context-intelligence/context-need.js';
-export { IntentResolver, QueryIntelligence } from './context-intelligence/query-intelligence.js';
-export type { QueryTransformer } from './context-intelligence/query-intelligence.js';
+export { IntentResolver, QueryIntelligence, buildRetrievalRequestCandidates } from './context-intelligence/query-intelligence.js';
+export type { QueryTransformer, RetrievalRequestCandidate } from './context-intelligence/query-intelligence.js';
 export {
   detectRetrievalConflicts,
   QueryAgent,

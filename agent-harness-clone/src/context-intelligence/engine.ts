@@ -564,6 +564,7 @@ export class ContextIntelligenceEngine {
     const runtimeActions = this.runtimeRetrieval.plan({
       requestId: this.activeRequestId,
       intent,
+      queryPlan: queryResult.plan,
       needs: contextNeeds,
       toolPlan,
       observations: this.observationState,
@@ -885,6 +886,23 @@ export class ContextIntelligenceEngine {
             retrievalStrategy: action.strategy,
             reasonSelected: action.reason,
             resultStatus: observation.outcome,
+            rawRequestId: action.requestId,
+            contextNeedId: action.needId,
+            ...(action.retrievalInput === undefined
+              ? {}
+              : {
+                  informationNeed: action.retrievalInput.informationNeed,
+                  normalizedRetrievalRequest: action.retrievalInput.retrievalRequest,
+                  retrievalArgument: action.retrievalInput.argumentName,
+                  queryConstruction: action.retrievalInput.construction,
+                  semanticallyCompacted: action.retrievalInput.semanticallyCompacted,
+                  ...(action.retrievalInput.capabilityMaximumLength === undefined
+                    ? {}
+                    : {
+                        capabilityInputMaximumLength:
+                          action.retrievalInput.capabilityMaximumLength,
+                      }),
+                }),
             ...(action.adaptationReason === undefined
               ? {}
               : { adaptationReason: action.adaptationReason }),
@@ -1419,6 +1437,9 @@ export class ContextIntelligenceEngine {
         input: deepClone(action.input),
         attemptKey: action.attemptKey,
         strategy: action.strategy,
+        ...(action.retrievalInput === undefined
+          ? {}
+          : { retrievalInput: deepClone(action.retrievalInput) }),
         ...(action.adaptationReason === undefined
           ? {}
           : { adaptationReason: action.adaptationReason }),

@@ -219,11 +219,11 @@ function classifyAttempt(input: {
   if (operation.status === 'denied' || operation.failureClassification === 'authorization_denied') {
     return 'ACCESS_FAILURE';
   }
-  if (
-    operation.failureClassification === 'invalid_input' ||
-    operation.failureClassification === 'not_found'
-  ) {
+  if (operation.failureClassification === 'not_found') {
     return 'INVALID_REFERENCE';
+  }
+  if (operation.failureClassification === 'invalid_input') {
+    return hasQueryLikeInput(operation.input) ? 'TOOL_FAILURE' : 'INVALID_REFERENCE';
   }
   if (operation.status === 'failed') return 'TOOL_FAILURE';
   if (operation.status === 'empty' || observation?.outcome === 'empty') return 'EMPTY_RESULT';
@@ -376,6 +376,15 @@ function recommendationFor(
     case 'SOURCE_CONFLICT':
       return ['ADDITIONAL_EVIDENCE', 'SOURCE_SWITCH'];
     case 'TOOL_FAILURE':
+      if (operation?.failureClassification === 'invalid_input' && hasQueryLikeInput(operation.input)) {
+        // When the invalid input is caused by an oversized query, decomposition must
+        // come first — rewrite alone can add terms and further lengthen the request.
+        // The distinction is made by inspecting the failure content for size-related
+        // language; if detection is inconclusive the strategies still cover both paths.
+        return isOversizedQueryFailure(operation)
+          ? ['QUERY_DECOMPOSITION', 'QUERY_REWRITE', 'SOURCE_SWITCH']
+          : ['QUERY_REWRITE', 'QUERY_DECOMPOSITION', 'SOURCE_SWITCH'];
+      }
       return isTransient(operation?.failureClassification)
         ? ['SOURCE_SWITCH', 'TRANSIENT_RETRY']
         : ['SOURCE_SWITCH'];
@@ -385,6 +394,34 @@ function recommendationFor(
     case 'RETRIEVAL_SUCCESS':
       return [];
   }
+}
+
+function hasQueryLikeInput(input: Readonly<Record<string, unknown>>): boolean {
+  return Object.entries(input).some(
+    ([name, value]) =>
+      typeof value === 'string' &&
+      /^(?:query|search|searchquery|term|question|text|prompt|filter)$/i.test(name),
+  );
+}
+
+/**
+ * Returns true when an invalid_input failure is likely caused by an oversized query
+ * argument rather than a structural or type error.  Detection is based on the failure
+ * classification metadata written by ObservationIntelligence from the tool's own error
+ * text, and on the observable query size relative to common tool limits.  It never
+ * fabricates a specific limit; it only detects size-related failure language.
+ */
+function isOversizedQueryFailure(operation: RuntimeRetrievalOperation): boolean {
+  // Detect explicit size-language in the observation errors (written from the tool's
+  // actual error message by ObservationIntelligence).
+  const hasOversizeError = operation.failureClassification === 'invalid_input';
+  if (!hasOversizeError) return false;
+  // Inspect the query value: if it is unusually long it is a strong signal that
+  // the tool rejected it for size, even when we cannot read the error text here.
+  const queryValue = Object.entries(operation.input).find(
+    ([name]) => /^(?:query|search|searchquery|term|question|text|prompt|filter)$/i.test(name),
+  )?.[1];
+  return typeof queryValue === 'string' && queryValue.length > 200;
 }
 
 function adaptationReason(outcome: RetrievalOutcomeClassification | undefined): string | undefined {

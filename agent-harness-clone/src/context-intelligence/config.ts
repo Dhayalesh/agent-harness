@@ -55,6 +55,16 @@ export type ContextIntelligenceConfig = {
     maximumSubqueries: number;
     minimumRewriteLength: number;
     aliases: Readonly<Record<string, readonly string[]>>;
+    /**
+     * Optional per-capability default maximum query lengths in characters, keyed by
+     * generic capability name (e.g. `{ 'WEB_SEARCH': 400 }`).  Used by the retrieval
+     * planner as a final fallback when neither the tool's JSON schema nor the
+     * CapabilityMetadata declares a constraint on query length.  Configurable so that
+     * deployments can declare known runtime limits without modifying capability
+     * registrations.  Keys are ContextCapability strings; values must be positive
+     * integers.  The default is an empty record — no fabricated constraints.
+     */
+    capabilityQueryLengths: Readonly<Record<string, number>>;
   };
   hygiene: {
     relevanceThreshold: number;
@@ -108,7 +118,12 @@ export type ContextIntelligenceConfigInput = {
   };
   retrieval?: Partial<ContextIntelligenceConfig['retrieval']>;
   memory?: Partial<ContextIntelligenceConfig['memory']>;
-  query?: Partial<ContextIntelligenceConfig['query']>;
+  query?: Partial<
+    Omit<ContextIntelligenceConfig['query'], 'aliases' | 'capabilityQueryLengths'>
+  > & {
+    aliases?: Readonly<Record<string, readonly string[]>>;
+    capabilityQueryLengths?: Readonly<Record<string, number>>;
+  };
   hygiene?: Partial<ContextIntelligenceConfig['hygiene']>;
   capability?: Partial<ContextIntelligenceConfig['capability']>;
   chunking?: Partial<ContextIntelligenceConfig['chunking']>;
@@ -184,6 +199,7 @@ export const DEFAULT_CONTEXT_INTELLIGENCE_CONFIG: ContextIntelligenceConfig = {
     maximumSubqueries: 8,
     minimumRewriteLength: 8,
     aliases: {},
+    capabilityQueryLengths: {},
   },
   hygiene: {
     relevanceThreshold: 0.2,
@@ -246,7 +262,25 @@ export function resolveContextIntelligenceConfig(
     },
     retrieval: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.retrieval, ...input.retrieval },
     memory: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.memory, ...input.memory },
-    query: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query, ...input.query },
+    query: {
+      maximumExpansions:
+        input.query?.maximumExpansions ??
+        DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query.maximumExpansions,
+      maximumSubqueries:
+        input.query?.maximumSubqueries ??
+        DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query.maximumSubqueries,
+      minimumRewriteLength:
+        input.query?.minimumRewriteLength ??
+        DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query.minimumRewriteLength,
+      aliases: {
+        ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query.aliases,
+        ...(input.query?.aliases ?? {}),
+      },
+      capabilityQueryLengths: {
+        ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.query.capabilityQueryLengths,
+        ...(input.query?.capabilityQueryLengths ?? {}),
+      },
+    },
     hygiene: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.hygiene, ...input.hygiene },
     capability: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.capability, ...input.capability },
     chunking: { ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG.chunking, ...input.chunking },

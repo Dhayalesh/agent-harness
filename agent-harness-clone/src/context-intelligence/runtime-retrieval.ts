@@ -6,6 +6,8 @@ import type {
   ContextRuntimeAction,
   ExecutableContextCapability,
   NormalizedIntent,
+  QueryPlan,
+  RetrievalInputTrace,
   RuntimePerformanceProfile,
   RuntimeRetrievalOperation,
   ResourceRecord,
@@ -14,6 +16,7 @@ import type {
   ToolObservation,
   ToolPlan,
 } from './contracts.js';
+import { buildRetrievalRequestCandidates } from './query-intelligence.js';
 import { rankRuntimeCandidates } from './runtime-performance.js';
 import { dedupeStrings, id, stableHash, uniqueTerms } from './utils.js';
 
@@ -26,6 +29,7 @@ export class RuntimeRetrievalPlanner {
   plan(input: {
     requestId: string;
     intent: NormalizedIntent;
+    queryPlan?: QueryPlan;
     needs: readonly ContextNeed[];
     toolPlan: ToolPlan;
     observations: readonly ToolObservation[];
@@ -73,6 +77,7 @@ export class RuntimeRetrievalPlanner {
         requestId: input.requestId,
         need,
         intent: input.intent,
+        ...(input.queryPlan === undefined ? {} : { queryPlan: input.queryPlan }),
         toolPlan: input.toolPlan,
         observations,
         operations: needOperations,
@@ -84,26 +89,14 @@ export class RuntimeRetrievalPlanner {
         ...(adaptiveNeed?.adaptationReason === undefined
           ? {}
           : { adaptationReason: adaptiveNeed.adaptationReason }),
+        capabilityQueryLengths: this.config.query.capabilityQueryLengths,
       });
       if (action) actions.push(action);
     }
     return actions;
   }
 
-  private planNeed(input: {
-    requestId: string;
-    need: ContextNeed;
-    intent: NormalizedIntent;
-    toolPlan: ToolPlan;
-    observations: readonly ToolObservation[];
-    operations: readonly RuntimeRetrievalOperation[];
-    resources: readonly ResourceRecord[];
-    performanceProfiles: readonly RuntimePerformanceProfile[];
-    minimumComparableSamples: number;
-    iteration: number;
-    strategies: readonly RetrievalAdaptationStrategy[];
-    adaptationReason?: string;
-  }): ContextRuntimeAction | undefined {
+  private planNeed(input: PlannerInput): ContextRuntimeAction | undefined {
     const base =
       input.need.type === 'CURRENT_EXTERNAL_INFORMATION'
         ? planWebAction(input)
@@ -141,6 +134,7 @@ type PlannerInput = {
   requestId: string;
   need: ContextNeed;
   intent: NormalizedIntent;
+  queryPlan?: QueryPlan;
   toolPlan: ToolPlan;
   observations: readonly ToolObservation[];
   operations: readonly RuntimeRetrievalOperation[];
@@ -150,6 +144,20 @@ type PlannerInput = {
   iteration: number;
   strategies: readonly RetrievalAdaptationStrategy[];
   adaptationReason?: string;
+  /**
+   * Per-capability default maximum query lengths in characters, keyed by generic
+   * capability name (e.g. { WEB_SEARCH: 400 }).  Forwarded from the engine config
+   * so that retrieval-request construction can apply capability-aware bounds when
+   * the tool schema does not declare maxLength and the capability metadata does not
+   * set maximumQueryLength.
+   */
+  capabilityQueryLengths?: Readonly<Record<string, number>>;
+};
+
+type SelectedToolInput = {
+  tool: SelectedCapability;
+  input: Record<string, unknown>;
+  retrievalInput?: RetrievalInputTrace;
 };
 
 type PlannedAction = Omit<
@@ -185,6 +193,9 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         input.performanceProfiles,
         input.minimumComparableSamples,
         strategy,
+        intent,
+        input.queryPlan,
+        input.capabilityQueryLengths,
       );
       if (!selected) continue;
       return {
@@ -193,6 +204,9 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         phase: 'retrieval',
         toolName: selected.tool.capability.name,
         input: selected.input,
+        ...(selected.retrievalInput === undefined
+          ? {}
+          : { retrievalInput: selected.retrievalInput }),
         reason:
           prior.length === 0
             ? 'Fetch the supplied URL as source evidence.'
@@ -233,6 +247,10 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         operations,
         input.performanceProfiles,
         input.minimumComparableSamples,
+        strategy,
+        intent,
+        input.queryPlan,
+        input.capabilityQueryLengths,
       );
       if (!selected) continue;
       return {
@@ -241,6 +259,9 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         phase: 'retrieval',
         toolName: selected.tool.capability.name,
         input: selected.input,
+        ...(selected.retrievalInput === undefined
+          ? {}
+          : { retrievalInput: selected.retrievalInput }),
         reason:
           strategy === 'ADDITIONAL_EVIDENCE'
             ? 'Fetch the highest-ranked unexamined candidate as complementary evidence.'
@@ -256,6 +277,8 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
     'RETRIEVAL_BROADEN',
     'RETRIEVAL_NARROW',
     'QUERY_REWRITE',
+    'QUERY_EXPANSION',
+    'QUERY_DECOMPOSITION',
     'SOURCE_SWITCH',
     'ADDITIONAL_EVIDENCE',
     'TRANSIENT_RETRY',
@@ -274,6 +297,9 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       input.performanceProfiles,
       input.minimumComparableSamples,
       strategy,
+      intent,
+      input.queryPlan,
+      input.capabilityQueryLengths,
     );
     if (!selected) continue;
     return {
@@ -282,6 +308,9 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       phase: 'discovery',
       toolName: selected.tool.capability.name,
       input: selected.input,
+      ...(selected.retrievalInput === undefined
+        ? {}
+        : { retrievalInput: selected.retrievalInput }),
       reason:
         strategy === 'INITIAL'
           ? 'Obtain source candidates for the missing external evidence.'
@@ -492,6 +521,9 @@ function planGenericReadAction(input: PlannerInput): PlannedAction | undefined {
         input.performanceProfiles,
         input.minimumComparableSamples,
         strategy,
+        input.intent,
+        input.queryPlan,
+        input.capabilityQueryLengths,
       );
       if (!selected || !isReadOnly(selected.tool)) continue;
       return {
@@ -500,6 +532,9 @@ function planGenericReadAction(input: PlannerInput): PlannedAction | undefined {
         phase: 'retrieval',
         toolName: selected.tool.capability.name,
         input: selected.input,
+        ...(selected.retrievalInput === undefined
+          ? {}
+          : { retrievalInput: selected.retrievalInput }),
         reason:
           strategy === 'INITIAL'
             ? `Acquire missing ${input.need.sourceKinds.join('/')} evidence through a registered read capability.`
@@ -578,7 +613,11 @@ function unattemptedTool(
   operations: readonly RuntimeRetrievalOperation[],
   performanceProfiles: readonly RuntimePerformanceProfile[],
   minimumComparableSamples: number,
-): { tool: SelectedCapability; input: Record<string, unknown> } | undefined {
+  strategy: RetrievalAdaptationStrategy,
+  intent: NormalizedIntent,
+  queryPlan?: QueryPlan,
+  capabilityQueryLengths?: Readonly<Record<string, number>>,
+): SelectedToolInput | undefined {
   const candidates = toolsForCapability(
     toolPlan,
     capability,
@@ -586,11 +625,17 @@ function unattemptedTool(
     minimumComparableSamples,
   );
   for (const tool of candidates) {
-    const mapped = actionInput(tool, genericInput);
+    const mapped = actionInput(tool, genericInput, {
+      intent,
+      strategy,
+      operations,
+      ...(queryPlan === undefined ? {} : { queryPlan }),
+      ...(capabilityQueryLengths === undefined ? {} : { capabilityQueryLengths }),
+    });
     if (!mapped) continue;
-    const attemptKey = stableHash({ toolName: tool.capability.name, input: mapped });
+    const attemptKey = stableHash({ toolName: tool.capability.name, input: mapped.input });
     if (operations.some((operation) => operation.attemptKey === attemptKey)) continue;
-    return { tool, input: mapped };
+    return { tool, ...mapped };
   }
   return undefined;
 }
@@ -603,7 +648,10 @@ function toolForStrategy(
   performanceProfiles: readonly RuntimePerformanceProfile[],
   minimumComparableSamples: number,
   strategy: RetrievalAdaptationStrategy,
-): { tool: SelectedCapability; input: Record<string, unknown> } | undefined {
+  intent: NormalizedIntent,
+  queryPlan?: QueryPlan,
+  capabilityQueryLengths?: Readonly<Record<string, number>>,
+): SelectedToolInput | undefined {
   if (strategy !== 'TRANSIENT_RETRY') {
     return unattemptedTool(
       toolPlan,
@@ -612,6 +660,10 @@ function toolForStrategy(
       operations,
       performanceProfiles,
       minimumComparableSamples,
+      strategy,
+      intent,
+      queryPlan,
+      capabilityQueryLengths,
     );
   }
   const prior = [...operations]
@@ -631,7 +683,13 @@ function toolForStrategy(
       candidate.capability.provides?.includes(capability),
   );
   if (!tool || !isReadOnly(tool)) return undefined;
-  return { tool, input: { ...prior.input } };
+  return {
+    tool,
+    input: { ...prior.input },
+    ...(prior.retrievalInput === undefined
+      ? {}
+      : { retrievalInput: structuredClone(prior.retrievalInput) }),
+  };
 }
 
 function firstToolForStrategies(
@@ -643,7 +701,7 @@ function firstToolForStrategies(
 ):
   | {
       strategy: RetrievalAdaptationStrategy;
-      selected: { tool: SelectedCapability; input: Record<string, unknown> };
+      selected: SelectedToolInput;
     }
   | undefined {
   for (const strategy of strategiesFor(input, supported)) {
@@ -655,6 +713,9 @@ function firstToolForStrategies(
       input.performanceProfiles,
       input.minimumComparableSamples,
       strategy,
+      input.intent,
+      input.queryPlan,
+      input.capabilityQueryLengths,
     );
     if (selected) return { strategy, selected };
   }
@@ -710,29 +771,178 @@ function isReadOnly(selected: SelectedCapability): boolean {
 function actionInput(
   selected: SelectedCapability,
   generic: Readonly<Record<string, unknown>>,
-): Record<string, unknown> | undefined {
+  context: {
+    intent: NormalizedIntent;
+    strategy: RetrievalAdaptationStrategy;
+    operations: readonly RuntimeRetrievalOperation[];
+    queryPlan?: QueryPlan;
+    /** Per-capability default query length limits forwarded from engine config. */
+    capabilityQueryLengths?: Readonly<Record<string, number>>;
+  },
+): { input: Record<string, unknown>; retrievalInput?: RetrievalInputTrace } | undefined {
   const schema = selected.descriptor?.inputSchema;
-  const properties =
+  const propertyDefinitions =
     schema?.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
-      ? Object.keys(schema.properties as Record<string, unknown>)
-      : [];
+      ? (schema.properties as Record<string, unknown>)
+      : {};
+  const properties = Object.keys(propertyDefinitions);
   const required = Array.isArray(schema?.required)
     ? schema.required.filter((entry): entry is string => typeof entry === 'string')
     : [];
   const output: Record<string, unknown> = {};
+  let retrievalInput: RetrievalInputTrace | undefined;
   const aliases = selected.capability.inputAliases ?? {};
   for (const [genericName, value] of Object.entries(generic)) {
     if (value === undefined) continue;
     const explicitAlias = aliases[genericName];
     const target = explicitAlias ?? matchingProperty(genericName, properties);
-    if (target) output[target] = value;
-  }
-  if (properties.length === 0) {
-    for (const [key, value] of Object.entries(generic))
-      if (value !== undefined) output[key] = value;
+    if (!target && properties.length > 0) continue;
+    const argumentName = target ?? genericName;
+    const definition = propertyDefinition(propertyDefinitions[argumentName]);
+    if (genericName === 'query' && typeof value === 'string') {
+      // Resolve maximum query length using three sources in priority order:
+      // 1. The tool's own JSON schema maxLength (most authoritative — declared by the tool)
+      // 2. The capability metadata's maximumQueryLength (declared by capability registration)
+      // 3. A per-capability config default (deployment-level fallback for runtime tools
+      //    whose schema does not carry maxLength constraints)
+      const schemaMaxLength = numericConstraint(definition.maxLength);
+      const capabilityMaxLength = numericConstraint(selected.capability.maximumQueryLength);
+      const firstProvides = selected.capability.provides?.[0];
+      const configMaxLength =
+        firstProvides !== undefined
+          ? numericConstraint(context.capabilityQueryLengths?.[firstProvides])
+          : undefined;
+      const maximumLength = schemaMaxLength ?? capabilityMaxLength ?? configMaxLength;
+      const minimumLength = numericConstraint(definition.minLength);
+      const candidates = buildRetrievalRequestCandidates({
+        intent: context.intent,
+        ...(context.queryPlan === undefined ? {} : { plan: context.queryPlan }),
+        requested: value,
+        ...(maximumLength === undefined ? {} : { maximumLength }),
+        maximumCandidates: 8,
+        preferDecomposition: context.strategy === 'QUERY_DECOMPOSITION',
+      });
+      const priorRequests = new Set(
+        context.operations
+          .filter((operation) => {
+            // Only count prior requests from operations that use the SAME generic capability.
+            // Without this, a WEB_SEARCH query would block a WEB_FETCH action that uses the
+            // same query text as supplementary context, even though the URL is its primary
+            // identifier.  Cross-capability de-duplication is unnecessary here because
+            // different capabilities produce different tool arguments and attempt keys.
+            const firstProvides = selected.capability.provides?.[0];
+            return firstProvides === undefined || operation.capability === firstProvides;
+          })
+          .flatMap((operation) =>
+            operation.retrievalInput?.retrievalRequest
+              ? [operation.retrievalInput.retrievalRequest]
+              : queryLikeValues(operation.input),
+          ),
+      );
+      const permitsSameRequest =
+        context.strategy === 'INITIAL' ||
+        context.strategy === 'SOURCE_SWITCH' ||
+        context.strategy === 'RETRIEVAL_BROADEN';
+      const candidate =
+        candidates.find(
+          (entry) => permitsSameRequest || !priorRequests.has(entry.query),
+        ) ?? (permitsSameRequest ? candidates[0] : undefined);
+      if (
+        !candidate ||
+        (minimumLength !== undefined && candidate.query.length < minimumLength) ||
+        (maximumLength !== undefined && candidate.query.length > maximumLength)
+      ) {
+        return undefined;
+      }
+      output[argumentName] = candidate.query;
+      retrievalInput = {
+        informationNeed: candidate.informationNeed,
+        retrievalRequest: candidate.query,
+        argumentName,
+        construction: candidate.construction,
+        semanticallyCompacted: candidate.semanticallyCompacted,
+        ...(maximumLength === undefined ? {} : { capabilityMaximumLength: maximumLength }),
+      };
+      continue;
+    }
+    const normalized = validateCapabilityValue(genericName, value, definition);
+    if (!normalized.valid) return undefined;
+    output[argumentName] = normalized.value;
   }
   if (required.some((name) => output[name] === undefined)) return undefined;
-  return output;
+  return { input: output, ...(retrievalInput === undefined ? {} : { retrievalInput }) };
+}
+
+function propertyDefinition(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function numericConstraint(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function validateCapabilityValue(
+  genericName: string,
+  value: unknown,
+  definition: Readonly<Record<string, unknown>>,
+): { valid: true; value: unknown } | { valid: false } {
+  const allowed = Array.isArray(definition.enum) ? definition.enum : undefined;
+  if (allowed && !allowed.some((candidate) => Object.is(candidate, value))) return { valid: false };
+  if (typeof value === 'string') {
+    const minimumLength = numericConstraint(definition.minLength);
+    const maximumLength = numericConstraint(definition.maxLength);
+    if (minimumLength !== undefined && value.length < minimumLength) return { valid: false };
+    if (maximumLength !== undefined && value.length > maximumLength) return { valid: false };
+    return { valid: true, value };
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return { valid: false };
+    const minimum = numericConstraint(definition.minimum);
+    const maximum = numericConstraint(definition.maximum);
+    if (genericName === 'maxResults') {
+      let bounded = value;
+      if (minimum !== undefined) bounded = Math.max(minimum, bounded);
+      if (maximum !== undefined) bounded = Math.min(maximum, bounded);
+      return {
+        valid: true,
+        value: definition.type === 'integer' ? Math.floor(bounded) : bounded,
+      };
+    }
+    if ((minimum !== undefined && value < minimum) || (maximum !== undefined && value > maximum)) {
+      return { valid: false };
+    }
+    if (definition.type === 'integer' && !Number.isInteger(value)) return { valid: false };
+    return { valid: true, value };
+  }
+  if (Array.isArray(value)) {
+    const minimumItems = numericConstraint(definition.minItems);
+    const maximumItems = numericConstraint(definition.maxItems);
+    if (
+      (minimumItems !== undefined && value.length < minimumItems) ||
+      (maximumItems !== undefined && value.length > maximumItems)
+    ) {
+      return { valid: false };
+    }
+  }
+  return { valid: true, value };
+}
+
+function queryLikeValues(input: Readonly<Record<string, unknown>>): string[] {
+  const names = new Set([
+    'query',
+    'search',
+    'searchquery',
+    'term',
+    'question',
+    'text',
+    'prompt',
+    'filter',
+  ]);
+  return Object.entries(input).flatMap(([name, value]) =>
+    names.has(name.toLowerCase()) && typeof value === 'string' ? [value] : [],
+  );
 }
 
 function matchingProperty(genericName: string, properties: readonly string[]): string | undefined {
@@ -830,15 +1040,14 @@ function refinedQuery(
     '',
     'official documentation primary source',
     'current authoritative release notes',
-    'vendor documentation verified facts',
+    'authoritative documentation verified facts',
   ];
   return dedupeStrings([
     base,
     strategies[Math.min(attempt, strategies.length - 1)] ?? '',
     ...missingTerms,
   ])
-    .join(' ')
-    .slice(0, 400);
+    .join(' ');
 }
 
 function refinedGenericQuery(
@@ -855,6 +1064,5 @@ function refinedGenericQuery(
     attempt === 1 ? 'authoritative matching records' : 'specific unresolved evidence',
     ...reasons,
   ])
-    .join(' ')
-    .slice(0, 1_000);
+    .join(' ');
 }

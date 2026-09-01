@@ -633,6 +633,14 @@ export type CapabilityMetadata = {
   provides?: readonly ContextCapability[];
   /** Optional generic-to-concrete argument aliases declared by the host. */
   inputAliases?: Readonly<Record<string, string>>;
+  /**
+   * Optional upper bound on text query length for this capability, in characters.
+   * Used by the retrieval planner as a fallback when the tool's JSON schema does not
+   * declare maxLength on the primary query argument.  Set by capability registration;
+   * never inferred automatically so as not to fabricate constraints that are not
+   * declared by the actual capability or its tool schema.
+   */
+  maximumQueryLength?: number;
 };
 
 export type CapabilityResolution = {
@@ -663,6 +671,21 @@ export type ToolPlan = {
   resolutions: readonly CapabilityResolution[];
 };
 
+export type RetrievalInputTrace = {
+  /** Semantic information need from which the tool argument was constructed. */
+  informationNeed: string;
+  /** Exact bounded value supplied to the selected capability. */
+  retrievalRequest: string;
+  argumentName: string;
+  construction:
+    | 'normalized_intent'
+    | 'query_variant'
+    | 'decomposed_information_need'
+    | 'semantic_compaction';
+  semanticallyCompacted: boolean;
+  capabilityMaximumLength?: number;
+};
+
 export type ContextRuntimeAction = {
   id: string;
   requestId: string;
@@ -675,6 +698,7 @@ export type ContextRuntimeAction = {
   attemptKey: string;
   reason: string;
   strategy: RetrievalAdaptationStrategy;
+  retrievalInput?: RetrievalInputTrace;
   /** Why this strategy is preferable to repeating the prior attempt. */
   adaptationReason?: string;
   previousStrategy?: RetrievalAdaptationStrategy;
@@ -811,6 +835,7 @@ export type RuntimeRetrievalOperation = {
   input: Readonly<Record<string, unknown>>;
   attemptKey: string;
   strategy: RetrievalAdaptationStrategy;
+  retrievalInput?: RetrievalInputTrace;
   adaptationReason?: string;
   previousStrategy?: RetrievalAdaptationStrategy;
   nextStrategy?: RetrievalAdaptationStrategy;
