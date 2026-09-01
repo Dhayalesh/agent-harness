@@ -509,10 +509,26 @@ function isConcreteFileReference(candidate: string, request: string): boolean {
   return referenceCue.test(request) || quotedReadTarget;
 }
 
+/**
+ * Extracts an artifact resource ID only from authoritative URI or label+separator patterns.
+ *
+ * Recognised forms (case-insensitive):
+ *   artifact://UUID-OR-ID         — canonical artifact URI (Priority 1)
+ *   artifact id: VALUE             — explicit label with mandatory separator (Priority 2)
+ *   artifact reference: VALUE      — explicit label with mandatory separator (Priority 2)
+ *
+ * The separator character (":" or "#") is REQUIRED in Priority 2.  Without it the
+ * pattern would match "Artifact ID SomeWord" and extract "SomeWord" — a content
+ * label, not a resource identity.  Example of the incorrect extraction this prevents:
+ *
+ *   Input:   "Artifact ID Test: CI-ARTIFACT-001"
+ *   Bug:     regex with optional separator captures "Test"
+ *   Fixed:   mandatory separator — "T" does not match [:#], so no extraction occurs
+ */
 function extractArtifactReference(request: string): string | undefined {
   return (
     request.match(/\bartifact:\/\/([A-Za-z0-9_-]{3,200})\b/i)?.[1] ??
-    request.match(/\bartifact\s+(?:id|reference)\s*[:#]?\s*([A-Za-z0-9_-]{3,200})\b/i)?.[1]
+    request.match(/\bartifact\s+(?:id|reference)\s*[:#]\s*([A-Za-z0-9_-]{3,200})\b/i)?.[1]
   );
 }
 
