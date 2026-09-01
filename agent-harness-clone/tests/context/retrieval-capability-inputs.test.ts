@@ -33,27 +33,58 @@ const timestamp = '2026-09-01T00:00:00.000Z';
 const selectedResultUrl =
   'https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/what-is-bedrock-agentcore.html';
 const diagnosticPrompt = `
-RUNTIME DIAGNOSTIC — RETRIEVAL QUERY CONSTRUCTION
+RUNTIME TEST — VERIFY CLEAN RETRIEVAL INPUT
 
 Use current web information to answer:
 
-What is AWS AgentCore?
+"What is AWS AgentCore?"
 
-Use the existing web retrieval capability.
+This is a runtime validation test.
+Use the existing web_search capability.
 Do not use GitHub search.
 Do not use MCP as a substitute for web retrieval.
 Do not modify anything.
-Before executing retrieval, identify the actual information need.
-Then execute the appropriate existing web retrieval capability.
 
-Report:
-Context Need
-Selected Capability
-Actual Tool Call
-Actual Input
-Runtime telemetry
-PASS / FAIL
+CRITICAL:
+The test passes only if the actual tool input contains the information need and nothing else.
+The test fails if any orchestration instruction reaches retrieval.
+Capture the selected capability.
+Capture the actual tool call.
+Capture the actual input.
+Capture the normalized retrieval request.
+Record the execution state.
+Record the retrieval state.
+Record whether evidence was admitted.
+Verify the search query before execution.
+Verify the fetch prompt before execution.
+Validate that no raw prompt was copied.
+Validate that output requirements stay separate.
+Validate that tool restrictions stay separate.
+Validate that telemetry requirements stay separate.
+Show the Context Need.
+Show the Selected Capability.
+Show the Actual Tool Call.
+Show the Actual Input.
+Show the Observation.
+Show the Evidence.
+Show the Evaluation.
+Show the Grounding Decision.
+Report runtime telemetry.
+Report PASS or FAIL.
+The purpose of this test is retrieval-input isolation.
+The final answer is not sufficient proof.
+A successful search with a polluted query is a failure.
+False provenance is a failure.
+Do not claim success from answer quality.
+Do not retry with the raw prompt.
+If retrieval is insufficient, adapt from the information need.
+If the tool fails, keep the operation failed.
+At the end, provide only the requested validation report.
 `.trim();
+
+function diagnosticPromptFor(informationNeed: string): string {
+  return diagnosticPrompt.replace('"What is AWS AgentCore?"', `"${informationNeed}"`);
+}
 
 const config = {
   ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG,
@@ -401,6 +432,32 @@ function runtimeTools(captured: {
   ];
 }
 
+async function executeRuntimePrompt(prompt: string): Promise<{
+  searches: SearchInput[];
+  fetches: FetchInput[];
+}> {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const session = createAgentSession({
+    provider: new ScriptedModelProvider([
+      [
+        { type: 'text_delta', delta: 'AWS AgentCore answer.' },
+        { type: 'completed', stopReason: 'end_turn' },
+      ],
+    ]),
+    tools: runtimeTools(captured),
+    permissionHandler: new AllowAllPermissionHandler(),
+    contextIntelligence: {
+      config: {
+        query: { capabilityQueryLengths: { WEB_SEARCH: 400, WEB_FETCH: 400 } },
+      },
+    },
+  });
+  for await (const _event of session.run({ prompt })) {
+    // Consume the complete Context Intelligence retrieval loop.
+  }
+  return captured;
+}
+
 test('short information need becomes the actual web_search query', () => {
   const intent = resolver.resolve('What is AWS AgentCore?');
   const need = contextNeed(intent);
@@ -422,10 +479,14 @@ test('diagnostic orchestration and report fields never enter the actual web_sear
 
   assert.ok(action);
   assert.equal(query, action.retrievalInput?.retrievalRequest);
+  assert.equal(query, 'What is AWS AgentCore?');
   assert.notEqual(query, diagnosticPrompt);
   assert.match(query, /AWS AgentCore/i);
   for (const forbidden of [
-    'runtime diagnostic',
+    'runtime test',
+    'runtime validation test',
+    'critical',
+    'test passes only if',
     'then execute',
     'context need',
     'selected capability',
@@ -485,43 +546,60 @@ test('a genuinely long compound information need uses semantic decomposition', (
 });
 
 test('AgentSession executes clean web_search and search-result-derived web_fetch inputs', async () => {
-  const captured = {
-    searches: [] as SearchInput[],
-    fetches: [] as FetchInput[],
-  };
-  const tools = runtimeTools(captured);
-  const session = createAgentSession({
-    provider: new ScriptedModelProvider([
-      [
-        { type: 'text_delta', delta: 'AWS AgentCore answer.' },
-        { type: 'completed', stopReason: 'end_turn' },
-      ],
-    ]),
-    tools,
-    permissionHandler: new AllowAllPermissionHandler(),
-    contextIntelligence: {
-      config: {
-        query: { capabilityQueryLengths: { WEB_SEARCH: 400, WEB_FETCH: 400 } },
-      },
-    },
-  });
+  const normalizedRetrievalRequest = resolver.resolve(diagnosticPrompt).normalizedRequest;
+  const captured = await executeRuntimePrompt(diagnosticPrompt);
 
-  for await (const _event of session.run({ prompt: diagnosticPrompt })) {
-    // Consume the complete Context Intelligence retrieval loop.
-  }
-
+  assert.equal(normalizedRetrievalRequest, 'What is AWS AgentCore?');
   assert.ok(captured.searches.length >= 1, 'web_search must execute');
   const actualSearch = captured.searches[0]!;
-  assert.notEqual(actualSearch.query, diagnosticPrompt);
-  assert.match(actualSearch.query, /AWS AgentCore/i);
-  assert.equal(actualSearch.query.toLowerCase().includes('runtime diagnostic'), false);
+  assert.equal(actualSearch.query, normalizedRetrievalRequest);
+  assert.equal(actualSearch.query.toLowerCase().includes('runtime test'), false);
 
   assert.ok(captured.fetches.length >= 1, 'web_fetch must execute after search');
   const actualFetch = captured.fetches[0]!;
   assert.equal(actualFetch.url, selectedResultUrl);
-  assert.notEqual(actualFetch.prompt, diagnosticPrompt);
-  assert.match(actualFetch.prompt ?? '', /AWS AgentCore/i);
+  assert.equal(actualFetch.prompt, normalizedRetrievalRequest);
   assert.equal((actualFetch.prompt ?? '').toLowerCase().includes('actual tool call'), false);
+});
+
+for (const scenario of [
+  {
+    name: 'latest documentation request',
+    informationNeed: 'Find the latest AWS AgentCore documentation.',
+  },
+  {
+    name: 'comparison request',
+    informationNeed: 'Compare AWS AgentCore Runtime and Gateway.',
+  },
+]) {
+  test(`long diagnostic ${scenario.name} reaches tools unchanged`, async () => {
+    const prompt = diagnosticPromptFor(scenario.informationNeed);
+    const intent = resolver.resolve(prompt);
+    const action = plan(intent, contextNeed(intent), webCapabilities())[0];
+
+    assert.ok(prompt.split(/\r?\n/).length > 30);
+    assert.equal(intent.normalizedRequest, scenario.informationNeed);
+    assert.ok(action);
+    assert.equal(action.input.query, scenario.informationNeed);
+    assert.equal(action.input.query, action.retrievalInput?.retrievalRequest);
+
+    const captured = await executeRuntimePrompt(prompt);
+    assert.equal(captured.searches[0]?.query, scenario.informationNeed);
+    assert.equal(captured.fetches[0]?.url, selectedResultUrl);
+    assert.equal(captured.fetches[0]?.prompt, scenario.informationNeed);
+  });
+}
+
+test('non-retrieval task keywords do not trigger a retrieval capability', async () => {
+  const prompt =
+    'Update the local search test report so CRITICAL failures are grouped by component. Keep the report wording concise.';
+  const intent = resolver.resolve(prompt);
+  const captured = await executeRuntimePrompt(prompt);
+
+  assert.equal(intent.operation, 'update');
+  assert.equal(intent.normalizedRequest, prompt);
+  assert.deepEqual(captured.searches, []);
+  assert.deepEqual(captured.fetches, []);
 });
 
 test('MCP retrieval maps the normalized information need through its prompt contract', () => {

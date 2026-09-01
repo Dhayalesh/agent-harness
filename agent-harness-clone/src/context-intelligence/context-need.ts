@@ -427,11 +427,12 @@ function requiresCurrentExternalInformation(
 ): boolean {
   if (explicitSource && explicitSource !== 'WEB') return false;
   const hasExternalUri = intent.entities.some((entity) => entity.type === 'uri');
+  const retrievalContext = `${request} ${intent.instructionSegments.retrievalInstructions.join(' ')}`;
   const stronglyExternal =
     /\b(web|internet|online|external|official (?:information|sources?)|news|weather|stock|share price|exchange rate|current president|current ceo|latest release|latest version|today'?s|search online)\b/i.test(
-      request,
+      retrievalContext,
     );
-  const evidenceRequested = /\b(sources?|evidence|verify|look up)\b/i.test(request);
+  const evidenceRequested = /\b(sources?|evidence|verify|look up)\b/i.test(retrievalContext);
   const explicitlyLocal =
     Boolean(extractFileReference(intent.originalRequest)) ||
     /\b(?:project|workspace|repository|repo|codebase|task|conversation|session)\b/i.test(request);

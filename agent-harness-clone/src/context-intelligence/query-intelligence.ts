@@ -15,10 +15,7 @@ export type RetrievalRequestCandidate = {
   query: string;
   informationNeed: string;
   construction:
-    | 'normalized_intent'
-    | 'query_variant'
-    | 'decomposed_information_need'
-    | 'semantic_compaction';
+    'normalized_intent' | 'query_variant' | 'decomposed_information_need' | 'semantic_compaction';
   semanticallyCompacted: boolean;
 };
 
@@ -29,7 +26,7 @@ export class IntentResolver {
     const informationText = segmented.informationRequirements.join(' ').trim();
     const normalizedRequest = withRetrievalModifiers(
       normalizeQuery(informationText || segmented.userIntent),
-      retrievalModifiers([...segmented.retrievalInstructions, informationText]),
+      retrievalModifiers([informationText]),
     );
     const instructionSegments = { ...segmented, userIntent: normalizedRequest };
     const entities = extractEntities(normalizedRequest);
@@ -259,8 +256,8 @@ export function buildRetrievalRequestCandidates(input: {
   const maximumCandidates = Math.max(1, Math.floor(input.maximumCandidates ?? 8));
   const requested = normalizeQuery(input.requested ?? input.intent.normalizedRequest);
   const modifiers = retrievalModifiers([
-    ...input.intent.instructionSegments.retrievalInstructions,
     input.intent.normalizedRequest,
+    ...input.intent.instructionSegments.informationRequirements,
   ]);
   const requirements = dedupeStrings(
     input.intent.instructionSegments.informationRequirements
@@ -369,7 +366,9 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   const systemToolInstructions: string[] = [];
   const formattingInstructions: string[] = [];
   const informationRequirements: string[] = [];
+  const diagnosticEnvelope = clauses.some(isDiagnosticEnvelopeSignal);
   let formattingFieldSection = false;
+  let awaitingInformationRequirement = false;
 
   for (const clause of clauses) {
     if (isFormattingFieldSectionStart(clause)) {
@@ -398,14 +397,30 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
       retrievalInstructions.push(clause);
       const subject = informationBeforeDirective(clause, RETRIEVAL_DIRECTIVE);
       if (subject) informationRequirements.push(subject);
+      if (introducesInformationRequirement(clause)) awaitingInformationRequirement = true;
       continue;
     }
     if (isTaskInstruction(clause)) {
       taskInstructions.push(clause);
       continue;
     }
-    const subject = cleanInformationRequirement(clause);
-    if (subject) informationRequirements.push(subject);
+
+    const explicitInformationRequirement = isExplicitInformationRequirement(clause);
+    const subject =
+      diagnosticEnvelope && (awaitingInformationRequirement || explicitInformationRequirement)
+        ? normalizeExplicitInformationRequirement(clause)
+        : cleanInformationRequirement(clause);
+    if (
+      subject &&
+      (!diagnosticEnvelope || awaitingInformationRequirement || explicitInformationRequirement)
+    ) {
+      informationRequirements.push(subject);
+    } else if (subject && diagnosticEnvelope) {
+      systemToolInstructions.push(clause);
+    }
+    if (awaitingInformationRequirement || explicitInformationRequirement) {
+      awaitingInformationRequirement = false;
+    }
   }
 
   const requirements = dedupeStrings(informationRequirements)
@@ -420,6 +435,53 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     formattingInstructions: dedupeStrings(formattingInstructions).slice(0, 30),
     informationRequirements: requirements.map(normalizeQuery),
   };
+}
+
+function isDiagnosticEnvelopeSignal(value: string): boolean {
+  return (
+    /\b(?:runtime|retrieval|harness|capability|tool(?:[ -]input)?)\s+(?:test|diagnostic|validation)\b/i.test(
+      value,
+    ) ||
+    /\b(?:test|validation)\s+(?:prompt|request|instructions?|assertions?|criteria)\b/i.test(
+      value,
+    ) ||
+    /\b(?:test|validation)\s+(?:passes|fails)\s+(?:only\s+)?if\b/i.test(value)
+  );
+}
+
+function introducesInformationRequirement(value: string): boolean {
+  return (
+    /\b(?:answer|address)\s*:\s*$/i.test(value) ||
+    /^(?:question|research question|information need|topic)\s*:\s*$/i.test(value)
+  );
+}
+
+function isExplicitInformationRequirement(value: string): boolean {
+  const requirement = normalizeExplicitInformationRequirement(value);
+  if (!requirement || isControlPlaneAssertion(requirement)) return false;
+  return (
+    /^(?:what|which|who|whom|whose|when|where|why|how|is|are|was|were|do|does|did|can|could|should|would|will|has|have|had)\b[\s\S]*\?$/i.test(
+      requirement,
+    ) ||
+    /^(?:find|compare|contrast|explain|describe|summarize|list|identify|determine|research|investigate|analy[sz]e|review|retrieve|locate)\b/i.test(
+      requirement,
+    )
+  );
+}
+
+function isControlPlaneAssertion(value: string): boolean {
+  return /\b(?:runtime (?:test|diagnostic|validation)|validation test|test (?:passes|fails|assertion|instruction)|actual (?:tool call|tool input|input)|normalized retrieval request|raw (?:prompt|request)|orchestration instruction|selected capability|context need|grounding decision|answer quality)\b/i.test(
+    value,
+  );
+}
+
+function normalizeExplicitInformationRequirement(value: string): string {
+  const labelled = normalizeQuery(value).replace(
+    /^(?:question|research question|information need|topic)\s*:\s*/i,
+    '',
+  );
+  const wrapped = labelled.match(/^["'“‘]([\s\S]*)["'”’]$/);
+  return normalizeQuery(wrapped?.[1] ?? labelled);
 }
 
 const OUTPUT_DIRECTIVE =
