@@ -81,6 +81,7 @@ export class AdaptiveRetrievalIntelligence {
       input.evaluatedEvidence,
       input.conflicts,
       unresolvedNeeds.length === 0,
+      requiredNeedCompleteness(input.needs, needAssessments),
     );
 
     return {
@@ -199,6 +200,7 @@ function assessAttempts(input: AttemptInput): RetrievalAttemptAssessment[] {
         relatedEvidence,
         conflictsForEvidence(input.conflicts, relatedEvidence),
         outcome === 'RETRIEVAL_SUCCESS',
+        outcome === 'RETRIEVAL_SUCCESS' ? 1 : 0,
       ),
       contributedEvidence: relatedEvidence.some((item) => item.evaluation.admitted),
       ...(terminationReason === undefined ? {} : { terminationReason }),
@@ -376,7 +378,10 @@ function recommendationFor(
     case 'SOURCE_CONFLICT':
       return ['ADDITIONAL_EVIDENCE', 'SOURCE_SWITCH'];
     case 'TOOL_FAILURE':
-      if (operation?.failureClassification === 'invalid_input' && hasQueryLikeInput(operation.input)) {
+      if (
+        operation?.failureClassification === 'invalid_input' &&
+        hasQueryLikeInput(operation.input)
+      ) {
         // When the invalid input is caused by an oversized query, decomposition must
         // come first — rewrite alone can add terms and further lengthen the request.
         // The distinction is made by inspecting the failure content for size-related
@@ -418,8 +423,8 @@ function isOversizedQueryFailure(operation: RuntimeRetrievalOperation): boolean 
   if (!hasOversizeError) return false;
   // Inspect the query value: if it is unusually long it is a strong signal that
   // the tool rejected it for size, even when we cannot read the error text here.
-  const queryValue = Object.entries(operation.input).find(
-    ([name]) => /^(?:query|search|searchquery|term|question|text|prompt|filter)$/i.test(name),
+  const queryValue = Object.entries(operation.input).find(([name]) =>
+    /^(?:query|search|searchquery|term|question|text|prompt|filter)$/i.test(name),
   )?.[1];
   return typeof queryValue === 'string' && queryValue.length > 200;
 }
@@ -470,10 +475,12 @@ function evidenceQuality(
   evidence: readonly EvidenceItem[],
   conflicts: readonly ContextConflict[],
   sufficient: boolean,
+  completeness: number,
 ): RetrievalEvidenceQuality {
   const measured = evidence.filter((item) => item.evaluation !== undefined);
   return {
     evidenceCount: evidence.filter((item) => item.evaluation.admitted).length,
+    completeness,
     ...(measured.length === 0
       ? {}
       : {
@@ -487,6 +494,19 @@ function evidenceQuality(
     conflictCount: conflicts.length,
     sufficient,
   };
+}
+
+function requiredNeedCompleteness(
+  needs: readonly ContextNeed[],
+  assessments: readonly RetrievalNeedAssessment[],
+): number {
+  const required = needs.filter((need) => need.required);
+  if (required.length === 0) return 1;
+  const closed = required.filter((need) => {
+    const assessment = assessments.find((candidate) => candidate.needId === need.id);
+    return need.status === 'satisfied' && assessment?.outcome !== 'SOURCE_CONFLICT';
+  }).length;
+  return closed / required.length;
 }
 
 function conflictsForEvidence(

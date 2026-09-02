@@ -606,10 +606,7 @@ test('unplanned retrieval cannot bypass the normalized capability-input boundary
   assert.equal(planned.allowed, true);
   if (planned.allowed) {
     assert.deepEqual(planned.input, action.input);
-    assert.notEqual(
-      (planned.input as SearchInput).query,
-      currentResearchDiagnosticPrompt,
-    );
+    assert.notEqual((planned.input as SearchInput).query, currentResearchDiagnosticPrompt);
   }
 
   const unplanned = engine.bindRuntimeToolInput({
@@ -895,6 +892,14 @@ test('provenance distinguishes raw request, information need, actual request, an
   assert.equal(first.contract.runtimeRetrieval[0]?.input.query, action.input.query);
 
   const parsed = search.inputSchema.parse(action.input);
+  const receipt = engine.recordRuntimeToolInvocation({
+    tool: search,
+    toolCallId: action.id,
+    actualToolInput: parsed,
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+  });
+  assert.equal(receipt.allowed, true);
   const output = await search.execute(parsed, {
     sessionId: 'session-1',
     turnId: 'turn-1',
@@ -911,7 +916,7 @@ test('provenance distinguishes raw request, information need, actual request, an
     sessionId: 'session-1',
     turnId: 'turn-1',
     executionDurationMs: 1,
-    actualToolInput: parsed,
+    toolResultReturned: true,
   });
   const second = await engine.prepare(prepareInput);
   const observed = second.contract.observations.find((entry) => entry.toolCallId === action.id);
@@ -955,6 +960,14 @@ test('a failed runtime retrieval remains failed and produces no evidence', async
   const action = first.contract.directive.actions[0];
   assert.ok(action);
   const parsed = search.inputSchema.parse(action.input);
+  const receipt = engine.recordRuntimeToolInvocation({
+    tool: search,
+    toolCallId: action.id,
+    actualToolInput: parsed,
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+  });
+  assert.equal(receipt.allowed, true);
   const output = await search.execute(parsed, {
     sessionId: 'session-1',
     turnId: 'turn-1',
@@ -971,7 +984,7 @@ test('a failed runtime retrieval remains failed and produces no evidence', async
     sessionId: 'session-1',
     turnId: 'turn-1',
     executionDurationMs: 1,
-    actualToolInput: parsed,
+    toolResultReturned: true,
   });
   const second = await engine.prepare(prepareInput);
   const failed = second.contract.runtimeRetrieval.find((entry) => entry.id === action.id);
@@ -1050,6 +1063,14 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
     };
     if (action.toolName === search.name) {
       const parsed = search.inputSchema.parse(action.input);
+      const receipt = engine.recordRuntimeToolInvocation({
+        tool: search,
+        toolCallId: action.id,
+        actualToolInput: parsed,
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(receipt.allowed, true);
       const output = await search.execute(parsed, toolContext);
       await engine.processObservation({
         tool: search,
@@ -1058,11 +1079,19 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
         sessionId: 'session-1',
         turnId: 'turn-1',
         executionDurationMs: 1,
-        actualToolInput: parsed,
+        toolResultReturned: true,
       });
     } else {
       assert.equal(action.toolName, fetch.name);
       const parsed = fetch.inputSchema.parse(action.input);
+      const receipt = engine.recordRuntimeToolInvocation({
+        tool: fetch,
+        toolCallId: action.id,
+        actualToolInput: parsed,
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+      });
+      assert.equal(receipt.allowed, true);
       const output = await fetch.execute(parsed, toolContext);
       await engine.processObservation({
         tool: fetch,
@@ -1071,13 +1100,17 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
         sessionId: 'session-1',
         turnId: 'turn-1',
         executionDurationMs: 1,
-        actualToolInput: parsed,
+        toolResultReturned: true,
       });
     }
     latest = await engine.prepare(prepareInput);
   }
 
-  assert.equal(latest.contract.directive.actions.length, 0, 'a terminal retrieval decision must stop retrieval');
+  assert.equal(
+    latest.contract.directive.actions.length,
+    0,
+    'a terminal retrieval decision must stop retrieval',
+  );
   const operations = latest.contract.runtimeRetrieval;
   const searchOperations = operations.filter((entry) => entry.capability === 'WEB_SEARCH');
   const fetchOperations = operations.filter((entry) => entry.capability === 'WEB_FETCH');
@@ -1090,11 +1123,25 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
   assert.deepEqual(searchOperations[1]?.actualInput, captured.searches[1]);
   assert.deepEqual(fetchOperations[0]?.input, captured.fetches[0]);
   assert.deepEqual(fetchOperations[0]?.actualInput, captured.fetches[0]);
+  for (const operation of operations) {
+    assert.ok(operation.invokedAt, `${operation.toolName} must have an invocation receipt`);
+    assert.ok(
+      operation.actualResult,
+      `${operation.toolName} must retain its exact returned result`,
+    );
+    assert.ok(
+      operation.resultReceivedAt,
+      `${operation.toolName} must timestamp its returned result`,
+    );
+  }
   assert.equal(searchOperations[0]?.strategy, 'INITIAL');
   assert.notEqual(searchOperations[1]?.strategy, 'INITIAL');
   assert.equal(searchOperations[1]?.previousStrategy, 'INITIAL');
   assert.ok(searchOperations[1]?.adaptationReason);
-  assert.notEqual(searchOperations[1]?.retrievalInput?.retrievalRequest, searchOperations[0]?.retrievalInput?.retrievalRequest);
+  assert.notEqual(
+    searchOperations[1]?.retrievalInput?.retrievalRequest,
+    searchOperations[0]?.retrievalInput?.retrievalRequest,
+  );
   assert.equal(searchOperations[0]?.retrievalResult, 'TOOL_FAILURE');
   assert.equal(searchOperations[0]?.contributedEvidence, false);
   assert.equal(fetchOperations[0]?.status, 'succeeded');
@@ -1125,7 +1172,9 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
   }
 
   const attemptTelemetry = telemetry.filter(
-    (event) => event.event === 'context-intelligence.observation' && event.data.retrieval_attempt_number !== undefined,
+    (event) =>
+      event.event === 'context-intelligence.observation' &&
+      event.data.retrieval_attempt_number !== undefined,
   );
   const firstTelemetry = attemptTelemetry.find(
     (event) => event.data.retrieval_attempt_number === 1 && event.data.tool === 'web_search',
@@ -1137,6 +1186,26 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
   assert.deepEqual(secondTelemetry?.data.actual_tool_input, captured.searches[1]);
   assert.equal(firstTelemetry?.data.retrieval_failure_reason, 'invalid_input');
   assert.notEqual(firstTelemetry?.data.retrieval_request, secondTelemetry?.data.retrieval_request);
+
+  const invocationTelemetry = telemetry.filter(
+    (event) => event.event === 'context-intelligence.invocation',
+  );
+  assert.equal(invocationTelemetry.length, operations.length);
+  for (const operation of operations) {
+    const invocation = invocationTelemetry.find(
+      (event) =>
+        event.data.tool === operation.toolName &&
+        event.data.retrieval_attempt_number === operation.iteration,
+    );
+    assert.deepEqual(invocation?.data.actual_tool_input, operation.actualInput);
+    assert.equal(invocation?.data.retrieval_request, operation.retrievalInput?.retrievalRequest);
+    const resultEvent = attemptTelemetry.find(
+      (event) =>
+        event.data.tool === operation.toolName &&
+        event.data.retrieval_attempt_number === operation.iteration,
+    );
+    assert.deepEqual(resultEvent?.data.actual_tool_result, operation.actualResult);
+  }
 
   const adaptiveTelemetry = telemetry.filter(
     (event) => event.event === 'context-intelligence.retrieval' && event.data.phase === 'adaptive',
@@ -1156,7 +1225,7 @@ test('runtime provenance and telemetry preserve every actual adaptive attempt', 
   }
 });
 
-test('AgentSession records schema-normalized input as the actual tool input', async () => {
+test('schema transforms cannot mutate the authoritative query before actual invocation', async () => {
   const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
   const telemetry: Array<{ event: string; data: Readonly<Record<string, unknown>> }> = [];
   const engine = new ContextIntelligenceEngine({
@@ -1181,19 +1250,17 @@ test('AgentSession records schema-normalized input as the actual tool input', as
     // Consume the complete retrieval loop.
   }
 
-  const normalizedRequest = resolver.resolve(request).normalizedRequest;
-  assert.equal(
-    captured.searches[0]?.query,
-    normalizedRequest.toUpperCase(),
-    JSON.stringify({ telemetry, captured }),
+  assert.deepEqual(captured.searches, [], 'tool.execute must not receive a transformed query');
+  const invocationTelemetry = telemetry.filter(
+    (event) => event.event === 'context-intelligence.invocation',
   );
-  const searchTelemetry = telemetry.find(
+  assert.deepEqual(invocationTelemetry, []);
+  const rejected = telemetry.find(
     (event) =>
       event.event === 'context-intelligence.observation' && event.data.tool === 'web_search',
   );
-  assert.equal(searchTelemetry?.data.retrieval_request, normalizedRequest);
-  assert.deepEqual(searchTelemetry?.data.actual_tool_input, captured.searches[0]);
-  assert.notEqual(searchTelemetry?.data.actual_tool_input, searchTelemetry?.data.retrieval_request);
+  assert.equal(rejected?.data.actual_tool_input, undefined);
+  assert.equal(rejected?.data.actual_tool_result, undefined);
 });
 
 test('pre-execution validation failure records no actual tool input', async () => {
@@ -1226,6 +1293,10 @@ test('pre-execution validation failure records no actual tool input', async () =
   }
 
   assert.deepEqual(captured.searches, [], 'tool.execute must not run after schema rejection');
+  assert.equal(
+    telemetry.some((event) => event.event === 'context-intelligence.invocation'),
+    false,
+  );
   const rejectedAttempts = telemetry.filter(
     (event) =>
       event.event === 'context-intelligence.observation' && event.data.tool === 'web_search',
@@ -1236,7 +1307,6 @@ test('pre-execution validation failure records no actual tool input', async () =
     assert.equal(attempt.data.retrieval_failure_reason, 'invalid_input');
   }
 });
-
 
 test('QUERY_DECOMPOSITION derives action and trace only from the canonical Context Need request', () => {
   const canonicalIntent = resolver.resolve(

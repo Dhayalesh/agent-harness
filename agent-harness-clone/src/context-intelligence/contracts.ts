@@ -694,10 +694,7 @@ export type RetrievalInputTrace = {
   retrievalRequest: string;
   argumentName: string;
   construction:
-    | 'normalized_intent'
-    | 'query_variant'
-    | 'decomposed_information_need'
-    | 'semantic_compaction';
+    'normalized_intent' | 'query_variant' | 'decomposed_information_need' | 'semantic_compaction';
   semanticallyCompacted: boolean;
   capabilityMaximumLength?: number;
 };
@@ -778,6 +775,8 @@ export type RetrievalEvidenceQuality = {
   relevance?: number;
   authority?: number;
   freshness?: number;
+  /** Fraction of required Context Needs closed by evaluated evidence. */
+  completeness: number;
   confidence?: number;
   provenanceCompleteness?: number;
   conflictCount: number;
@@ -852,6 +851,16 @@ export type RuntimeRetrievalOperation = {
   input: Readonly<Record<string, unknown>>;
   /** Exact schema-parsed input passed to tool.execute; absent when execution never started. */
   actualInput?: unknown;
+  /** Set at the invocation boundary immediately before tool.execute is called. */
+  invokedAt?: ISODateTime;
+  /** Exact value returned by tool.execute, before observation shaping or offloading. */
+  actualResult?: {
+    content: string;
+    isError?: boolean;
+    metadata?: Readonly<Record<string, unknown>>;
+  };
+  /** Set when tool.execute resolves with actualResult. */
+  resultReceivedAt?: ISODateTime;
   attemptKey: string;
   strategy: RetrievalAdaptationStrategy;
   retrievalInput?: RetrievalInputTrace;

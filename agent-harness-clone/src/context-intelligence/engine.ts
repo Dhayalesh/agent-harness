@@ -84,6 +84,7 @@ export type ContextIntelligenceTelemetryEvent = {
     | 'context-intelligence.memory-recall'
     | 'context-intelligence.memory-admission'
     | 'context-intelligence.capability-selection'
+    | 'context-intelligence.invocation'
     | 'context-intelligence.observation'
     | 'context-intelligence.evidence'
     | 'context-intelligence.hygiene'
@@ -271,6 +272,9 @@ export class ContextIntelligenceEngine {
       complexity: queryResult.intent.complexity,
       variants: queryResult.plan.variants.length,
       transformations: queryResult.plan.variants.map((query) => query.kind),
+      normalized_retrieval_request: initialNeeds.find(
+        (need) => need.normalizedRetrievalRequest !== undefined,
+      )?.normalizedRetrievalRequest?.request,
     });
     this.emit('context-intelligence.retrieval', input, {
       providers: [...new Set(queryResult.outcome.results.map((result) => result.providerId))],
@@ -603,6 +607,18 @@ export class ContextIntelligenceEngine {
       retrieval_budget_remaining: adaptiveRetrieval.remainingRetrievalBudget,
       evidence_quality: adaptiveRetrieval.evidenceQuality,
       termination_reason: adaptiveRetrieval.terminationReason,
+      attempt_evaluations: adaptiveRetrieval.attempts.map((attempt) => ({
+        attempt_number: attempt.attemptNumber,
+        tool: attempt.toolName,
+        capability: attempt.capability,
+        state: attempt.state,
+        strategy: attempt.strategy,
+        outcome: attempt.outcome,
+        evidence_quality: attempt.evidenceQuality,
+        contributed_evidence: attempt.contributedEvidence,
+        adaptation_reason: attempt.adaptationReason,
+        termination_reason: attempt.terminationReason,
+      })),
     });
     taskState = this.taskState ?? taskState;
     const resourceRecords = this.resources.assess({
@@ -847,15 +863,27 @@ export class ContextIntelligenceEngine {
     sessionId: string;
     turnId: string;
     executionDurationMs?: number;
-    /** Exact schema-parsed value passed to tool.execute; omitted if execution never began. */
-    actualToolInput?: unknown;
+    /** True only when output is the value with which tool.execute resolved. */
+    toolResultReturned?: boolean;
   }): Promise<ProcessedObservation> {
-    const { executionDurationMs, actualToolInput, ...observationInput } = input;
+    const { executionDurationMs, toolResultReturned, ...observationInput } = input;
+    const action = this.plannedActions.get(input.toolCallId);
+    const operation = action
+      ? this.runtimeOperations.find((entry) => entry.id === action.id)
+      : undefined;
+    const actualToolInput = operation?.actualInput;
+    const actualToolResult =
+      toolResultReturned === true && operation?.invokedAt !== undefined
+        ? deepClone(input.output)
+        : undefined;
+    if (operation && actualToolResult !== undefined) {
+      operation.actualResult = actualToolResult;
+      operation.resultReceivedAt = now();
+    }
     const processed = await this.observations.process({
       ...observationInput,
       intent: this.lastContract?.intent ?? this.query.understand(input.tool.description),
     });
-    const action = this.plannedActions.get(input.toolCallId);
     const inferredCapability = inferGenericCapabilities(input.tool)[0];
     const capability = action?.capability ?? inferredCapability;
     const matchingNeeds =
@@ -903,8 +931,7 @@ export class ContextIntelligenceEngine {
                   ...(action.retrievalInput.capabilityMaximumLength === undefined
                     ? {}
                     : {
-                        capabilityInputMaximumLength:
-                          action.retrievalInput.capabilityMaximumLength,
+                        capabilityInputMaximumLength: action.retrievalInput.capabilityMaximumLength,
                       }),
                 }),
             ...(action.adaptationReason === undefined
@@ -986,11 +1013,7 @@ export class ContextIntelligenceEngine {
       if (this.offloadedState.length > 100) this.offloadedState.shift();
     }
     if (action) {
-      const operation = this.runtimeOperations.find((entry) => entry.id === action.id);
       if (operation) {
-        if (actualToolInput !== undefined) {
-          operation.actualInput = structuredClone(actualToolInput);
-        }
         const resourceOutcome = observeResourceOperation({
           action,
           observation,
@@ -1052,6 +1075,7 @@ export class ContextIntelligenceEngine {
       retrieval_strategy: action?.strategy,
       retrieval_request: action?.retrievalInput?.retrievalRequest,
       actual_tool_input: actualToolInput,
+      actual_tool_result: actualToolResult,
       retrieval_state: observedOperation?.retrievalState,
       retrieval_failure_reason: observedOperation?.failureClassification,
       adaptation_reason: action?.adaptationReason,
@@ -1062,6 +1086,67 @@ export class ContextIntelligenceEngine {
       observation,
       result: this.config.features.observationProcessing ? processed.result : input.output,
     };
+  }
+
+  /**
+   * Records an immutable invocation receipt from the exact schema-parsed value
+   * that AgentSession is about to pass to tool.execute. This remains separate
+   * from observation processing so telemetry cannot reconstruct an invocation
+   * from a plan or a later result.
+   */
+  recordRuntimeToolInvocation(input: {
+    tool: Tool;
+    toolCallId: string;
+    actualToolInput: unknown;
+    sessionId: string;
+    turnId: string;
+  }): { allowed: true } | { allowed: false; reason: string } {
+    const action = this.plannedActions.get(input.toolCallId);
+    if (!action) return { allowed: true };
+    const operation = this.runtimeOperations.find((entry) => entry.id === action.id);
+    if (!operation || action.toolName !== input.tool.name) {
+      return {
+        allowed: false,
+        reason: 'The invocation does not match a registered Context Intelligence retrieval action.',
+      };
+    }
+    if (operation.actualInput !== undefined || operation.invokedAt !== undefined) {
+      return {
+        allowed: false,
+        reason: 'The Context Intelligence retrieval action already has an invocation receipt.',
+      };
+    }
+    const trace = action.retrievalInput;
+    if (trace) {
+      const actual =
+        input.actualToolInput &&
+        typeof input.actualToolInput === 'object' &&
+        !Array.isArray(input.actualToolInput)
+          ? (input.actualToolInput as Record<string, unknown>)[trace.argumentName]
+          : undefined;
+      if (actual !== trace.retrievalRequest) {
+        return {
+          allowed: false,
+          reason:
+            'The schema-parsed retrieval argument differs from the authoritative normalized retrieval request.',
+        };
+      }
+    }
+    operation.actualInput = deepClone(input.actualToolInput);
+    operation.invokedAt = now();
+    operation.retrievalState = 'IN_PROGRESS';
+    this.emit('context-intelligence.invocation', input, {
+      tool: input.tool.name,
+      retrieval_attempt_number: operation.iteration,
+      retrieval_strategy: action.strategy,
+      information_need: action.retrievalInput?.informationNeed,
+      retrieval_request: action.retrievalInput?.retrievalRequest,
+      actual_tool_input: operation.actualInput,
+      invoked_at: operation.invokedAt,
+      adaptation_reason: action.adaptationReason,
+      previous_strategy: action.previousStrategy,
+    });
+    return { allowed: true };
   }
 
   bindRuntimeToolInput(input: {
@@ -1085,10 +1170,7 @@ export class ContextIntelligenceEngine {
         };
       }
       const trace = action.retrievalInput;
-      if (
-        trace &&
-        action.input[trace.argumentName] !== trace.retrievalRequest
-      ) {
+      if (trace && action.input[trace.argumentName] !== trace.retrievalRequest) {
         return {
           allowed: false,
           reason:
@@ -1112,8 +1194,7 @@ export class ContextIntelligenceEngine {
       inferGenericCapabilities(input.tool);
     const retrievalCapability = runtimeCapabilities.some(
       (capability) =>
-        capability !== 'MARKDOWN_ARTIFACT_CREATE' &&
-        capability !== 'DOCUMENT_ARTIFACT_CREATE',
+        capability !== 'MARKDOWN_ARTIFACT_CREATE' && capability !== 'DOCUMENT_ARTIFACT_CREATE',
     );
     if (governedRetrieval || retrievalCapability) {
       return {
@@ -1638,6 +1719,7 @@ function runtimeOperationSnapshot(operation: RuntimeRetrievalOperation): Runtime
   const {
     input: _contentBearingInput,
     actualInput: _contentBearingActualInput,
+    actualResult: _contentBearingActualResult,
     resourceCandidates: _contentBearingCandidates,
     ...snapshot
   } = operation;

@@ -482,8 +482,7 @@ class AgentSessionImpl implements AgentSession {
             requestedIntervention === 'DENY' ||
             requestedIntervention === 'CONFLICT'
               ? requestedIntervention
-              : requestedIntervention === 'RETRIEVE' ||
-                  requestedIntervention === 'RETRIEVE_AGAIN'
+              : requestedIntervention === 'RETRIEVE' || requestedIntervention === 'RETRIEVE_AGAIN'
                 ? ('ABSTAIN' as const)
                 : undefined;
           const intelligenceIntervention =
@@ -494,16 +493,15 @@ class AgentSessionImpl implements AgentSession {
                   decision: interventionDecision,
                   terminal: true as const,
                   continueToModel: false as const,
-                  reasonCodes: (
-                    directive && !directive.continueToModel
-                      ? [
-                          ...directive.reasonCodes,
-                          ...(requestedIntervention === 'RETRIEVE' ||
-                          requestedIntervention === 'RETRIEVE_AGAIN'
-                            ? ['retrieval_exhausted']
-                            : []),
-                        ]
-                      : ['context_preparation_failed']
+                  reasonCodes: (directive && !directive.continueToModel
+                    ? [
+                        ...directive.reasonCodes,
+                        ...(requestedIntervention === 'RETRIEVE' ||
+                        requestedIntervention === 'RETRIEVE_AGAIN'
+                          ? ['retrieval_exhausted']
+                          : []),
+                      ]
+                    : ['context_preparation_failed']
                   ).slice(0, 50),
                   clarificationNeeds:
                     directive && !directive.continueToModel
@@ -1188,6 +1186,26 @@ class AgentSessionImpl implements AgentSession {
       return result;
     }
 
+    const invocationReceipt = this.contextIntelligence?.recordRuntimeToolInvocation({
+      tool,
+      toolCallId: call.id,
+      actualToolInput: parsed.data,
+      sessionId: this.id,
+      turnId,
+    });
+    if (invocationReceipt && !invocationReceipt.allowed) {
+      let result = this.toolError(call.id, invocationReceipt.reason);
+      result = await this.processToolFailure(tool, call, result, turnId);
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.denied',
+        failureStage: 'context_invocation_binding',
+        code: 'CONTEXT_RETRIEVAL_INVOCATION_REJECTED',
+        tool,
+      });
+      yield this.event({ type: 'tool.completed', turnId, result });
+      return result;
+    }
+
     const toolStarted = Date.now();
     this.log({
       event: 'tool.execution.started',
@@ -1253,7 +1271,7 @@ class AgentSessionImpl implements AgentSession {
             sessionId: this.id,
             turnId,
             executionDurationMs: Date.now() - toolStarted,
-            actualToolInput: parsed.data,
+            toolResultReturned: true,
           });
           output = processed.result;
         } catch (error) {
@@ -1335,14 +1353,7 @@ class AgentSessionImpl implements AgentSession {
     } catch (error) {
       // Whatever the tool reported before it failed has already been yielded.
       let result = this.toolError(call.id, errorMessage(error));
-      result = await this.processToolFailure(
-        tool,
-        call,
-        result,
-        turnId,
-        Date.now() - toolStarted,
-        parsed.data,
-      );
+      result = await this.processToolFailure(tool, call, result, turnId, Date.now() - toolStarted);
       this.log({
         level: 'error',
         event: 'tool.execution.failed',
@@ -1418,7 +1429,6 @@ class AgentSessionImpl implements AgentSession {
     result: ToolResultBlock,
     turnId: string,
     executionDurationMs?: number,
-    actualToolInput?: unknown,
   ): Promise<ToolResultBlock> {
     if (!this.contextIntelligence) return result;
     try {
@@ -1433,7 +1443,6 @@ class AgentSessionImpl implements AgentSession {
         sessionId: this.id,
         turnId,
         ...(executionDurationMs === undefined ? {} : { executionDurationMs }),
-        ...(actualToolInput === undefined ? {} : { actualToolInput }),
       });
       return {
         type: 'tool_result',

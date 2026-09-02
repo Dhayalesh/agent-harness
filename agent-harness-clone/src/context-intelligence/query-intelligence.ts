@@ -372,6 +372,7 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
   let formattingFieldSection = false;
   let awaitingInformationRequirement = false;
   let executionDiscourseActive = false;
+  let scopedControlSectionActive = false;
 
   const addCandidate = (
     clause: SemanticClause,
@@ -392,6 +393,15 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     const introducesRequirement = introducesInformationRequirement(clause.value);
     if (clause.structuralHeading && !introducesRequirement) {
       contextControlInstructions.push(clause.value);
+      // A control/report section owns the clauses that follow it until an explicit
+      // information-requirement introducer resets the discourse. This prevents
+      // example queries, expected values, and acceptance fields from being treated
+      // as parallel information needs merely because they look substantive alone.
+      if (isControlSectionHeading(clause.value) || isExecutionMetaRequirement(clause.value)) {
+        executionDiscourseActive = true;
+        awaitingInformationRequirement = false;
+        scopedControlSectionActive = isScopedControlSectionHeading(clause.value);
+      }
       continue;
     }
     if (isFormattingFieldSectionStart(clause.value)) {
@@ -455,13 +465,17 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
     if (introducesRequirement) {
       awaitingInformationRequirement = true;
       executionDiscourseActive = false;
+      scopedControlSectionActive = false;
       retrievalInstructions.push(clause.value);
       continue;
     }
 
     const executionMeta =
       isExecutionMetaRequirement(clause.value) ||
-      (executionDiscourseActive && !awaitingInformationRequirement);
+      (scopedControlSectionActive && !awaitingInformationRequirement) ||
+      (executionDiscourseActive &&
+        !awaitingInformationRequirement &&
+        (candidates.length > 0 || !isExplicitInformationRequirement(clause.value)));
     if (executionMeta) {
       if (isInterrogativeInformationRequirement(clause.value)) {
         reportingInstructions.push(clause.value);
@@ -475,6 +489,8 @@ function segmentRequest(value: string): NormalizedIntent['instructionSegments'] 
 
     addCandidate(clause, clause.value, awaitingInformationRequirement);
     awaitingInformationRequirement = false;
+    executionDiscourseActive = false;
+    scopedControlSectionActive = false;
   }
 
   const requirements = dedupeStrings(candidates.map((candidate) => candidate.value))
@@ -525,13 +541,27 @@ function semanticClauses(value: string): SemanticClause[] {
 
 function isStructuralHeading(value: string): boolean {
   if (/^#{1,6}\s+/.test(value)) return true;
+  const hasTerminalLabel = /:\s*$/.test(value);
   const normalized = value.replace(/[:：]\s*$/, '').trim();
   const letters = normalized.replace(/[^\p{L}]/gu, '');
   return (
     letters.length > 0 &&
-    letters === letters.toUpperCase() &&
     normalized.split(/\s+/).length <= 12 &&
-    !/[.!?]$/.test(normalized)
+    !/[.!?]$/.test(normalized) &&
+    (letters === letters.toUpperCase() || hasTerminalLabel)
+  );
+}
+
+function isControlSectionHeading(value: string): boolean {
+  const normalized = normalizeQuery(value).replace(/:\s*$/, '');
+  return /\b(?:test|validation|diagnostic|acceptance|criteria|requirements?|instructions?|examples?|telemetry|report|result|decision|attempt|retrieval|execution|tool|evidence|grounding)\b/i.test(
+    normalized,
+  );
+}
+
+function isScopedControlSectionHeading(value: string): boolean {
+  return (
+    /:\s*$/.test(value) && (isControlSectionHeading(value) || isExecutionMetaRequirement(value))
   );
 }
 
@@ -545,11 +575,13 @@ function isInterrogativeInformationRequirement(value: string): boolean {
 function introducesInformationRequirement(value: string): boolean {
   const label = normalizeQuery(value).replace(/[:：]\s*$/, '');
   const retrievalSubject = informationBeforeDirective(value, RETRIEVAL_DIRECTIVE);
+  const labelLike = /:\s*$/.test(value) || label.split(/\s+/).length <= 5;
   return (
     /\b(?:answer|address)$/i.test(label) ||
-    /(?:^|\s)(?:question|research question|research objective|information need|topic)$/i.test(
-      label,
-    ) ||
+    (labelLike &&
+      /(?:^|\s)(?:question|research question|research objective|information need|topic)$/i.test(
+        label,
+      )) ||
     (retrievalSubject === '' &&
       /\b(?:answer|research|investigate|address)\b[\s\S]*\b(?:question|topic|request)\b/i.test(
         label,
