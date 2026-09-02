@@ -677,7 +677,18 @@ function isSystemToolInstruction(value: string): boolean {
     /^(?:scenario|test case|expected|actual|incorrect|correct|failure|invariant|validation|example)\s*\d*\s*:/i.test(
       value,
     ) ||
-    /^(?:expected|actual|never|must not)\s*(?:→|->|:)/i.test(value)
+    /^(?:expected|actual|never|must not)\s*(?:→|->|:)/i.test(value) ||
+    // Slash-separated test/control/orchestration markers are distinctive test-harness language
+    // (e.g. "test/control", "test/control/reporting", "control/reporting/validation").
+    // These patterns never appear in legitimate information needs and were present verbatim
+    // in the P1 contamination clause.  Belt-and-suspenders alongside the executionArtifact fix.
+    /\b(?:test|control|reporting|validation|orchestration)\/(?:control|reporting|validation|orchestration|instructions?)\b/i.test(
+      value,
+    ) ||
+    // "Attempt N …" sentences are test-framework attempt labels.  Any clause that begins with
+    // "Attempt <digit>" must never become an information-requirement candidate regardless of
+    // execution discourse state — they exist only inside test-control sections.
+    /^Attempt\s+\d+\b/i.test(value)
   );
 }
 
@@ -723,8 +734,14 @@ function isExecutionMetaRequirement(value: string): boolean {
     /\b(?:runtime|execution|retrieval|capability|tool|harness|orchestration)\s+(?:test|validation|diagnostic|assertion|instruction|state|report)\b/i.test(
       normalized,
     );
+  // "instructions?" matches both the singular "instruction" and the plural "instructions".
+  // The original pattern used \binstruction\b (singular only); because the word boundary
+  // \b does not exist between "n" and "s" (both are \w characters), \binstruction\b never
+  // matched "instructions".  That omission was the direct root cause of the P1 contamination:
+  // a clause containing "test/control/reporting instructions" passed executionArtifact=false,
+  // escaped execution-meta classification, and entered informationRequirements verbatim.
   const executionArtifact =
-    /\b(?:(?:information|context)\s+(?:need|requirement|required)|query|prompt|request|instruction|capability|tool(?:\s+call|\s+invocation)?|input|output|attempt|retrieval|execution|observation|evidence|provenance|grounding|telemetry|report|response)\b/i.test(
+    /\b(?:(?:information|context)\s+(?:need|requirement|required)|query|prompt|request|instructions?|capability|tool(?:\s+call|\s+invocation)?|input|output|attempt|retrieval|execution|observation|evidence|provenance|grounding|telemetry|report|response)\b/i.test(
       normalized,
     );
   const lifecyclePredicate =
