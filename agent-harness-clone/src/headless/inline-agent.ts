@@ -295,9 +295,6 @@ function completeAgent(
         ? {}
         : { compactionThresholdPercent: agent.limits.compactionThresholdPercent }),
     },
-    ...(agent.contextIntelligence === undefined
-      ? {}
-      : { contextIntelligence: agent.contextIntelligence }),
     enabled: true,
     createdAt: refs.timestamp,
     updatedAt: refs.timestamp,

@@ -618,7 +618,6 @@ export async function performChatContextCompaction(
 
   const completedAt = nowIso();
   const context = invocation.result.context;
-  const contextIntelligence = invocation.result.contextIntelligence;
   const session = invocation.result.session;
   const updated = await chatModel.findOneAndUpdate(
     { _id: leased._id, "session.activeRequestId": requestId },
@@ -636,9 +635,6 @@ export async function performChatContextCompaction(
         "session.activeExpiresAt": null,
         ...(context
           ? { "session.context": { ...context, measuredAt: completedAt } }
-          : {}),
-        ...(contextIntelligence
-          ? { "session.contextIntelligence": contextIntelligence }
           : {}),
       },
     },
@@ -674,12 +670,9 @@ async function appendResult(chat, invocation, requestId) {
     content:
       invocation.result.output ||
       invocation.result.error?.message ||
-      (invocation.result.intervention || invocation.result.artifacts?.length
+      (invocation.result.artifacts?.length
         ? ""
         : "The agent returned no output."),
-    ...(invocation.result.intervention
-      ? { intervention: invocation.result.intervention }
-      : {}),
     ...(invocation.result.artifacts?.length
       ? { artifacts: invocation.result.artifacts }
       : {}),
@@ -696,7 +689,6 @@ async function appendResult(chat, invocation, requestId) {
   const session = invocation.result.session;
   const title = await autoTitle(chat, invocation);
   const context = invocation.result.context;
-  const contextIntelligence = invocation.result.contextIntelligence;
   const updated = await Chat.findOneAndUpdate(
     { _id: chat._id, "session.activeRequestId": requestId },
     {
@@ -721,16 +713,7 @@ async function appendResult(chat, invocation, requestId) {
         ...(context
           ? { "session.context": { ...context, measuredAt: timestamp } }
           : {}),
-        ...(contextIntelligence
-          ? { "session.contextIntelligence": contextIntelligence }
-          : {}),
       },
-      // A missing report on a completed turn means the latest runtime/agent did
-      // not run Context Intelligence. Remove the previous turn's report instead of
-      // presenting stale decisions as if they produced the new answer.
-      ...(contextIntelligence
-        ? {}
-        : { $unset: { "session.contextIntelligence": "" } }),
     },
     { new: true },
   );
@@ -965,7 +948,6 @@ function replayableHistory(messages, startIndex) {
     .map((message) => ({ message, text: historyText(message) }))
     .filter(
       ({ message, text }) =>
-        !message.intervention &&
         (message.role === "user" || message.role === "assistant") &&
         text.length > 0,
     );

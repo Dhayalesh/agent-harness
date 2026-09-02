@@ -25,10 +25,6 @@ export async function buildPayload({
   if (resolved.skills.length) {
     permissionRules.push({ tool: "skill", decision: "allow" });
   }
-  // Infrastructure capability contributed by the Harness when an ArtifactStore is
-  // configured. It is read-only and only resolves handles already present in the
-  // current Context Intelligence package.
-  permissionRules.push({ tool: "context_artifact_read", decision: "allow" });
 
   const payload = {
     prompt,
@@ -46,7 +42,6 @@ export async function buildPayload({
       model: agent.model,
       tools: [...agent.tools],
       limits: { ...agent.limits },
-      contextIntelligence: agent.contextIntelligence,
     }),
     modelProvider: pick(provider, [
       "name",
@@ -109,13 +104,7 @@ export async function buildPayload({
     metadata: {
       source: "agent-console",
       agentId: resolved.agent.document._id.toString(),
-      contextIntelligence: {
-        applicationId: "agent-console",
-        ...(sessionId
-          ? { conversationId: sessionId, taskId: sessionId }
-          : {}),
-        namespaces: [resolved.agent.document._id.toString()],
-      },
+      ...(sessionId ? { conversationId: sessionId } : {}),
     },
   };
   if (sessionId) payload.sessionId = sessionId;

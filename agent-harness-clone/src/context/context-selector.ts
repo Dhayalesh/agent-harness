@@ -102,6 +102,8 @@ export function selectContext(options: {
   importance: readonly MessageImportance[];
   targetTokens: number;
   estimator: TokenEstimator;
+  /** Exact request identities that selection must retain across later tool turns. */
+  protectedMessageIds?: ReadonlySet<string>;
 }): ContextSelection {
   const { messages, importance, estimator, targetTokens } = options;
   const before = estimator.estimateMessages(messages);
@@ -117,7 +119,7 @@ export function selectContext(options: {
     };
   }
 
-  const tiers = assignTiers(messages, options.state, importance);
+  const tiers = assignTiers(messages, options.state, importance, options.protectedMessageIds);
   const groups = groupsOf(messages);
   const groupOf = new Map<number, number[]>();
   for (const group of groups) for (const index of group) groupOf.set(index, group);
@@ -138,9 +140,14 @@ export function selectContext(options: {
   // anything optional is considered, because a selection that fits by dropping a
   // constraint has not solved the problem, it has moved it.
   const kept = new Set<number>();
-  const mandatory = importance
-    .filter((entry) => PROTECTION_ORDER[entry.protection] >= PROTECTION_ORDER.high)
-    .map((entry) => entry.index);
+  const mandatory = new Set(
+    importance
+      .filter((entry) => PROTECTION_ORDER[entry.protection] >= PROTECTION_ORDER.high)
+      .map((entry) => entry.index),
+  );
+  for (const [index, message] of messages.entries()) {
+    if (options.protectedMessageIds?.has(message.id)) mandatory.add(index);
+  }
   for (const index of mandatory) includeGroup(index, kept, groupOf);
   includeGroup(messages.length - 1, kept, groupOf);
 
@@ -207,6 +214,7 @@ export function assignTiers(
   messages: readonly AgentMessage[],
   state: ContextState,
   importance: readonly MessageImportance[],
+  protectedMessageIds?: ReadonlySet<string>,
 ): Map<number, SelectionTier> {
   const tiers = new Map<number, SelectionTier>();
   const set = (index: number, tier: SelectionTier): void => {
@@ -263,8 +271,13 @@ export function assignTiers(
     }
   }
 
-  // The current request outranks whatever else the last message happens to contain.
-  if (messages.length > 0) tiers.set(messages.length - 1, 'current-request');
+  // Explicit request identity outranks later tool-result messages in the same turn.
+  for (const [index, message] of messages.entries()) {
+    if (protectedMessageIds?.has(message.id)) tiers.set(index, 'current-request');
+  }
+  if (messages.length > 0 && protectedMessageIds === undefined) {
+    tiers.set(messages.length - 1, 'current-request');
+  }
   return tiers;
 }
 

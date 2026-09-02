@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   AgentHarnessError,
   createAgentSession,
   FileSessionStore,
   InMemorySessionStore,
+  PassthroughContextManager,
   resumeAgentSession,
   ScriptedModelProvider,
+  type ContextItem,
+  type ContextManager,
   type StoredSession,
 } from '../../src/index.js';
 import { textMessage } from '../../src/core/messages.js';
@@ -162,4 +166,122 @@ test('prepared checkpoints are separate from canonical history and reject rewrit
   rewritten.messages[1] = textMessage('different', 'assistant', 'Rewritten', timestamp);
   assert.equal(validateStoredSession(rewritten).preparedContext, undefined);
   assert.deepEqual(validateStoredSession(rewritten).messages, rewritten.messages);
+});
+
+
+test('legacy Context Intelligence state is accepted and discarded on load', () => {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  const legacy = {
+    version: 1,
+    id: 'legacy-context-state',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: [textMessage('request', 'user', 'Continue', timestamp)],
+    metadata: { source: 'legacy' },
+    contextIntelligence: {
+      version: 1,
+      retrieval: { iterations: 3 },
+      rawRequest: 'derived state must not survive',
+    },
+  };
+
+  const validated = validateStoredSession(legacy);
+
+  assert.equal(validated.id, legacy.id);
+  assert.deepEqual(validated.messages, legacy.messages);
+  assert.deepEqual(validated.metadata, legacy.metadata);
+  assert.equal('contextIntelligence' in validated, false);
+});
+
+
+test('resumed prepared checkpoints retain canonical tool-result provenance', async () => {
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  const originalContent = 'canonical output '.repeat(200);
+  const canonical: StoredSession['messages'] = [
+    {
+      id: 'call-message',
+      role: 'assistant',
+      createdAt: timestamp,
+      content: [
+        {
+          type: 'tool_call',
+          id: 'read-call',
+          name: 'read_file',
+          input: { path: 'docs/current/status.md' },
+        },
+      ],
+    },
+    {
+      id: 'result-message',
+      role: 'user',
+      createdAt: timestamp,
+      content: [
+        {
+          type: 'tool_result',
+          toolCallId: 'read-call',
+          content: originalContent,
+          isError: false,
+        },
+      ],
+    },
+  ];
+  const prepared = structuredClone(canonical);
+  const preparedResult = prepared[1]?.content[0];
+  assert.equal(preparedResult?.type, 'tool_result');
+  if (preparedResult?.type === 'tool_result') preparedResult.content = 'canonical...output';
+  const checkpoint = createPreparedContextCheckpoint(prepared, canonical);
+  assert.ok(checkpoint);
+
+  const store = new InMemorySessionStore();
+  await store.save({
+    version: 1,
+    id: 'resumed-provenance',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    messages: canonical,
+    preparedContext: checkpoint,
+    metadata: {},
+  });
+
+  let projected: readonly ContextItem[] = [];
+  const delegate = new PassthroughContextManager();
+  const contextManager: ContextManager = {
+    async prepare(request) {
+      const result = await delegate.prepare(request);
+      projected = result.items;
+      return result;
+    },
+  };
+  const session = await resumeAgentSession(
+    {
+      provider: new ScriptedModelProvider([
+        [
+          { type: 'text_delta', delta: 'continued' },
+          { type: 'completed', stopReason: 'end_turn' },
+        ],
+      ]),
+      sessionStore: store,
+      contextManager,
+    },
+    'resumed-provenance',
+  );
+
+  for await (const _event of session.run({ prompt: 'Continue from the saved context.' })) {
+    // Consume the resumed turn.
+  }
+
+  const observation = projected.find(
+    (item) => item.source.kind === 'tool' && item.source.toolCallId === 'read-call',
+  );
+  assert.ok(observation);
+  assert.equal(observation.content, 'canonical...output');
+  assert.equal(observation.provenance.toolResult?.transformation, 'truncated');
+  assert.equal(
+    observation.provenance.toolResult?.originalContentHash,
+    createHash('sha256').update(originalContent).digest('hex'),
+  );
+  assert.equal(
+    observation.provenance.toolResult?.originalContentCharacters,
+    originalContent.length,
+  );
 });

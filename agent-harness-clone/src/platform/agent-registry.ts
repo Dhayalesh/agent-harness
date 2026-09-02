@@ -10,7 +10,7 @@ import { createSkillTool, parseSkill, SkillRegistry } from '../skills/skills.js'
 import type { Tool } from '../tools/tool.js';
 import { TempSkillDirectory } from '../skills/temp-skill-directory.js';
 import type { AgentRecord } from './agent-definitions.js';
-import { assertAgentRuntimeSupport, HOST_CONTRIBUTED_TOOL_NAMES } from './agent-support.js';
+import { assertAgentRuntimeSupport } from './agent-support.js';
 import type { SkillRecord } from './skill-definitions.js';
 import { SkillContentStores } from './skill-content.js';
 import type { TemplateRecord } from './template-definitions.js';
@@ -557,12 +557,7 @@ export class PlatformAgentRegistry {
         'AGENT_TOOL_NOT_AVAILABLE',
       );
     });
-    const selectedNames = new Set(selected.map((tool) => tool.name));
-    const contributed = HOST_CONTRIBUTED_TOOL_NAMES.flatMap((name) => {
-      const tool = available.get(name);
-      return tool && !selectedNames.has(name) ? [tool] : [];
-    });
-    return [...selected, ...contributed];
+    return selected;
   }
 
   private log(entry: Parameters<LogSink['log']>[0]): void {

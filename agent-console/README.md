@@ -22,9 +22,8 @@ The console reads and writes the historical platform collections in place:
 
 - `agents` stores the agent definition and string ObjectId references:
   `modelProviderId`, ordered `mcpServerIds`, and ordered `skills[].skillId` entries.
-  It also carries `stream`, the per-agent response-encoding preference described in
-  [AgentCore behavior](#agentcore-behavior), and the validated `contextIntelligence`
-  policy sent to the runtime.
+  It also carries the explicit tool allowlist, `stream` response preference, and
+  deterministic context limits such as `compactionThresholdPercent`.
 - `model_providers` stores model configuration and its API credential.
 - `mcp_servers` stores stdio or HTTP MCP configuration and its credentials,
   environment, and headers.
@@ -33,9 +32,9 @@ The console reads and writes the historical platform collections in place:
 It adds two console collections in the same database:
 
 - `chats` stores conversation messages, a stable AgentCore runtime session ID, and
-  the latest bounded Context Intelligence report for the selected conversation.
-- `runs` stores invocation status, output, usage, tool counts, timing, and AgentCore
-  metadata, including the report that curated its final model turn. A chat-originated
+  the latest deterministic context-usage snapshot and bounded inspection timeline.
+- `runs` stores invocation status, output, usage, tool counts, timing, AgentCore
+  metadata, and any context-management action reported by the runtime. A chat-originated
   run also has a `chatId`.
 
 The intended database is `trueai_agent_platform`. A pathless MongoDB URI falls back to
@@ -127,11 +126,10 @@ API client is untouched.
   in `index.html` applies it before React mounts so a reload does not flash white.
 - Theme colours live in `client/tailwind.config.js` as a single brand ramp fed to the
   `heroui()` plugin, not as scattered hex values.
-- Context Intelligence appears as a compact live popover in chat and a full run-detail
-  card covering quality, category budgets, retrieval, memory, capability selection,
-  task state, omissions, and offloading. The wire report contains counts and bounded
-  names only; prompts, evidence, memory content, and tool output remain in their
-  existing governed stores.
+- Context management appears as a compact live meter in chat and a detailed inspector
+  on saved chats and runs. It shows measured usage, the deterministic action taken,
+  compaction history, and verification/recovery outcomes without inventing retrieval,
+  grounding, memory, or quality claims.
 
 One installation detail matters: Tailwind must scan `@heroui/theme` or every HeroUI
 component renders unstyled. That package is a transitive dependency, so the `content`

@@ -41,10 +41,6 @@ import {
 } from "../components/Bits.jsx";
 import { Icon } from "../components/Icon.jsx";
 import { ContextIndicator } from "../components/ContextIndicator.js";
-import {
-  ContextIntelligenceIndicator,
-  ContextInterventionAlert,
-} from "../components/ContextIntelligence.jsx";
 import { applyContextEvent } from "../lib/context-inspector.js";
 import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
@@ -174,18 +170,6 @@ export function ChatPage() {
     chat?.session?.context,
     selectedAgent,
   ]);
-
-  const contextIntelligence = live
-    ? live.contextIntelligence
-    : (chat?.session?.contextIntelligence ?? null);
-  const storedIntervention = useMemo(() => {
-    const response = [...(chat?.messages ?? [])]
-      .reverse()
-      .find((message) => ["assistant", "error"].includes(message.role));
-    return response?.intervention ?? null;
-  }, [chat?.messages]);
-  // While a new turn is live, do not carry a previous turn's intervention forward.
-  const contextIntervention = live ? live.intervention : storedIntervention;
 
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -1124,10 +1108,6 @@ export function ChatPage() {
                         }
                         onCompact={compactContext}
                       />
-                      <ContextIntelligenceIndicator
-                        report={contextIntelligence}
-                        intervention={contextIntervention}
-                      />
                     </div>
                   </div>
                 </form>
@@ -1484,12 +1464,6 @@ function Message({ message, agentName, onOpenDocument }) {
                 : ""
           }`}
         >
-          {role !== "user" && message.intervention && (
-            <ContextInterventionAlert
-              intervention={message.intervention}
-              className="mb-2"
-            />
-          )}
           {role !== "user" && message.reasoning && (
             <ThinkingBlock reasoning={message.reasoning} />
           )}
@@ -1558,12 +1532,8 @@ const EMPTY_LIVE = {
   tools: [],
   artifacts: [],
   warnings: [],
-  /** Typed application outcome when Context Intelligence ends the turn. */
-  intervention: null,
   /** The last `context.usage` this run reported. Null until the first turn measures. */
   context: null,
-  /** Content-free decisions from the Context Intelligence layer. */
-  contextIntelligence: null,
   compactions: 0,
   /** Per-turn readings, so the panel can say when the context filled and what happened. */
   timeline: [],
@@ -1679,16 +1649,13 @@ function applyLiveEvent(live, event) {
     case "warning":
       return {
         ...current,
-        status: event.intervention ? "Context intervention" : current.status,
         warnings: [
           ...current.warnings,
           {
             code: event.code ?? "WARNING",
             message: event.message ?? "The runtime reported a warning.",
-            ...(event.intervention ? { intervention: event.intervention } : {}),
           },
         ].slice(-5),
-        intervention: event.intervention ?? current.intervention,
       };
     // The meter follows the newest measurement, so it falls as soon as a
     // compaction lands rather than at the end of the run. All of the accumulation —
@@ -1698,12 +1665,6 @@ function applyLiveEvent(live, event) {
     case "context.usage":
     case "context.recovery":
       return { ...current, ...applyContextEvent(current, event) };
-    case "context.intelligence":
-      return {
-        ...current,
-        status: "Context Intelligence reported",
-        contextIntelligence: event.report ?? current.contextIntelligence,
-      };
     case "context.selection":
       return { ...current, status: "Reducing the context" };
     case "context.verification":
@@ -1876,7 +1837,7 @@ function latestArtifact(chat) {
 }
 
 function LiveMessage({ live, agentName }) {
-  const busy = !live.text && live.artifacts.length === 0 && !live.intervention;
+  const busy = !live.text && live.artifacts.length === 0;
   return (
     <article className="grid grid-cols-[30px_minmax(0,1fr)] items-start gap-3">
       <AgentAvatar
@@ -1898,16 +1859,7 @@ function LiveMessage({ live, agentName }) {
           <LiveDocumentCard key={artifact.id} artifact={artifact} />
         ))}
 
-        {live.intervention && (
-          <ContextInterventionAlert
-            intervention={live.intervention}
-            className="mb-2"
-          />
-        )}
-
-        {live.warnings
-          .filter((warning) => !warning.intervention)
-          .map((warning, index) => (
+        {live.warnings.map((warning, index) => (
             <p
               className="mb-2 rounded-medium border border-warning-200 bg-warning-50 px-2.5 py-1.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400"
               key={`${warning.code}:${index}`}

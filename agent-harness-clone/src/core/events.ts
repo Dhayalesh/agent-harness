@@ -1,7 +1,6 @@
 import type { AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
 import type { Artifact } from '../artifacts/artifact-store.js';
 import type { ModelUsage, StopReason } from '../models/provider.js';
-import type { ContextIntelligenceReport } from '../context-intelligence/contracts.js';
 
 /**
  * The automatic context action a turn took.
@@ -267,16 +266,6 @@ export type AgentEvent = EventBase &
          */
         state?: ContextStateCounts;
       }
-    /**
-     * Context Intelligence aggregate decisions plus authoritative runtime trace.
-     * Trace content is produced by AgentCore at the execution boundary; clients
-     * display it verbatim and must not infer execution from planning fields.
-     */
-    | {
-        type: 'context.intelligence';
-        turnId: string;
-        report: ContextIntelligenceReport;
-      }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**
      * Work done before the first turn can start: the workspace, the model, MCP
@@ -294,7 +283,6 @@ export type AgentEvent = EventBase &
         type: 'warning';
         code: string;
         message: string;
-        intervention?: import('../context-intelligence/contracts.js').ContextIntelligenceIntervention;
       }
     | { type: 'error'; code: string; message: string; recoverable: boolean }
   );

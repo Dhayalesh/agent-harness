@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import { AgentHarnessError } from '../core/errors.js';
 import type { AgentMessage } from '../core/messages.js';
+import {
+  finalizePreparedContext,
+  type ContextItem,
+  type ContextProjectionRequest,
+} from './context-items.js';
 
 // ---------------------------------------------------------------------------
 // Token estimation
@@ -20,6 +26,11 @@ export interface TokenEstimator {
  * deliberately conservative flat charge instead.
  */
 const IMAGE_TOKEN_ESTIMATE = 1_200;
+
+/** Character heuristic used for fixed text that is not represented as a message. */
+export function estimateTextTokens(text: string): number {
+  return text.length === 0 ? 0 : Math.max(1, Math.ceil(text.length / 4));
+}
 
 export function estimateMessagesTokens(messages: readonly AgentMessage[]): number {
   let images = 0;
@@ -97,7 +108,8 @@ export type ContextPolicy = {
   compactionThreshold: number;
   /**
    * Tokens permanently reserved as headroom between the estimated context and the
-   * hard input limit. Accounts for system-prompt overhead, header tokens, etc.
+   * hard input limit. Accounts for transport headers and estimation error after the
+   * system prompt has been reserved explicitly.
    * Default: 2000
    */
   safetyMarginTokens: number;
@@ -214,6 +226,8 @@ export type CompactionSkipReason =
 
 export type PreparedContext = {
   messages: readonly AgentMessage[];
+  /** Deterministic projection of the exact final model input plus separate system context. */
+  items: readonly ContextItem[];
   estimatedTokens: number;
   compacted: boolean;
   tokensBefore?: number;
@@ -225,6 +239,7 @@ export type PreparedContext = {
     contextWindow: number;
     outputReserved: number;
     safetyMargin: number;
+    systemPromptTokens: number;
     effectiveInputBudget: number;
     utilizationFraction: number;
   };
@@ -263,8 +278,7 @@ export type PreparedContext = {
   };
 };
 
-export type ContextRequest = {
-  messages: readonly AgentMessage[];
+export type ContextRequest = ContextProjectionRequest & {
   maxInputTokens?: number;
   /** When supplied, the context manager derives a dynamic budget from the model. */
   modelCapabilities?: ModelContextCapabilities;
@@ -282,8 +296,17 @@ export type ContextRequest = {
   forceCompaction?: boolean;
 };
 
+export type ContextManagerResult = Omit<PreparedContext, 'items'> & {
+  /**
+   * Built-in managers provide this projection. It remains optional at the injected
+   * manager seam so existing custom managers stay compatible; AgentSession always
+   * recomputes it from the final prepared messages before exposing the result.
+   */
+  items?: readonly ContextItem[];
+};
+
 export interface ContextManager {
-  prepare(request: ContextRequest): Promise<PreparedContext>;
+  prepare(request: ContextRequest): Promise<ContextManagerResult>;
 }
 
 /** The budget a turn was prepared against. */
@@ -291,6 +314,8 @@ export type ContextBudget = {
   contextWindow: number;
   outputReserved: number;
   safetyMargin: number;
+  /** System prompt tokens reserved separately from model-facing messages. */
+  systemPromptTokens: number;
   effectiveInputBudget: number;
   utilizationFraction: number;
 };
@@ -304,7 +329,7 @@ const FALLBACK_MAX_OUTPUT_TOKENS = 8_192;
  * Derives the effective input budget for one turn.
  *
  * ```
- * effectiveInputBudget = contextWindow - outputReserved - safetyMargin
+ * effectiveInputBudget = contextWindow - outputReserved - safetyMargin - systemPromptTokens
  * ```
  *
  * Extracted from `DynamicCompactingContextManager` so the orchestration layer above
@@ -325,6 +350,8 @@ export function deriveContextBudget(options: {
   configuredMaxOutputTokens?: number | undefined;
   /** A per-request ceiling, such as the one the reactive retry imposes. */
   requestMaxInputTokens?: number | undefined;
+  /** Fixed system instructions kept outside the messages array. */
+  systemPrompt?: string | undefined;
 }): ContextBudget {
   const { capabilities } = options;
   const modelMaxOutput = capabilities?.maxOutputTokens ?? FALLBACK_MAX_OUTPUT_TOKENS;
@@ -334,7 +361,17 @@ export function deriveContextBudget(options: {
   );
   const contextWindow = capabilities?.contextWindow ?? FALLBACK_CONTEXT_WINDOW;
   const safetyMargin = options.policy.safetyMarginTokens;
-  const rawInputBudget = contextWindow - outputReserved - safetyMargin;
+  const systemPromptTokens = estimateTextTokens(options.systemPrompt ?? '');
+  const rawInputBudget = contextWindow - outputReserved - safetyMargin - systemPromptTokens;
+  if (rawInputBudget <= 0) {
+    throw new AgentHarnessError(
+      `Fixed context requires ${systemPromptTokens.toLocaleString()} system tokens plus ` +
+        `${outputReserved.toLocaleString()} reserved output tokens and ` +
+        `${safetyMargin.toLocaleString()} safety tokens, which does not fit the ` +
+        `${contextWindow.toLocaleString()} token model window`,
+      'FIXED_CONTEXT_EXCEEDS_WINDOW',
+    );
+  }
 
   let effectiveInputBudget: number;
   if (options.configuredMaxInputTokens !== undefined) {
@@ -352,6 +389,7 @@ export function deriveContextBudget(options: {
     contextWindow,
     outputReserved,
     safetyMargin,
+    systemPromptTokens,
     effectiveInputBudget: Math.max(1, effectiveInputBudget),
     utilizationFraction: 0,
   };
@@ -362,12 +400,13 @@ export function deriveContextBudget(options: {
 // ---------------------------------------------------------------------------
 
 export class PassthroughContextManager implements ContextManager {
-  async prepare({ messages }: ContextRequest): Promise<PreparedContext> {
-    return {
-      messages,
-      estimatedTokens: estimateMessagesTokens(messages),
+  async prepare(request: ContextRequest): Promise<PreparedContext> {
+    const prepared = {
+      messages: request.messages,
+      estimatedTokens: estimateMessagesTokens(request.messages),
       compacted: false,
     };
+    return finalizePreparedContext(request, prepared);
   }
 }
 
@@ -604,13 +643,22 @@ export class CompactingContextManager implements ContextManager {
   }
 
   async prepare(request: ContextRequest): Promise<PreparedContext> {
-    const limit = request.maxInputTokens ?? this.maxInputTokens;
+    return finalizePreparedContext(request, await this.prepareMessages(request));
+  }
+
+  private async prepareMessages(request: ContextRequest): Promise<Omit<PreparedContext, 'items'>> {
+    const systemPromptTokens = estimateTextTokens(request.systemPrompt ?? '');
+    const limit = Math.max(1, (request.maxInputTokens ?? this.maxInputTokens) - systemPromptTokens);
     const before = estimateMessagesTokens(request.messages);
     if (before <= limit) {
       return { messages: request.messages, estimatedTokens: before, compacted: false };
     }
 
     let split = Math.max(0, request.messages.length - this.retainRecentMessages);
+    const currentRequestIndex = request.currentRequestId
+      ? request.messages.findIndex((message) => message.id === request.currentRequestId)
+      : -1;
+    if (currentRequestIndex >= 0) split = Math.min(split, currentRequestIndex);
     while (
       split > 0 &&
       request.messages[split]?.content.some((block) => block.type === 'tool_result')
@@ -729,6 +777,10 @@ export class DynamicCompactingContextManager implements ContextManager {
   }
 
   async prepare(request: ContextRequest): Promise<PreparedContext> {
+    return finalizePreparedContext(request, await this.prepareMessages(request));
+  }
+
+  private async prepareMessages(request: ContextRequest): Promise<Omit<PreparedContext, 'items'>> {
     const policy = request.policy ? { ...this.basePolicy, ...request.policy } : this.basePolicy;
 
     const budget = this.resolveBudget(request, policy);
@@ -753,6 +805,7 @@ export class DynamicCompactingContextManager implements ContextManager {
           retainRecentTokens: Math.min(policy.retainRecentTokens, Math.floor(before / 2)),
         },
         pressure,
+        request.currentRequestId,
       );
     }
 
@@ -806,6 +859,7 @@ export class DynamicCompactingContextManager implements ContextManager {
       trimmedFraction,
       policy,
       pressure,
+      request.currentRequestId,
       trimmed.truncated,
     );
   }
@@ -826,6 +880,7 @@ export class DynamicCompactingContextManager implements ContextManager {
       configuredMaxInputTokens: this.configuredMaxInputTokens,
       configuredMaxOutputTokens: this.configuredMaxOutputTokens,
       requestMaxInputTokens: request.maxInputTokens,
+      systemPrompt: request.systemPrompt,
     });
   }
 
@@ -836,8 +891,9 @@ export class DynamicCompactingContextManager implements ContextManager {
     utilizationFraction: number,
     policy: ContextPolicy,
     pressure: ContextPressure,
+    currentRequestId: string | undefined,
     toolResultsTruncated = 0,
-  ): Promise<PreparedContext> {
+  ): Promise<Omit<PreparedContext, 'items'>> {
     const compactionId = randomUUID();
 
     // What the compacted context has to come in under. The compaction threshold
@@ -875,13 +931,14 @@ export class DynamicCompactingContextManager implements ContextManager {
     const { recentMessages, olderMessages } = this.splitAtRetentionBoundary(
       messages,
       retainRecentTokens,
+      currentRequestId,
     );
 
     // Nothing older than the retention window. Reported rather than passed over in
     // silence, so a caller that asked for compaction can tell "there was nothing to
     // do" from "the request did not arrive".
     if (olderMessages.length === 0) {
-      const enforced = this.enforceTail(recentMessages, target);
+      const enforced = this.enforceTail(recentMessages, target, currentRequestId);
       const estimatedTokens =
         enforced === recentMessages ? tokensBefore : this.estimator.estimateMessages(enforced);
       return {
@@ -965,7 +1022,11 @@ export class DynamicCompactingContextManager implements ContextManager {
     // not fit. Without this a 300 000-token tool result stayed over budget through
     // every compaction and every retry.
     const summaryTokens = this.estimator.estimateMessage(compactedMessage);
-    const enforcedTail = this.enforceTail(recentMessages, Math.max(1, target - summaryTokens));
+    const enforcedTail = this.enforceTail(
+      recentMessages,
+      Math.max(1, target - summaryTokens),
+      currentRequestId,
+    );
 
     const resultMessages = [compactedMessage, ...enforcedTail];
     const tokensAfter = this.estimator.estimateMessages(resultMessages);
@@ -1020,6 +1081,7 @@ export class DynamicCompactingContextManager implements ContextManager {
   private enforceTail(
     messages: readonly AgentMessage[],
     maxTokens: number,
+    currentRequestId: string | undefined,
   ): readonly AgentMessage[] {
     if (this.estimator.estimateMessages(messages) <= maxTokens) return messages;
 
@@ -1038,7 +1100,7 @@ export class DynamicCompactingContextManager implements ContextManager {
     const shrunk = [...working];
     for (let i = 0; i < shrunk.length; i += 1) {
       const message = shrunk[i];
-      if (!message) continue;
+      if (!message || message.id === currentRequestId) continue;
       shrunk[i] = shrinkMessageText(message, perMessageChars);
       working = shrunk;
       if (this.estimator.estimateMessages(working) <= maxTokens) break;
@@ -1054,6 +1116,7 @@ export class DynamicCompactingContextManager implements ContextManager {
   private splitAtRetentionBoundary(
     messages: readonly AgentMessage[],
     retainRecentTokens: number,
+    currentRequestId: string | undefined,
   ): { recentMessages: AgentMessage[]; olderMessages: AgentMessage[] } {
     // Walk from the end, accumulating tokens until we exceed retainRecentTokens
     let retained = 0;
@@ -1069,6 +1132,13 @@ export class DynamicCompactingContextManager implements ContextManager {
       retained += msgTokens;
       splitIndex = i;
     }
+
+    // The explicit request remains verbatim and in chronological position across
+    // every tool turn, even when a long tool tail would otherwise summarize it.
+    const currentRequestIndex = currentRequestId
+      ? messages.findIndex((message) => message.id === currentRequestId)
+      : -1;
+    if (currentRequestIndex >= 0) splitIndex = Math.min(splitIndex, currentRequestIndex);
 
     // Walk forward from splitIndex to ensure we do not start on a tool_result
     // (which would orphan it from its tool_call)

@@ -963,3 +963,56 @@ test('compactContext compacts the first turn only and leaves history intact', as
   assert.ok(session.messages.some((message) => message.id === 'old-2'));
   assert.equal(prompts.length, 2);
 });
+
+
+test('system instructions are reserved separately from the message budget', async () => {
+  const manager = new DynamicCompactingContextManager({
+    policy: {
+      safetyMarginTokens: 100,
+      warningThreshold: 0.7,
+      aggressiveThreshold: 0.8,
+      compactionThreshold: 0.9,
+    },
+  });
+
+  const result = await manager.prepare({
+    messages: [msg('user', 'current request', 'current-request')],
+    currentRequestId: 'current-request',
+    systemPrompt: 's'.repeat(400),
+    maxInputTokens: 900,
+    modelCapabilities: { contextWindow: 1_000, maxOutputTokens: 200 },
+  });
+
+  assert.equal(result.budget?.systemPromptTokens, 100);
+  assert.equal(result.budget?.outputReserved, 200);
+  assert.equal(result.budget?.safetyMargin, 100);
+  assert.equal(result.budget?.effectiveInputBudget, 600);
+  assert.equal(result.items.find((item) => item.type === 'system_context')?.content.length, 400);
+  assert.equal(
+    result.items.find((item) => item.type === 'user_request')?.source.kind,
+    'message',
+  );
+});
+
+test('an impossible fixed prompt fails instead of inventing a message budget', async () => {
+  const manager = new DynamicCompactingContextManager({
+    policy: {
+      safetyMarginTokens: 100,
+      warningThreshold: 0.7,
+      aggressiveThreshold: 0.8,
+      compactionThreshold: 0.9,
+    },
+  });
+
+  await assert.rejects(
+    manager.prepare({
+      messages: [msg('user', 'cannot fit')],
+      systemPrompt: 's'.repeat(4_000),
+      modelCapabilities: { contextWindow: 1_000, maxOutputTokens: 200 },
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'FIXED_CONTEXT_EXCEEDS_WINDOW',
+  );
+});

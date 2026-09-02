@@ -37,11 +37,6 @@ import { createWebTools, type WebToolsOptions } from '../tools/web/index.js';
 import type { Tool } from '../tools/tool.js';
 import { resolveInlineAgent } from './inline-agent.js';
 import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
-import type { ContextIntelligenceEngineOptions } from '../context-intelligence/engine.js';
-import type {
-  ContextIntelligenceIntervention,
-  ContextIntelligenceReport,
-} from '../context-intelligence/contracts.js';
 
 /**
  * Runs one payload to completion, or streams the events of one payload.
@@ -95,17 +90,6 @@ export type HeadlessRunOptions = {
    */
   sessionStore?: SessionStore;
   artifactStore?: ArtifactStore;
-  /**
-   * Deployment-provided Context Intelligence adapters (retrievers, rerankers,
-   * summarizers, capability metadata). The payload supplies policy/configuration;
-   * executable adapters stay on the trusted host side.
-   */
-  contextIntelligence?:
-    | Omit<
-        ContextIntelligenceEngineOptions,
-        'config' | 'initialState' | 'artifactStore' | 'onTelemetry'
-      >
-    | false;
   /** Replaces the SDK-backed S3 reader for skill documents. */
   skillContentStore?: ContentStore;
   eventSink?: EventSink;
@@ -207,10 +191,6 @@ export type HeadlessResult = {
    * manager with no model capabilities supplied.
    */
   context?: HeadlessContextUsage;
-  /** Content-free Context Intelligence decisions from the final model decision or terminal intervention. */
-  contextIntelligence?: ContextIntelligenceReport;
-  /** Typed application outcome when Context Intelligence ended the turn before model invocation. */
-  intervention?: ContextIntelligenceIntervention;
   /** Present only when `payload.includeEvents` was set. */
   events?: readonly AgentEvent[];
   durationMs: number;
@@ -777,25 +757,6 @@ async function prepare(
       ...(stored === undefined ? {} : { sessionCreatedAt: stored.createdAt }),
       sessionState: sessionInfo,
       ...(options.artifactStore === undefined ? {} : { artifactStore: options.artifactStore }),
-      contextIntelligence:
-        options.contextIntelligence === false
-          ? false
-          : {
-              ...options.contextIntelligence,
-              ...(payload.agent.contextIntelligence === undefined
-                ? {}
-                : {
-                    config: payload.agent.contextIntelligence as NonNullable<
-                      ContextIntelligenceEngineOptions['config']
-                    >,
-                  }),
-              ...(options.artifactStore === undefined
-                ? {}
-                : { artifactStore: options.artifactStore }),
-              ...(stored?.contextIntelligence === undefined
-                ? {}
-                : { initialState: stored.contextIntelligence }),
-            },
       ...(options.eventSink === undefined ? {} : { eventSink: options.eventSink }),
       ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
       logContext,
@@ -1149,8 +1110,6 @@ class RunTotals {
   private stopReason: StopReason | 'closed' | undefined;
   private failure: { code: string; message: string; recoverable: boolean } | undefined;
   private context: HeadlessContextUsage | undefined;
-  private contextIntelligence: ContextIntelligenceReport | undefined;
-  private intervention: ContextIntelligenceIntervention | undefined;
   private compactions = 0;
   private peakTokens: number | undefined;
   private peakPercent = 0;
@@ -1240,17 +1199,6 @@ class RunTotals {
       case 'context.compaction.completed':
         this.compactions += 1;
         break;
-      case 'context.intelligence':
-        // The pre-model report is followed by a post-response grounding report.
-        // Last-write wins so buffered and streaming consumers retain final truth.
-        this.contextIntelligence = structuredClone(event.report);
-        break;
-      case 'warning':
-        if (event.intervention) {
-          // Last terminal intervention wins, mirroring the report folding above.
-          this.intervention = structuredClone(event.intervention);
-        }
-        break;
       case 'error':
         // First failure wins: a model error often produces a cascade, and the one
         // that started it is the one worth reporting.
@@ -1292,10 +1240,6 @@ class RunTotals {
       ...(this.context === undefined
         ? {}
         : { context: { ...this.context, compactions: this.compactions } }),
-      ...(this.contextIntelligence === undefined
-        ? {}
-        : { contextIntelligence: this.contextIntelligence }),
-      ...(this.intervention === undefined ? {} : { intervention: this.intervention }),
       durationMs,
       ...(this.failure === undefined ? {} : { error: this.failure }),
     };

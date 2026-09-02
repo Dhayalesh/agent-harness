@@ -97,9 +97,6 @@ const chatMessageSchema = new mongoose.Schema(
     attachments: { type: [messageAttachmentSchema], default: undefined },
     artifacts: { type: [artifactSchema], default: undefined },
     toolCalls: { type: [toolCallSchema], default: undefined },
-    // Application metadata for a terminal Context Intelligence decision. It is
-    // deliberately not assistant prose and is excluded from replay history.
-    intervention: mongoose.Schema.Types.Mixed,
     runId: String,
     createdAt: { type: String, required: true },
     error: {
@@ -168,8 +165,6 @@ const sessionSchema = new mongoose.Schema(
         { _id: false, strict: false },
       ),
     },
-    /** Last content-free Context Intelligence report, for a reopened chat. */
-    contextIntelligence: mongoose.Schema.Types.Mixed,
   },
   { _id: false },
 );
@@ -259,9 +254,9 @@ export function chatSummaries(filter = {}, limit = 50) {
         agentId: 1,
         agentName: 1,
         runtimeSessionId: 1,
-        // The list needs session health and the small occupancy meter, not the
-        // multi-section Context Intelligence report. The selected chat fetches its
-        // full document, avoiding the report being repeated for every sidebar row.
+        // The list needs session health and the small occupancy meter. The selected
+        // chat fetches its full document, avoiding transcript data being repeated
+        // for every sidebar row.
         session: {
           status: "$session.status",
           storage: "$session.storage",

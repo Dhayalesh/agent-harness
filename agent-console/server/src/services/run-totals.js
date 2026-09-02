@@ -10,10 +10,6 @@
 import { presentedArtifact } from "./response-artifacts.js";
 import { presentedReasoning } from "./response-reasoning.js";
 import { presentedToolCall } from "./response-tool-calls.js";
-import {
-  contextIntelligenceInterventionSchema,
-  contextIntelligenceReportSchema,
-} from "../lib/schemas.js";
 
 /**
  * How many turns of context history a run keeps.
@@ -42,8 +38,6 @@ export class RunTotals {
   #toolActivity = new Map();
   #artifacts = [];
   #context;
-  #contextIntelligence;
-  #intervention;
   #compactions = 0;
   #recoveries = 0;
   #peakTokens;
@@ -223,29 +217,6 @@ export class RunTotals {
       case "context.compaction.completed":
         this.#compactions += 1;
         break;
-      case "context.intelligence":
-        {
-          const parsed = contextIntelligenceReportSchema.safeParse(
-            event.report,
-          );
-          if (!parsed.success) break;
-          // Last report wins, matching the buffered Harness result: it describes
-          // the final model decision or the terminal Context Intelligence outcome.
-          this.#contextIntelligence = structuredClone(parsed.data);
-        }
-        break;
-      case "warning":
-        {
-          const parsed = contextIntelligenceInterventionSchema.safeParse(
-            event.intervention,
-          );
-          if (parsed.success) {
-            // Warnings remain backward-compatible; only the bounded typed payload
-            // becomes an application outcome on the folded result.
-            this.#intervention = structuredClone(parsed.data);
-          }
-        }
-        break;
       // Counted, not stored in detail: what a reader needs is "the layer had to put
       // something back", and the harness log already holds which categories.
       case "context.recovery":
@@ -385,10 +356,6 @@ export class RunTotals {
       ...(this.#context
         ? { context: { ...this.#context, compactions: this.#compactions } }
         : {}),
-      ...(this.#contextIntelligence
-        ? { contextIntelligence: this.#contextIntelligence }
-        : {}),
-      ...(this.#intervention ? { intervention: this.#intervention } : {}),
       durationMs,
       ...(failure ? { error: failure } : {}),
     };

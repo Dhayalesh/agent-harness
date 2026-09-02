@@ -1021,3 +1021,38 @@ test('a session given nothing but a percentage runs the whole pipeline', async (
   assert.equal(usage.verification, 'passed');
   assert.equal(events.filter((event) => event.type === 'context.compaction.completed').length, 1);
 });
+
+
+test('explicit current request survives tool turns while system context stays separate', async () => {
+  const currentRequest = msg(
+    'user',
+    'Use docs/current/status.md and report the current release.',
+    'explicit-current-request',
+  );
+  const messages = [
+    ...filler(6_000, 'older-history'),
+    currentRequest,
+    msg('assistant', 'I will inspect the explicit file.', 'after-request'),
+    toolCall('status', 'read_file', { path: 'docs/current/status.md' }),
+    toolResult('status', 'status: ready'),
+  ];
+
+  const result = await new ContextOrchestrator({}).prepare({
+    messages,
+    currentRequestId: currentRequest.id,
+    systemPrompt: 'Never rewrite freshness words into paths.',
+    modelCapabilities: CAPS,
+    forceCompaction: true,
+  });
+
+  assert.ok(result.messages.some((message) => message.id === currentRequest.id));
+  assert.equal(
+    result.items.find((item) => item.type === 'user_request')?.content,
+    'Use docs/current/status.md and report the current release.',
+  );
+  assert.equal(
+    result.items.find((item) => item.type === 'system_context')?.content,
+    'Never rewrite freshness words into paths.',
+  );
+  assert.equal(textOf(result.messages).includes('Never rewrite freshness words into paths.'), false);
+});

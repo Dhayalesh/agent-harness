@@ -156,6 +156,8 @@ test('terminates at the configured maximum turn count', async () => {
 
 test('runs consecutive concurrency-safe tools in parallel', async () => {
   const schema = z.object({ value: z.string() });
+  let activeExecutions = 0;
+  let peakExecutions = 0;
   const delayed: Tool<z.infer<typeof schema>> = {
     name: 'delayed',
     description: 'Delayed read',
@@ -164,8 +166,14 @@ test('runs consecutive concurrency-safe tools in parallel', async () => {
     kind: 'read',
     concurrencySafe: true,
     async execute(input) {
-      await new Promise((resolve) => setTimeout(resolve, 80));
-      return { content: input.value };
+      activeExecutions += 1;
+      peakExecutions = Math.max(peakExecutions, activeExecutions);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { content: input.value };
+      } finally {
+        activeExecutions -= 1;
+      }
     },
   };
   const session = createAgentSession({
@@ -181,11 +189,9 @@ test('runs consecutive concurrency-safe tools in parallel', async () => {
       ],
     ]),
     tools: [delayed],
-    contextIntelligence: false,
   });
-  const started = performance.now();
   await collect(session.run({ prompt: 'parallel' }));
-  assert.ok(performance.now() - started < 145);
+  assert.equal(peakExecutions, 2);
   const toolResults = session.messages[2]?.content;
   assert.deepEqual(
     toolResults?.map((block) => (block.type === 'tool_result' ? block.content : '')),

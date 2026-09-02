@@ -398,10 +398,9 @@ should normally remain read-only; use a separate operator identity for uploads.
 
 `invokeHeadless` returns the answer with what it cost: the concatenated assistant text,
 the messages, per-tool call and error counts, the stop reason, token usage, and the
-workspace path. When Context Intelligence is enabled, `contextIntelligence` contains a
-bounded content-free report of quality, budgets, retrieval, memory, capability selection,
-and final-context counts. A failure _inside_ the turn comes back as `status: 'error'` on a result
-that still carries the partial output, because a run that spent tokens and then hit a
+workspace path. Its optional `context` block reports deterministic input usage, budget,
+action, and compaction counts from the context-management events. A failure _inside_ the
+turn comes back as `status: 'error'` on a result that still carries the partial output, because a run that spent tokens and then hit a
 model error has produced something worth seeing. Only a payload the runner could not act
 on throws.
 
@@ -423,7 +422,9 @@ Enough to render a run as it happens rather than summarize it afterwards.
 | `tool.progress`             | Output from a running tool, **while it runs**                   |
 | `tool.completed`            | Its result                                                      |
 | `permission.requested`      | A tool is waiting on a decision (`permissionFallback: 'ask'`)   |
-| `context.intelligence`      | Bounded quality, budget, retrieval, memory, and selection report |
+| `context.usage`                 | Deterministic budget usage and the action taken                  |
+| `context.selection/verification` | What was bounded and whether required state survived             |
+| `context.compaction.*`            | A compaction started or completed                                |
 | `usage.updated`             | Tokens so far, including `reasoningTokens`                      |
 | `warning`                   | A retried request, a compaction, a rate limit waited out        |
 

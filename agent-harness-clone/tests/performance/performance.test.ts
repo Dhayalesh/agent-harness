@@ -10,9 +10,7 @@ test('deterministic no-tool session completes within the regression budget', asy
         { type: 'completed', stopReason: 'end_turn' },
       ],
     ]),
-    // Keep this wall-clock regression test scoped to the base session loop;
-    // Context Intelligence behavior and overhead have dedicated suites.
-    contextIntelligence: false,
+    // Keep this wall-clock regression scoped to a deterministic no-tool session.
   });
   const start = performance.now();
   for await (const _event of session.run({ prompt: 'measure' })) {

@@ -143,9 +143,16 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
     resolved.skills.some((skill) => "documentBody" in skill),
     false,
   );
-  assert.deepEqual(
-    payload.permissionRules.find((rule) => rule.tool === "skill"),
+  assert.deepEqual(payload.agent.tools, ["read_file", "edit_file"]);
+  assert.deepEqual(payload.permissionRules, [
+    { tool: "read_file", decision: "allow" },
+    { tool: "edit_file", decision: "allow" },
     { tool: "skill", decision: "allow" },
+  ]);
+  assert.equal(payload.permissionFallback, "deny");
+  assert.equal(
+    payload.permissionRules.some((rule) => rule.tool === "web_search"),
+    false,
   );
 });
 

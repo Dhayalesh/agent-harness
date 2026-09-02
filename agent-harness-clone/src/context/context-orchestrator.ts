@@ -52,6 +52,7 @@ import {
   type CompactionSummaryResult,
   type ContextBudget,
   type ContextManager,
+  type ContextManagerResult,
   type ContextPolicy,
   type ContextPressure,
   type ContextRequest,
@@ -69,6 +70,7 @@ import { renderContextState, renderStateSummary } from './context-state-summary.
 import { scoreMessageImportance, type MessageImportance } from './context-importance.js';
 import { selectContext, type SelectionTier } from './context-selector.js';
 import { manageToolResults } from './tool-result-manager.js';
+import { finalizePreparedContext } from './context-items.js';
 import {
   checkToolProtocol,
   verifyContext,
@@ -197,6 +199,10 @@ export class ContextOrchestrator implements ContextManager {
   }
 
   async prepare(request: ContextRequest): Promise<PreparedContext> {
+    return finalizePreparedContext(request, await this.prepareMessages(request));
+  }
+
+  private async prepareMessages(request: ContextRequest): Promise<Omit<PreparedContext, 'items'>> {
     const policy: ContextPolicy = request.policy
       ? { ...this.basePolicy, ...request.policy }
       : this.basePolicy;
@@ -319,6 +325,9 @@ export class ContextOrchestrator implements ContextManager {
       importance,
       targetTokens: target,
       estimator: this.estimator,
+      ...(request.currentRequestId === undefined
+        ? {}
+        : { protectedMessageIds: new Set([request.currentRequestId]) }),
     });
 
     if (selection.droppedIndices.length > 0) {
@@ -414,6 +423,7 @@ export class ContextOrchestrator implements ContextManager {
       configuredMaxInputTokens: this.configuredMaxInputTokens,
       configuredMaxOutputTokens: this.configuredMaxOutputTokens,
       requestMaxInputTokens: request.maxInputTokens,
+      systemPrompt: request.systemPrompt,
     });
   }
 
@@ -486,7 +496,7 @@ export class ContextOrchestrator implements ContextManager {
       allocation: ContextDecision['allocation'];
       target: number;
     },
-  ): Promise<PreparedContext> {
+  ): Promise<ContextManagerResult> {
     const { request, messages, policy, allocation, target } = options;
     const retainRecentTokens = Math.max(
       1,
@@ -496,6 +506,10 @@ export class ContextOrchestrator implements ContextManager {
     return manager.prepare({
       messages,
       forceCompaction: true,
+      ...(request.currentRequestId === undefined
+        ? {}
+        : { currentRequestId: request.currentRequestId }),
+      ...(request.systemPrompt === undefined ? {} : { systemPrompt: request.systemPrompt }),
       ...(request.modelCapabilities === undefined
         ? {}
         : { modelCapabilities: request.modelCapabilities }),
@@ -563,7 +577,7 @@ export class ContextOrchestrator implements ContextManager {
     allocation: ContextDecision['allocation'];
     innerMetadata: NonNullable<PreparedContext['metadata']>;
     summarizer?: StateAwareSummarizer;
-  }): Promise<PreparedContext> {
+  }): Promise<Omit<PreparedContext, 'items'>> {
     let messages = input.messages;
     let estimatedTokens = input.estimatedTokens;
     let action = input.action;
@@ -715,6 +729,12 @@ export class ContextOrchestrator implements ContextManager {
       messages: candidate,
       forceCompaction: true,
       maxInputTokens: Math.max(1_000, Math.floor(budget.effectiveInputBudget * 0.9)),
+      ...(options.request.currentRequestId === undefined
+        ? {}
+        : { currentRequestId: options.request.currentRequestId }),
+      ...(options.request.systemPrompt === undefined
+        ? {}
+        : { systemPrompt: options.request.systemPrompt }),
       ...(options.request.modelCapabilities === undefined
         ? {}
         : { modelCapabilities: options.request.modelCapabilities }),
@@ -741,7 +761,7 @@ export class ContextOrchestrator implements ContextManager {
 
   /** Attaches a decision to a result the inner manager produced unchanged. */
   private decorate(
-    prepared: PreparedContext,
+    prepared: ContextManagerResult,
     input: {
       action: ContextAction;
       strategy: ContextDecision['strategy'];
@@ -761,7 +781,7 @@ export class ContextOrchestrator implements ContextManager {
       state: ContextState | undefined;
       allocation: ContextDecision['allocation'];
     },
-  ): PreparedContext {
+  ): Omit<PreparedContext, 'items'> {
     const decision: ContextDecision = {
       action: input.action,
       strategy: input.strategy,
