@@ -168,17 +168,20 @@ export function ChatPage() {
       compacted: false,
       compactions: 0,
     };
-  }, [live?.context, live?.lastCompaction, chat?.session?.context, selectedAgent]);
+  }, [
+    live?.context,
+    live?.lastCompaction,
+    chat?.session?.context,
+    selectedAgent,
+  ]);
 
   const contextIntelligence = live
     ? live.contextIntelligence
-    : chat?.session?.contextIntelligence ?? null;
+    : (chat?.session?.contextIntelligence ?? null);
   const storedIntervention = useMemo(() => {
     const response = [...(chat?.messages ?? [])]
       .reverse()
-      .find((message) =>
-        ["assistant", "error"].includes(message.role),
-      );
+      .find((message) => ["assistant", "error"].includes(message.role));
     return response?.intervention ?? null;
   }, [chat?.messages]);
   // While a new turn is live, do not carry a previous turn's intervention forward.
@@ -337,9 +340,7 @@ export function ChatPage() {
     const victim = target ?? chat;
     if (!victim) return;
     try {
-      applyChatPatch(
-        (await api.setChatPinned(victim.id, !victim.pinned)).chat,
-      );
+      applyChatPatch((await api.setChatPinned(victim.id, !victim.pinned)).chat);
     } catch (caught) {
       setError(caught);
     }
@@ -371,14 +372,7 @@ export function ChatPage() {
   };
 
   const compactContext = async () => {
-    if (
-      !chat ||
-      compacting ||
-      sending ||
-      uploading ||
-      resettingSession
-    )
-      return;
+    if (!chat || compacting || sending || uploading || resettingSession) return;
     setCompacting(true);
     setError(null);
     try {
@@ -1691,9 +1685,7 @@ function applyLiveEvent(live, event) {
           {
             code: event.code ?? "WARNING",
             message: event.message ?? "The runtime reported a warning.",
-            ...(event.intervention
-              ? { intervention: event.intervention }
-              : {}),
+            ...(event.intervention ? { intervention: event.intervention } : {}),
           },
         ].slice(-5),
         intervention: event.intervention ?? current.intervention,
@@ -1709,7 +1701,7 @@ function applyLiveEvent(live, event) {
     case "context.intelligence":
       return {
         ...current,
-        status: "Context ready",
+        status: "Context Intelligence reported",
         contextIntelligence: event.report ?? current.contextIntelligence,
       };
     case "context.selection":
@@ -1884,8 +1876,7 @@ function latestArtifact(chat) {
 }
 
 function LiveMessage({ live, agentName }) {
-  const busy =
-    !live.text && live.artifacts.length === 0 && !live.intervention;
+  const busy = !live.text && live.artifacts.length === 0 && !live.intervention;
   return (
     <article className="grid grid-cols-[30px_minmax(0,1fr)] items-start gap-3">
       <AgentAvatar
@@ -2443,7 +2434,9 @@ function groupChats(chats) {
     buckets.get(bucketOf(item.updatedAt ?? item.createdAt)).push(item);
   }
   return [
-    ...(pinned.length ? [{ label: "Pinned", items: pinned, pinned: true }] : []),
+    ...(pinned.length
+      ? [{ label: "Pinned", items: pinned, pinned: true }]
+      : []),
     ...GROUP_ORDER.filter((label) => buckets.get(label).length > 0).map(
       (label) => ({ label, items: buckets.get(label) }),
     ),

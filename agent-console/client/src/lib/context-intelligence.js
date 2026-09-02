@@ -25,22 +25,26 @@ const INTERVENTIONS = {
   CLARIFY: {
     label: "Clarification required",
     color: "warning",
-    detail: "Context Intelligence ended the turn before model invocation because required information needs clarification.",
+    detail:
+      "Context Intelligence ended the turn before model invocation because required information needs clarification.",
   },
   ABSTAIN: {
     label: "Context abstained",
     color: "warning",
-    detail: "Context Intelligence ended the turn because the required evidence could not be obtained safely.",
+    detail:
+      "Context Intelligence ended the turn because the required evidence could not be obtained safely.",
   },
   CONFLICT: {
     label: "Evidence conflict",
     color: "danger",
-    detail: "Context Intelligence ended the turn because material evidence remained in conflict.",
+    detail:
+      "Context Intelligence ended the turn because material evidence remained in conflict.",
   },
   DENY: {
     label: "Request denied",
     color: "danger",
-    detail: "Context Intelligence ended the turn because a governing policy denied the operation.",
+    detail:
+      "Context Intelligence ended the turn because a governing policy denied the operation.",
   },
 };
 
@@ -178,6 +182,60 @@ export function issueSummary(report) {
     });
   }
   return [...byKey.values()];
+}
+
+export const RUNTIME_EXECUTION_STATES = new Set([
+  "NOT_EXECUTED",
+  "IN_PROGRESS",
+  "SUCCESS",
+  "EMPTY",
+  "FAILED",
+  "RETRYING",
+  "EXHAUSTED",
+  "BLOCKED",
+]);
+
+/** Return only runtime-owned attempt records; never synthesize attempts from counts. */
+export function runtimeAttempts(report) {
+  return Array.isArray(report?.retrieval?.attempts)
+    ? report.retrieval.attempts.filter(
+        (attempt) => attempt && typeof attempt === "object",
+      )
+    : [];
+}
+
+export function executionState(value) {
+  return RUNTIME_EXECUTION_STATES.has(value) ? value : "NOT EXPOSED";
+}
+
+export function adaptationState(report) {
+  const adaptive = report?.retrieval?.adaptive;
+  if (adaptive?.triggered === true) return "TRIGGERED";
+  if (adaptive?.triggered === false) return "NOT TRIGGERED";
+  return "NOT EXPOSED";
+}
+
+export function provenanceState(report) {
+  const value = report?.trace?.provenance?.status;
+  return ["PASS", "PARTIAL", "FAIL"].includes(value) ? value : "NOT EXPOSED";
+}
+
+export function groundingState(report) {
+  const value = report?.grounding?.status;
+  return ["PASS", "FAIL", "NOT_REQUIRED", "NOT_EVALUATED"].includes(value)
+    ? value
+    : "NOT EXPOSED";
+}
+
+export function runtimeValue(value) {
+  if (value === undefined) return "NOT EXPOSED";
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "NOT EXPOSED";
+  }
 }
 
 export function humanize(value) {

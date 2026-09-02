@@ -144,7 +144,9 @@ function selectedCapability(
     kind: capability.startsWith('WEB_') ? 'network' : 'read',
     keywords: [name, capability.toLowerCase()],
     entityTypes: [],
-    operations: [capability.includes('SEARCH') || capability.includes('DISCOVERY') ? 'search' : 'read'],
+    operations: [
+      capability.includes('SEARCH') || capability.includes('DISCOVERY') ? 'search' : 'read',
+    ],
     sourceIds: [],
     sourceKinds: sourceKindsFor(capability),
     authority: 0.95,
@@ -304,6 +306,7 @@ function operation(
 ): RuntimeRetrievalOperation {
   return {
     id: partial.id ?? 'op-1',
+    retrievalPlanId: partial.retrievalPlanId ?? 'retrieval-plan-1',
     requestId: 'request-1',
     needId: 'need-1',
     capability: partial.capability ?? 'WEB_SEARCH',
@@ -312,6 +315,7 @@ function operation(
     input,
     attemptKey: partial.attemptKey ?? stableHash({ toolName: 'web_search', input }),
     strategy: partial.strategy ?? 'INITIAL',
+    priorOperationIds: partial.priorOperationIds ?? [],
     iteration: partial.iteration ?? 1,
     status: partial.status ?? 'failed',
     executionState: partial.executionState ?? 'FAILED',
@@ -557,7 +561,11 @@ test('T3: instruction-only prompt produces no normalized plan — retrieval deni
     'Attempt 2: Retry if first attempt failed.';
 
   const intent = resolver.resolve(controlOnlyPrompt);
-  assert.equal(intent.normalizedRequest, '', 'control-only prompt must produce empty normalizedRequest');
+  assert.equal(
+    intent.normalizedRequest,
+    '',
+    'control-only prompt must produce empty normalizedRequest',
+  );
   assert.equal(intent.instructionSegments.informationRequirements.length, 0);
 
   const captured = await executePrompt(controlOnlyPrompt);
@@ -675,9 +683,15 @@ test('T5: provenance normalizedRetrievalRequest is semantically identical to the
   // THE KEY ASSERTION: provenance record = what was actually passed to tool.execute()
   assert.equal(captured.searches[0]?.query, action.input.query);
   assert.equal(traced?.details?.normalizedRetrievalRequest, captured.searches[0]?.query);
-  assert.equal(traced?.details?.normalizedRetrievalRequest, action.retrievalInput?.retrievalRequest);
+  assert.equal(
+    traced?.details?.normalizedRetrievalRequest,
+    action.retrievalInput?.retrievalRequest,
+  );
   assert.equal(traced?.details?.retrievalArgument, 'query');
-  assertClean(String(traced?.details?.normalizedRetrievalRequest), 'provenance.normalizedRetrievalRequest');
+  assertClean(
+    String(traced?.details?.normalizedRetrievalRequest),
+    'provenance.normalizedRetrievalRequest',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -792,7 +806,10 @@ test('T8: integration — actual tool.execute() arguments are clean for both web
   }
 
   // ── web_search: at least 2 attempts (1 failed → 1 adapted) ─────────────
-  assert.ok(captured.searches.length >= 2, 'failed first search must trigger adaptive second attempt');
+  assert.ok(
+    captured.searches.length >= 2,
+    'failed first search must trigger adaptive second attempt',
+  );
 
   for (let i = 0; i < captured.searches.length; i++) {
     const actual = captured.searches[i]!;
@@ -846,6 +863,10 @@ test('T8: integration — actual tool.execute() arguments are clean for both web
   );
   assert.ok(observations.length >= 2, 'at least 2 retrieval observations must be recorded');
   for (const obs of observations) {
-    assert.notEqual(obs.data.actual_tool_input, undefined, 'every observation must have actual_tool_input');
+    assert.notEqual(
+      obs.data.actual_tool_input,
+      undefined,
+      'every observation must have actual_tool_input',
+    );
   }
 });

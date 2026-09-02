@@ -218,7 +218,11 @@ function classifyFailure(
     return 'invalid_input';
   if (/\b(?:unsupported|not implemented|unknown tool|capability unavailable)\b/i.test(content))
     return 'unsupported';
-  if (/\b(?:network|connection|dns|socket|econn|gateway|service unavailable|502|503|504)\b/i.test(content))
+  if (
+    /\b(?:network|connection|dns|socket|econn|gateway|service unavailable|502|503|504)\b/i.test(
+      content,
+    )
+  )
     return 'network';
   return 'unknown';
 }
@@ -245,6 +249,11 @@ function sourceFor(
   const inferred = inferredSource(genericCapabilities);
   const outputProvider =
     typeof output.metadata?.provider === 'string' ? output.metadata.provider : undefined;
+  const outputUrl =
+    typeof output.metadata?.url === 'string' && /^https?:\/\//i.test(output.metadata.url)
+      ? output.metadata.url
+      : undefined;
+  const sourceUri = metadata.uri ?? configured?.uri ?? outputUrl;
   const observedExtractionContext = extractionContextFrom(output.metadata);
   const extractionContext =
     metadata.extractionContext ?? configured?.extractionContext ?? observedExtractionContext;
@@ -271,14 +280,16 @@ function sourceFor(
       : {}),
     ...(extractionContext === undefined ? {} : { extractionContext }),
     evidenceIdentity:
-      metadata.evidenceIdentity ?? configured?.evidenceIdentity ?? `${sourceId}:${inputIdentity(output)}`,
+      metadata.evidenceIdentity ??
+      configured?.evidenceIdentity ??
+      `${sourceId}:${inputIdentity(output)}`,
     ...((metadata.version ?? configured?.version)
       ? { version: metadata.version ?? configured!.version }
       : {}),
     ...((metadata.scope ?? configured?.scope)
       ? { scope: metadata.scope ?? configured!.scope }
       : {}),
-    ...((metadata.uri ?? configured?.uri) ? { uri: metadata.uri ?? configured!.uri } : {}),
+    ...(sourceUri === undefined ? {} : { uri: sourceUri }),
     contentHash: metadata.contentHash ?? configured?.contentHash ?? stableHash(output.content),
     ...((metadata.policyLabels ?? configured?.policyLabels)
       ? { policyLabels: metadata.policyLabels ?? configured!.policyLabels }
@@ -286,9 +297,7 @@ function sourceFor(
   });
 }
 
-function extractionContextFrom(
-  metadata: ToolExecutionResult['metadata'],
-): string | undefined {
+function extractionContextFrom(metadata: ToolExecutionResult['metadata']): string | undefined {
   if (!metadata) return undefined;
   if (
     typeof metadata.offset === 'number' &&
@@ -312,9 +321,10 @@ function extractionContextFrom(
   return undefined;
 }
 
-function inferredSource(
-  capabilities: readonly string[],
-): { type: SourceMetadata['type']; sourceKind?: SourceMetadata['sourceKind'] } {
+function inferredSource(capabilities: readonly string[]): {
+  type: SourceMetadata['type'];
+  sourceKind?: SourceMetadata['sourceKind'];
+} {
   if (capabilities.some((capability) => capability === 'WEB_SEARCH' || capability === 'WEB_FETCH'))
     return { type: 'external', sourceKind: 'WEB' };
   if (capabilities.includes('FILE_DISCOVERY') || capabilities.includes('FILE_READ')) {

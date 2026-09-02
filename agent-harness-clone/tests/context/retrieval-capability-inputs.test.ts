@@ -304,6 +304,7 @@ function operation(
 ): RuntimeRetrievalOperation {
   return {
     id: partial.id ?? 'operation-1',
+    retrievalPlanId: partial.retrievalPlanId ?? 'retrieval-plan-1',
     requestId: 'request-1',
     needId: 'need-1',
     capability: partial.capability ?? 'WEB_SEARCH',
@@ -312,6 +313,7 @@ function operation(
     input,
     attemptKey: partial.attemptKey ?? stableHash({ toolName: 'web_search', input }),
     strategy: partial.strategy ?? 'INITIAL',
+    priorOperationIds: partial.priorOperationIds ?? [],
     iteration: partial.iteration ?? 1,
     status: partial.status ?? 'succeeded',
     executionState: partial.executionState ?? 'SUCCESS',
@@ -695,7 +697,9 @@ test('AgentSession executes clean web_search and search-result-derived web_fetch
   assert.ok(captured.fetches.length >= 1, 'web_fetch must execute after search');
   const actualFetch = captured.fetches[0]!;
   assert.equal(actualFetch.url, selectedResultUrl);
-  assert.equal(actualFetch.prompt, normalizedRetrievalRequest);
+  assert.notEqual(actualFetch.prompt, normalizedRetrievalRequest);
+  assert.match(actualFetch.prompt ?? '', /supporting primary source evidence/i);
+  assert.match(actualFetch.prompt ?? '', /AWS AgentCore/i);
   assert.equal((actualFetch.prompt ?? '').toLowerCase().includes('actual tool call'), false);
 });
 
@@ -723,7 +727,9 @@ for (const scenario of [
     const captured = await executeRuntimePrompt(prompt);
     assert.equal(captured.searches[0]?.query, scenario.informationNeed);
     assert.equal(captured.fetches[0]?.url, selectedResultUrl);
-    assert.equal(captured.fetches[0]?.prompt, scenario.informationNeed);
+    assert.notEqual(captured.fetches[0]?.prompt, scenario.informationNeed);
+    assert.match(captured.fetches[0]?.prompt ?? '', /supporting primary source evidence/i);
+    assert.ok((captured.fetches[0]?.prompt ?? '').startsWith(scenario.informationNeed));
   });
 }
 
@@ -1022,7 +1028,8 @@ test('AgentSession executes a clean changed query after a genuine first-attempt 
 
   assert.ok(captured.fetches.length >= 1, 'successful adapted search must lead to web_fetch');
   assert.equal(captured.fetches[0]?.url, selectedResultUrl);
-  assert.equal(captured.fetches[0]?.prompt, normalizedRetrievalRequest);
+  assert.notEqual(captured.fetches[0]?.prompt, normalizedRetrievalRequest);
+  assert.match(captured.fetches[0]?.prompt ?? '', /supporting primary source evidence/i);
 });
 
 test('runtime provenance and telemetry preserve every actual adaptive attempt', async () => {

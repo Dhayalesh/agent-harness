@@ -376,6 +376,8 @@ class AgentSessionImpl implements AgentSession {
         let stopReason: StopReason = 'end_turn';
         let modelStarted: number | undefined;
         let modelRequestId: string | undefined;
+        let intelligentContext:
+          Awaited<ReturnType<ContextIntelligenceEngine['prepare']>> | undefined;
 
         try {
           const forceCompaction = pendingForcedCompaction;
@@ -397,8 +399,6 @@ class AgentSessionImpl implements AgentSession {
           ]
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
-          let intelligentContext:
-            Awaited<ReturnType<ContextIntelligenceEngine['prepare']>> | undefined;
           let intelligenceFailureDecision:
             Extract<ContextQualityDecision, 'ABSTAIN' | 'CLARIFY'> | undefined;
           if (this.contextIntelligence) {
@@ -591,11 +591,13 @@ class AgentSessionImpl implements AgentSession {
             switch (modelEvent.type) {
               case 'text_delta':
                 textParts.push(modelEvent.delta);
-                yield this.event({
-                  type: 'assistant.text.delta',
-                  turnId,
-                  delta: modelEvent.delta,
-                });
+                if (intelligentContext?.contract.grounding.required !== true) {
+                  yield this.event({
+                    type: 'assistant.text.delta',
+                    turnId,
+                    delta: modelEvent.delta,
+                  });
+                }
                 break;
               case 'reasoning_delta':
                 reasoningParts.push(modelEvent.delta);
@@ -742,22 +744,24 @@ class AgentSessionImpl implements AgentSession {
           return;
         }
 
+        const groundingRequired = intelligentContext?.contract.grounding.required === true;
+        const assistantTextParts = groundingRequired && toolCalls.length > 0 ? [] : textParts;
         const assistantMessage: AgentMessage = {
           id: this.idFactory(),
           role: 'assistant',
           createdAt: this.now(),
           ...(reasoningParts.length === 0 ? {} : { reasoning: reasoningParts.join('') }),
           content: [
-            ...(textParts.length === 0
+            ...(assistantTextParts.length === 0
               ? []
-              : [{ type: 'text' as const, text: textParts.join('') }]),
+              : [{ type: 'text' as const, text: assistantTextParts.join('') }]),
             ...toolCalls,
           ],
         };
-        this.history.push(assistantMessage);
+        let groundingStatus = intelligentContext?.contract.grounding.status;
         if (this.contextIntelligence) {
           try {
-            await this.contextIntelligence.afterResponse({
+            const grounding = await this.contextIntelligence.afterResponse({
               message: assistantMessage,
               stopReason,
               scope: intelligenceScope,
@@ -767,8 +771,10 @@ class AgentSessionImpl implements AgentSession {
               sessionId: this.id,
               turnId,
             });
+            groundingStatus = grounding.status;
             memoryCandidatesConsumed = true;
           } catch (error) {
+            groundingStatus = intelligentContext?.contract.grounding.status;
             this.log({
               level: 'warn',
               event: 'context-intelligence.lifecycle',
@@ -779,6 +785,51 @@ class AgentSessionImpl implements AgentSession {
               error: describeError(error),
             });
           }
+          if (intelligentContext) {
+            yield this.event({
+              type: 'context.intelligence',
+              turnId,
+              report: contextIntelligenceReport(intelligentContext.contract),
+            });
+          }
+        }
+        const terminalGroundingFailure =
+          toolCalls.length === 0 && groundingRequired && groundingStatus !== 'PASS';
+        if (terminalGroundingFailure) {
+          const intervention = {
+            kind: 'context-intelligence' as const,
+            decision: 'ABSTAIN' as const,
+            terminal: true as const,
+            continueToModel: false as const,
+            reasonCodes: (intelligentContext?.contract.grounding.reasonCodes.length
+              ? intelligentContext.contract.grounding.reasonCodes
+              : ['grounding_not_verified']
+            ).slice(0, 50),
+            clarificationNeeds: [],
+          };
+          yield this.event({
+            type: 'warning',
+            code: 'CONTEXT_ABSTAIN',
+            message: contextInterventionMessage('ABSTAIN'),
+            intervention,
+          });
+          await this.persist();
+          yield this.event({ type: 'turn.completed', turnId, turn, reason: 'end_turn' });
+          yield this.event({
+            type: 'session.completed',
+            reason: 'end_turn',
+            historyMessageCount: this.history.length,
+          });
+          return;
+        }
+
+        this.history.push(assistantMessage);
+        if (groundingRequired && groundingStatus === 'PASS' && assistantTextParts.length > 0) {
+          yield this.event({
+            type: 'assistant.text.delta',
+            turnId,
+            delta: assistantTextParts.join(''),
+          });
         }
         await this.persist();
         for (const hook of this.hooks.list()) {

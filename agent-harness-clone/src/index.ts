@@ -621,7 +621,9 @@ export type {
   ContextFeedbackRecord,
   ContextFeedbackReference,
   ContextDecision as IntelligenceContextDecision,
+  ContextIntelligenceAttemptTrace,
   ContextIntelligenceIntervention,
+  ContextIntelligenceProvenanceTrace,
   ContextIntelligenceReport,
   ContextIntelligenceTerminalDecision,
   ContextItem as IntelligenceContextItem,
@@ -649,6 +651,9 @@ export type {
   ExecutionState,
   FinalContextSection,
   FinalizedContext,
+  GroundingAssessment,
+  GroundingClaimAssessment,
+  GroundingEvidenceReference,
   IntentEntity,
   MemoryAdmissionDecision,
   MemoryItem,
@@ -688,6 +693,8 @@ export type {
   RetrievalResult,
   RetrievalReranker,
   RetrievalState,
+  RetrievalSourceLineage,
+  RetrievalStrategyChange,
   RetrievalTerminationReason,
   RuntimeOptimizationSummary,
   RuntimeOperationSnapshot,
@@ -707,9 +714,17 @@ export type {
   ToolPlan,
 } from './context-intelligence/contracts.js';
 export { contextIntelligenceReport } from './context-intelligence/report.js';
+export { evaluateGrounding } from './context-intelligence/grounding.js';
 export { ContextNeedIntelligence } from './context-intelligence/context-need.js';
-export { IntentResolver, QueryIntelligence, buildRetrievalRequestCandidates } from './context-intelligence/query-intelligence.js';
-export type { QueryTransformer, RetrievalRequestCandidate } from './context-intelligence/query-intelligence.js';
+export {
+  IntentResolver,
+  QueryIntelligence,
+  buildRetrievalRequestCandidates,
+} from './context-intelligence/query-intelligence.js';
+export type {
+  QueryTransformer,
+  RetrievalRequestCandidate,
+} from './context-intelligence/query-intelligence.js';
 export {
   detectRetrievalConflicts,
   QueryAgent,

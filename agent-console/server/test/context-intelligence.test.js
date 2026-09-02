@@ -147,3 +147,70 @@ test("stream totals ignore a malformed report instead of persisting it", () => {
   });
   assert.equal(result.contextIntelligence, undefined);
 });
+
+test("validates authoritative attempt telemetry without coercing failure states", () => {
+  const value = report();
+  value.retrieval.executionStates = { NOT_EXECUTED: 1 };
+  value.retrieval.attempts = [
+    {
+      attemptId: "attempt-1",
+      retrievalPlanId: "plan-1",
+      attemptNumber: 1,
+      needId: "need-1",
+      informationNeed: "current Project Aurora status",
+      normalizedRequest: "current Project Aurora status",
+      capability: "WEB_SEARCH",
+      toolName: "web_search",
+      strategy: "INITIAL",
+      plannedToolInput: { query: "current Project Aurora status" },
+      executionState: "NOT_EXECUTED",
+      evidence: [],
+      sufficient: false,
+    },
+  ];
+  value.retrieval.adaptive = {
+    state: "NOT_EXECUTED",
+    attemptCount: 1,
+    remainingBudget: 2,
+    strategies: { INITIAL: 1 },
+    outcomes: {},
+    evidenceQuality: {
+      evidenceCount: 0,
+      completeness: 0,
+      conflictCount: 0,
+      sufficient: false,
+    },
+    triggered: false,
+  };
+  value.trace = {
+    rawRequest: "must not persist",
+    informationNeeds: [
+      {
+        needId: "need-1",
+        informationNeed: "current Project Aurora status",
+        normalizedRequest: "current Project Aurora status",
+        capability: "WEB_RETRIEVAL",
+      },
+    ],
+    provenance: { status: "PARTIAL", stages: [] },
+  };
+  value.grounding = {
+    status: "FAIL",
+    required: true,
+    decision: "ABSTAIN",
+    claimCount: 1,
+    supportedClaimCount: 0,
+    unsupportedClaimIds: ["claim-1"],
+    claims: [],
+    supportingEvidenceReferences: [],
+    reasonCodes: ["unsupported_answer_claims"],
+  };
+
+  const parsed = contextIntelligenceReportSchema.parse(value);
+  assert.equal(parsed.retrieval.attempts[0].executionState, "NOT_EXECUTED");
+  assert.equal(parsed.retrieval.attempts[0].actualToolInput, undefined);
+  assert.equal(parsed.retrieval.adaptive.triggered, false);
+  assert.equal("rawRequest" in parsed.trace, false);
+  assert.equal(parsed.trace.provenance.status, "PARTIAL");
+  assert.equal(parsed.grounding.status, "FAIL");
+});

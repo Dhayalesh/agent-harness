@@ -195,6 +195,9 @@ function assessAttempts(input: AttemptInput): RetrievalAttemptAssessment[] {
         ? {}
         : { previousStrategy: operation.previousStrategy ?? prior!.strategy }),
       ...(nextStrategy === undefined ? {} : { nextStrategy }),
+      ...(operation.strategyChange === undefined
+        ? {}
+        : { strategyChange: operation.strategyChange }),
       remainingRetrievalBudget: input.remainingRetrievalBudget,
       evidenceQuality: evidenceQuality(
         relatedEvidence,

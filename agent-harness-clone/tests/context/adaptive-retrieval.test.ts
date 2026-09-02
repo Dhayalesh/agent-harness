@@ -234,7 +234,16 @@ test('switches away from an inaccessible capability instead of repeating it', ()
 
 test('preserves a satisfied-but-conflicting need and seeks complementary evidence', () => {
   const observed = observation({ links: ['https://example.test/second-source'] });
-  const prior = operation({ status: 'succeeded' });
+  const prior = operation({
+    status: 'succeeded',
+    actualInput: { query: intent.normalizedRequest, maxResults: 5 },
+    invokedAt: timestamp,
+    actualResult: {
+      content: 'Search result containing https://example.test/second-source',
+      metadata: { url: 'https://example.test/second-source' },
+    },
+    resultReceivedAt: timestamp,
+  });
   const adaptive = evaluator.evaluate({
     requestId: 'request-1',
     needs: [need('satisfied')],
@@ -450,6 +459,7 @@ function operation(partial: Partial<RuntimeRetrievalOperation> = {}): RuntimeRet
   const input = partial.input ?? { query: intent.normalizedRequest, maxResults: 5 };
   return {
     id: partial.id ?? 'operation-1',
+    retrievalPlanId: partial.retrievalPlanId ?? 'retrieval-plan-1',
     requestId: 'request-1',
     needId: 'need-1',
     capability: 'WEB_SEARCH',
@@ -458,6 +468,7 @@ function operation(partial: Partial<RuntimeRetrievalOperation> = {}): RuntimeRet
     input,
     attemptKey: partial.attemptKey ?? stableHash({ toolName: 'search-a', input }),
     strategy: 'INITIAL',
+    priorOperationIds: partial.priorOperationIds ?? [],
     iteration: 1,
     status: 'succeeded',
     executionState: 'SUCCESS',

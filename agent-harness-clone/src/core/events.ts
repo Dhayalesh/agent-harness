@@ -268,12 +268,9 @@ export type AgentEvent = EventBase &
         state?: ContextStateCounts;
       }
     /**
-     * Content-free operational report from the Context Intelligence layer.
-     *
-     * The full Context Contract is intentionally not an event: it can contain the
-     * request, memories, evidence, and observations already present elsewhere. This
-     * bounded projection gives applications enough information to explain selection,
-     * quality, and budget decisions without duplicating model context over the wire.
+     * Context Intelligence aggregate decisions plus authoritative runtime trace.
+     * Trace content is produced by AgentCore at the execution boundary; clients
+     * display it verbatim and must not infer execution from planning fields.
      */
     | {
         type: 'context.intelligence';

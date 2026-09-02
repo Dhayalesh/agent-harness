@@ -5,6 +5,7 @@ import type {
   EvidenceGroup,
   EvidenceItem,
   NormalizedIntent,
+  RuntimeRetrievalOperation,
   TaskState,
   ToolObservation,
 } from './contracts.js';
@@ -52,16 +53,35 @@ export class EvidenceIntelligence {
     intent: NormalizedIntent;
     needs: readonly ContextNeed[];
     observations: readonly ToolObservation[];
+    operations?: readonly RuntimeRetrievalOperation[];
     taskState?: TaskState;
   }): EvidenceAdmissionResult {
     const evaluated = input.observations
-      .filter(
-        (observation) =>
-          observation.requestId === input.requestId &&
-          (observation.outcome === 'success' || observation.outcome === 'partial') &&
-          observation.content.trim().length > 0 &&
-          observation.capability !== undefined,
-      )
+      .filter((observation) => {
+        if (
+          observation.requestId !== input.requestId ||
+          (observation.outcome !== 'success' && observation.outcome !== 'partial') ||
+          observation.content.trim().length === 0 ||
+          observation.capability === undefined
+        ) {
+          return false;
+        }
+        if (input.operations === undefined) return true;
+        const operation = input.operations.find(
+          (candidate) =>
+            candidate.requestId === input.requestId && candidate.observationId === observation.id,
+        );
+        return Boolean(
+          operation &&
+          operation.status === 'succeeded' &&
+          operation.executionState === 'SUCCESS' &&
+          operation.invokedAt !== undefined &&
+          operation.actualInput !== undefined &&
+          operation.actualResult !== undefined &&
+          operation.actualResult.isError !== true &&
+          operation.resultReceivedAt !== undefined,
+        );
+      })
       .map((observation) =>
         evidenceFromObservation(
           observation,

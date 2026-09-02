@@ -8,6 +8,7 @@ import {
   createWebFetchTool,
   createWebSearchTool,
   createWebTools,
+  type AgentEvent,
   type ContextIntelligenceTelemetryEvent,
   type Tool,
   type ToolExecutionResult,
@@ -99,7 +100,11 @@ test('full P1 prompt reaches the real web_search execution boundary with only th
   const session = createAgentSession({
     provider: new ScriptedModelProvider([
       [
-        { type: 'text_delta', delta: 'Grounded AWS recommendations.' },
+        {
+          type: 'text_delta',
+          delta:
+            'AWS recommends governed data, security controls, observability, evaluation, resilience, and cost controls when building production generative AI applications.',
+        },
         { type: 'completed', stopReason: 'end_turn' },
       ],
     ]),
@@ -108,8 +113,9 @@ test('full P1 prompt reaches the real web_search execution boundary with only th
     contextIntelligence: engine,
   });
 
-  for await (const _event of session.run({ prompt: fullAcceptancePrompt })) {
-    // Consume the complete production AgentSession retrieval loop.
+  const runtimeEvents: AgentEvent[] = [];
+  for await (const event of session.run({ prompt: fullAcceptancePrompt })) {
+    runtimeEvents.push(event);
   }
 
   const queryEvent = telemetry.find((event) => event.event === 'context-intelligence.query');
@@ -153,7 +159,9 @@ test('full P1 prompt reaches the real web_search execution boundary with only th
 
   assert.equal(fetchInputs.length, 1, 'the discovery gap must trigger one source fetch');
   assert.equal(fetchInputs[0]?.url, resultUrl);
-  assert.equal(fetchInputs[0]?.prompt, informationNeed);
+  assert.notEqual(fetchInputs[0]?.prompt, informationNeed);
+  assert.match(fetchInputs[0]?.prompt ?? '', /supporting primary source evidence/i);
+  assert.ok((fetchInputs[0]?.prompt ?? '').startsWith(informationNeed));
   assert.equal(invocations[1]?.data.tool, 'web_fetch');
   assert.deepEqual(invocations[1]?.data.actual_tool_input, fetchInputs[0]);
   assert.equal(invocations[1]?.data.retrieval_strategy, 'ADDITIONAL_EVIDENCE');
@@ -168,6 +176,33 @@ test('full P1 prompt reaches the real web_search execution boundary with only th
     )
     .at(-1);
   assert.equal(terminal?.data.termination_reason, 'SUFFICIENT_EVIDENCE');
+
+  const finalReportEvent = runtimeEvents
+    .filter((event) => event.type === 'context.intelligence')
+    .at(-1);
+  assert.ok(finalReportEvent && finalReportEvent.type === 'context.intelligence');
+  const finalReport = finalReportEvent.report;
+  assert.equal(finalReport.retrieval.attempts.length, 2);
+  const [firstAttempt, secondAttempt] = finalReport.retrieval.attempts;
+  assert.equal(firstAttempt?.executionState, 'SUCCESS');
+  assert.deepEqual(firstAttempt?.actualToolInput, searchInputs[0]);
+  assert.deepEqual(firstAttempt?.actualToolResult, searchResults[0]);
+  assert.equal(firstAttempt?.classification, 'INSUFFICIENT_EVIDENCE');
+  assert.ok(firstAttempt?.observation?.observationId);
+  assert.equal(secondAttempt?.executionState, 'SUCCESS');
+  assert.deepEqual(secondAttempt?.actualToolInput, fetchInputs[0]);
+  assert.equal(secondAttempt?.classification, 'RETRIEVAL_SUCCESS');
+  assert.equal(secondAttempt?.strategyChange?.meaningful, true);
+  assert.equal(secondAttempt?.sourceLineage?.origin, 'SEARCH_RESULT');
+  assert.equal(
+    secondAttempt?.sourceLineage?.sourceObservationId,
+    firstAttempt?.observation?.observationId,
+  );
+  assert.equal(finalReport.retrieval.adaptive.triggered, true);
+  assert.equal(finalReport.retrieval.adaptive.meaningfulStrategyChange, true);
+  assert.equal(finalReport.trace.provenance.status, 'PASS');
+  assert.equal(finalReport.grounding.status, 'PASS');
+  assert.ok(finalReport.grounding.supportingEvidenceReferences.length > 0);
 });
 
 test(

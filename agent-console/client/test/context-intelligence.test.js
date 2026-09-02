@@ -1,11 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  adaptationState,
   budgetRows,
+  executionState,
+  groundingState,
   issueSummary,
+  provenanceState,
   qualityPresentation,
   qualityScore,
   reportStats,
+  runtimeAttempts,
+  runtimeValue,
 } from "../src/lib/context-intelligence.js";
 
 const report = {
@@ -66,4 +72,37 @@ test("coalesces repeated quality issue codes for a compact UI", () => {
       occurrences: 2,
     },
   ]);
+});
+
+test("preserves runtime attempt, adaptation, provenance, and grounding failure states verbatim", () => {
+  const traceReport = {
+    retrieval: {
+      attempts: [
+        {
+          attemptId: "attempt-1",
+          retrievalPlanId: "plan-1",
+          attemptNumber: 1,
+          executionState: "NOT_EXECUTED",
+          strategy: "INITIAL",
+        },
+      ],
+      adaptive: { triggered: false },
+    },
+    trace: { provenance: { status: "PARTIAL", stages: [] } },
+    grounding: { status: "FAIL" },
+  };
+
+  assert.equal(runtimeAttempts(traceReport).length, 1);
+  assert.equal(
+    executionState(runtimeAttempts(traceReport)[0].executionState),
+    "NOT_EXECUTED",
+  );
+  assert.equal(
+    runtimeValue(runtimeAttempts(traceReport)[0].actualToolInput),
+    "NOT EXPOSED",
+  );
+  assert.equal(adaptationState(traceReport), "NOT TRIGGERED");
+  assert.equal(provenanceState(traceReport), "PARTIAL");
+  assert.equal(groundingState(traceReport), "FAIL");
+  assert.notEqual(executionState("NOT_EXECUTED"), "SUCCESS");
 });

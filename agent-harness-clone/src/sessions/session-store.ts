@@ -364,6 +364,7 @@ function isValidOperationSnapshots(value: unknown): boolean {
   if (!Array.isArray(value) || value.length > 200) return false;
   const allowed = new Set([
     'id',
+    'retrievalPlanId',
     'requestId',
     'needId',
     'capability',
@@ -374,6 +375,7 @@ function isValidOperationSnapshots(value: unknown): boolean {
     'adaptationReason',
     'previousStrategy',
     'nextStrategy',
+    'priorOperationIds',
     'iteration',
     'status',
     'executionState',
@@ -399,6 +401,7 @@ function isValidOperationSnapshots(value: unknown): boolean {
       hasOnlyKeys(operation, allowed) &&
       !('input' in operation) &&
       isBoundedString(operation.id, 300) &&
+      isOptionalBoundedString(operation.retrievalPlanId, 300) &&
       isBoundedString(operation.requestId, 300) &&
       isBoundedString(operation.needId, 300) &&
       isOneOf(operation.capability, EXECUTABLE_CONTEXT_CAPABILITIES) &&
@@ -409,6 +412,10 @@ function isValidOperationSnapshots(value: unknown): boolean {
       isOptionalBoundedString(operation.adaptationReason, 1_000) &&
       isOptionalOneOf(operation.previousStrategy, RUNTIME_STRATEGIES) &&
       isOptionalOneOf(operation.nextStrategy, RUNTIME_STRATEGIES) &&
+      (operation.priorOperationIds === undefined ||
+        (Array.isArray(operation.priorOperationIds) &&
+          operation.priorOperationIds.length <= 100 &&
+          operation.priorOperationIds.every((id) => isBoundedString(id, 300)))) &&
       Number.isInteger(operation.iteration) &&
       isFiniteNonNegative(operation.iteration) &&
       isOneOf(operation.status, RUNTIME_STATUSES) &&
@@ -465,9 +472,22 @@ function normalizeOperationSnapshots(
           : executionState === 'NOT_EXECUTED'
             ? 'NOT_CHECKED'
             : 'RETRIEVAL_FAILED');
-    return { ...operation, strategy, phase, executionState, resourceState } as NonNullable<
-      PersistedContextIntelligenceState['recentOperations']
-    >[number];
+    const retrievalPlanId =
+      typeof operation.retrievalPlanId === 'string'
+        ? operation.retrievalPlanId
+        : `legacy-retrieval-plan:${String(operation.id)}`;
+    const priorOperationIds = Array.isArray(operation.priorOperationIds)
+      ? operation.priorOperationIds.filter((id): id is string => typeof id === 'string')
+      : [];
+    return {
+      ...operation,
+      retrievalPlanId,
+      priorOperationIds,
+      strategy,
+      phase,
+      executionState,
+      resourceState,
+    } as unknown as NonNullable<PersistedContextIntelligenceState['recentOperations']>[number];
   });
 }
 
@@ -490,6 +510,7 @@ function isValidRetrievalEvidenceQuality(value: unknown): boolean {
         'relevance',
         'authority',
         'freshness',
+        'completeness',
         'confidence',
         'provenanceCompleteness',
         'conflictCount',
@@ -500,6 +521,7 @@ function isValidRetrievalEvidenceQuality(value: unknown): boolean {
     isOptionalUnit(quality.relevance) &&
     isOptionalUnit(quality.authority) &&
     isOptionalUnit(quality.freshness) &&
+    isOptionalUnit(quality.completeness) &&
     isOptionalUnit(quality.confidence) &&
     isOptionalUnit(quality.provenanceCompleteness) &&
     isFiniteNonNegative(quality.conflictCount) &&

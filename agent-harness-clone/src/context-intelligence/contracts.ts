@@ -699,8 +699,31 @@ export type RetrievalInputTrace = {
   capabilityMaximumLength?: number;
 };
 
+export type RetrievalSourceLineage = {
+  /** The trusted runtime origin for a fetch URL. */
+  origin: 'SEARCH_RESULT' | 'USER_REQUEST';
+  selectedUrl: string;
+  sourceOperationId?: string;
+  sourceObservationId?: string;
+};
+
+export type RetrievalStrategyChange = {
+  previousOperationId: string;
+  previousStrategy: RetrievalAdaptationStrategy;
+  nextStrategy: RetrievalAdaptationStrategy;
+  strategyChanged: boolean;
+  normalizedRequestChanged: boolean;
+  capabilityChanged: boolean;
+  toolChanged: boolean;
+  actualInputChanged: boolean;
+  meaningful: boolean;
+  differences: readonly string[];
+};
+
 export type ContextRuntimeAction = {
   id: string;
+  /** Immutable identity of the normalized plan that authorized this attempt. */
+  retrievalPlanId: string;
   requestId: string;
   needId: string;
   capability: ExecutableContextCapability;
@@ -712,6 +735,7 @@ export type ContextRuntimeAction = {
   reason: string;
   strategy: RetrievalAdaptationStrategy;
   retrievalInput?: RetrievalInputTrace;
+  sourceLineage?: RetrievalSourceLineage;
   /** Why this strategy is preferable to repeating the prior attempt. */
   adaptationReason?: string;
   previousStrategy?: RetrievalAdaptationStrategy;
@@ -796,6 +820,7 @@ export type RetrievalAttemptAssessment = {
   adaptationReason?: string;
   previousStrategy?: RetrievalAdaptationStrategy;
   nextStrategy?: RetrievalAdaptationStrategy;
+  strategyChange?: RetrievalStrategyChange;
   remainingRetrievalBudget: number;
   evidenceQuality: RetrievalEvidenceQuality;
   contributedEvidence: boolean;
@@ -841,7 +866,10 @@ export type ObservedCost = {
 };
 
 export type RuntimeRetrievalOperation = {
+  /** Authoritative retrieval-attempt identity. */
   id: string;
+  /** Immutable identity of the normalized plan that authorized this attempt. */
+  retrievalPlanId: string;
   requestId: string;
   needId: string;
   capability: ExecutableContextCapability;
@@ -864,9 +892,14 @@ export type RuntimeRetrievalOperation = {
   attemptKey: string;
   strategy: RetrievalAdaptationStrategy;
   retrievalInput?: RetrievalInputTrace;
+  sourceLineage?: RetrievalSourceLineage;
+  /** IDs of prior attempts for this need, captured when the plan was created. */
+  priorOperationIds: readonly string[];
   adaptationReason?: string;
   previousStrategy?: RetrievalAdaptationStrategy;
   nextStrategy?: RetrievalAdaptationStrategy;
+  /** Computed only from actual attempt inputs at the invocation boundary. */
+  strategyChange?: RetrievalStrategyChange;
   iteration: number;
   status: 'planned' | 'succeeded' | 'empty' | 'failed' | 'denied';
   executionState: ExecutionState;
@@ -1193,6 +1226,102 @@ export type ReasoningSupport = {
   unresolvedIssues: readonly string[];
 };
 
+export type GroundingEvidenceReference = {
+  evidenceId: string;
+  observationId: string;
+  operationId: string;
+  provenanceId: string;
+  sourceId: string;
+  sourceName: string;
+  sourceUri?: string;
+};
+
+export type GroundingClaimAssessment = {
+  claimId: string;
+  claim: string;
+  supported: boolean;
+  evidenceReferences: readonly GroundingEvidenceReference[];
+};
+
+export type GroundingAssessment = {
+  status: 'NOT_EVALUATED' | 'NOT_REQUIRED' | 'PASS' | 'FAIL';
+  required: boolean;
+  decision?: Extract<ContextQualityDecision, 'ACCEPT' | 'CLARIFY' | 'ABSTAIN'>;
+  claimCount: number;
+  supportedClaimCount: number;
+  unsupportedClaimIds: readonly string[];
+  claims: readonly GroundingClaimAssessment[];
+  claimsTruncated?: boolean;
+  supportingEvidenceReferences: readonly GroundingEvidenceReference[];
+  reasonCodes: readonly string[];
+  checkedAt?: ISODateTime;
+};
+
+export type ContextIntelligenceAttemptTrace = {
+  attemptId: string;
+  retrievalPlanId: string;
+  attemptNumber: number;
+  needId: string;
+  informationNeed?: string;
+  normalizedRequest?: string;
+  capability: ExecutableContextCapability;
+  toolName: string;
+  strategy: RetrievalAdaptationStrategy;
+  plannedToolInput: Readonly<Record<string, unknown>>;
+  actualToolInput?: unknown;
+  actualToolResult?: RuntimeRetrievalOperation['actualResult'];
+  invokedAt?: ISODateTime;
+  resultReceivedAt?: ISODateTime;
+  executionState: ExecutionState;
+  retrievalState?: RetrievalState;
+  observation?: {
+    observationId: string;
+    outcome: ToolOutcome;
+    content: string;
+    structured?: unknown;
+    source: SourceMetadata;
+    provenanceId: string;
+  };
+  classification?: RetrievalOutcomeClassification;
+  evidence: readonly {
+    evidenceId: string;
+    observationId?: string;
+    provenanceId: string;
+    source: SourceMetadata;
+    admitted: boolean;
+  }[];
+  evidenceQuality?: RetrievalEvidenceQuality;
+  sufficient: boolean;
+  adaptationReason?: string;
+  previousStrategy?: RetrievalAdaptationStrategy;
+  nextStrategy?: RetrievalAdaptationStrategy;
+  strategyChange?: RetrievalStrategyChange;
+  sourceLineage?: RetrievalSourceLineage;
+  remainingBudget?: number;
+  terminationReason?: RetrievalTerminationReason;
+};
+
+export type ContextIntelligenceProvenanceTrace = {
+  status: 'PASS' | 'PARTIAL' | 'FAIL';
+  stages: readonly {
+    stage:
+      | 'REQUEST'
+      | 'INFORMATION_NEED'
+      | 'NORMALIZED_REQUEST'
+      | 'RETRIEVAL_PLAN'
+      | 'CAPABILITY'
+      | 'TOOL_INPUT'
+      | 'OBSERVATION'
+      | 'EVIDENCE_EVALUATION'
+      | 'CLASSIFICATION'
+      | 'ADAPTATION'
+      | 'GROUNDING'
+      | 'DECISION';
+    objectId: string;
+    parentIds: readonly string[];
+  }[];
+};
+
 export type ContextContract = {
   version: 1;
   requestId: string;
@@ -1233,6 +1362,8 @@ export type ContextContract = {
   finalContext?: FinalizedContext;
   quality: ContextQualityReport;
   directive: ContextRuntimeDirective;
+  /** Post-model claim grounding. NOT_EVALUATED until a terminal answer exists. */
+  grounding: GroundingAssessment;
   pendingDecisions: readonly string[];
   createdAt: ISODateTime;
   updatedAt: ISODateTime;
@@ -1258,13 +1389,10 @@ export type ContextIntelligenceIntervention = {
 };
 
 /**
- * Bounded, content-free view of a Context Contract for application consumers.
- *
- * The full contract can contain user text, retrieved evidence, memory, and tool
- * observations. Shipping it on every event would duplicate model context over the
- * wire and turn ordinary run telemetry into another content store. This report keeps
- * the decisions an application needs to explain and monitor the layer: counts,
- * statuses, bounded capability/provider names, and the exact budget allocation.
+ * Application view of a Context Contract. Aggregate fields remain bounded while
+ * `trace`, per-attempt inputs/results, and grounding preserve authoritative runtime
+ * proof for the local Agent Console. Consumers must treat these trace fields as
+ * conversation data rather than content-free metrics.
  */
 export type ContextIntelligenceReport = {
   version: 1;
@@ -1303,6 +1431,7 @@ export type ContextIntelligenceReport = {
     executionStates?: Readonly<Partial<Record<ExecutionState, number>>>;
     resourceStates?: Readonly<Partial<Record<ResourceState, number>>>;
     toolNames: readonly string[];
+    attempts: readonly ContextIntelligenceAttemptTrace[];
     adaptive: {
       state: RetrievalState;
       attemptCount: number;
@@ -1310,9 +1439,23 @@ export type ContextIntelligenceReport = {
       strategies: Readonly<Partial<Record<RetrievalAdaptationStrategy, number>>>;
       outcomes: Readonly<Partial<Record<RetrievalOutcomeClassification, number>>>;
       evidenceQuality: RetrievalEvidenceQuality;
+      triggered: boolean;
+      reason?: string;
+      evidenceGap?: string;
+      meaningfulStrategyChange?: boolean;
       terminationReason?: RetrievalTerminationReason;
     };
   };
+  trace: {
+    informationNeeds: readonly {
+      needId: string;
+      informationNeed: string;
+      normalizedRequest: string;
+      capability: ContextCapability;
+    }[];
+    provenance: ContextIntelligenceProvenanceTrace;
+  };
+  grounding: GroundingAssessment;
   memory: {
     recalled: number;
     types: Readonly<Partial<Record<MemoryType, number>>>;
@@ -1407,7 +1550,12 @@ export type ContextIntelligenceReport = {
 
 export type RuntimeOperationSnapshot = Omit<
   RuntimeRetrievalOperation,
-  'input' | 'resourceCandidates'
+  | 'input'
+  | 'actualInput'
+  | 'actualResult'
+  | 'resourceCandidates'
+  | 'sourceLineage'
+  | 'strategyChange'
 >;
 
 export type ContextLifecycleSnapshot = Omit<ContextLifecycleEvent, 'reason' | 'metadata'> & {

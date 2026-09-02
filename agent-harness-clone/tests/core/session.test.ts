@@ -181,6 +181,7 @@ test('runs consecutive concurrency-safe tools in parallel', async () => {
       ],
     ]),
     tools: [delayed],
+    contextIntelligence: false,
   });
   const started = performance.now();
   await collect(session.run({ prompt: 'parallel' }));

@@ -24,6 +24,7 @@ import type {
   ContextRuntimeAction,
   ContextScope,
   FinalizedContext,
+  GroundingAssessment,
   MemoryItem,
   PersistedContextIntelligenceState,
   ReasoningSupport,
@@ -53,6 +54,7 @@ import { RetrievalIntelligence, RetrievalProviderRegistry } from './retrieval-in
 import { MultiSourceSynthesizer } from './synthesis.js';
 import { ContextNeedIntelligence } from './context-need.js';
 import { EvidenceIntelligence, groupEvidence } from './evidence-intelligence.js';
+import { evaluateGrounding } from './grounding.js';
 import { ContextQualityGate } from './quality-gate.js';
 import { RuntimeRetrievalPlanner } from './runtime-retrieval.js';
 import { AdaptiveRetrievalIntelligence, annotateRuntimeOperations } from './adaptive-retrieval.js';
@@ -92,6 +94,7 @@ export type ContextIntelligenceTelemetryEvent = {
     | 'context-intelligence.prediction'
     | 'context-intelligence.optimization'
     | 'context-intelligence.evaluation'
+    | 'context-intelligence.grounding'
     | 'context-intelligence.finalized';
   sessionId: string;
   turnId?: string;
@@ -325,6 +328,7 @@ export class ContextIntelligenceEngine {
       intent,
       needs: initialNeeds,
       observations: this.observationState,
+      operations: this.runtimeOperations,
       taskState,
     });
     const observationEvidence = observationAdmission.admitted;
@@ -802,6 +806,9 @@ export class ContextIntelligenceEngine {
       finalContext: activeFinalized,
       quality: finalQualityGate.report,
       directive: finalQualityGate.directive,
+      grounding: initialGroundingAssessment(
+        contextNeeds.some((need) => need.required && need.evidenceRequirement === 'REQUIRED'),
+      ),
       pendingDecisions: dedupeStrings([
         ...taskState.pendingDecisions,
         ...intent.ambiguity,
@@ -919,6 +926,8 @@ export class ContextIntelligenceEngine {
             resultStatus: observation.outcome,
             rawRequestId: action.requestId,
             contextNeedId: action.needId,
+            retrievalPlanId: action.retrievalPlanId,
+            ...(action.sourceLineage === undefined ? {} : { sourceLineage: action.sourceLineage }),
             ...(actualToolInput === undefined ? {} : { actualToolInput }),
             ...(action.retrievalInput === undefined
               ? {}
@@ -1019,9 +1028,32 @@ export class ContextIntelligenceEngine {
           observation,
           ...(input.output.metadata === undefined ? {} : { metadata: input.output.metadata }),
         });
-        operation.status = runtimeOperationStatus(observation.outcome);
-        operation.executionState = resourceOutcome.executionState;
-        operation.retrievalState = retrievalStateForOutcome(observation.outcome);
+        const returnedObservation =
+          operation.invokedAt !== undefined &&
+          actualToolResult !== undefined &&
+          operation.resultReceivedAt !== undefined;
+        operation.status =
+          returnedObservation || observation.outcome === 'denied'
+            ? runtimeOperationStatus(observation.outcome)
+            : 'failed';
+        operation.executionState =
+          operation.invokedAt === undefined
+            ? observation.outcome === 'denied'
+              ? 'BLOCKED'
+              : 'NOT_EXECUTED'
+            : returnedObservation ||
+                (observation.outcome !== 'success' && observation.outcome !== 'partial')
+              ? resourceOutcome.executionState
+              : 'FAILED';
+        operation.retrievalState =
+          operation.invokedAt === undefined
+            ? observation.outcome === 'denied'
+              ? 'BLOCKED'
+              : 'NOT_EXECUTED'
+            : returnedObservation ||
+                (observation.outcome !== 'success' && observation.outcome !== 'partial')
+              ? retrievalStateForOutcome(observation.outcome)
+              : 'FAILED';
         operation.resourceState = resourceOutcome.resourceState;
         if (resourceOutcome.resourceCandidates.length > 0) {
           operation.resourceCandidates = resourceOutcome.resourceCandidates;
@@ -1132,6 +1164,17 @@ export class ContextIntelligenceEngine {
         };
       }
     }
+    const previousOperation = [...operation.priorOperationIds]
+      .reverse()
+      .map((operationId) => this.runtimeOperations.find((entry) => entry.id === operationId))
+      .find((entry): entry is RuntimeRetrievalOperation => entry !== undefined);
+    if (previousOperation?.actualInput !== undefined) {
+      operation.strategyChange = actualStrategyChange(
+        previousOperation,
+        operation,
+        input.actualToolInput,
+      );
+    }
     operation.actualInput = deepClone(input.actualToolInput);
     operation.invokedAt = now();
     operation.retrievalState = 'IN_PROGRESS';
@@ -1143,6 +1186,9 @@ export class ContextIntelligenceEngine {
       retrieval_request: action.retrievalInput?.retrievalRequest,
       actual_tool_input: operation.actualInput,
       invoked_at: operation.invokedAt,
+      retrieval_plan_id: operation.retrievalPlanId,
+      source_lineage: operation.sourceLineage,
+      strategy_change: operation.strategyChange,
       adaptation_reason: action.adaptationReason,
       previous_strategy: action.previousStrategy,
     });
@@ -1176,6 +1222,42 @@ export class ContextIntelligenceEngine {
           reason:
             'The planned capability input is inconsistent with its normalized retrieval request.',
         };
+      }
+      if (action.sourceLineage) {
+        if (action.input.url !== action.sourceLineage.selectedUrl) {
+          return {
+            allowed: false,
+            reason: 'The planned fetch URL differs from its authoritative provenance lineage.',
+          };
+        }
+        if (action.sourceLineage.origin === 'SEARCH_RESULT') {
+          const sourceOperation = this.runtimeOperations.find(
+            (operation) => operation.id === action.sourceLineage?.sourceOperationId,
+          );
+          const sourceObservation = this.observationState.find(
+            (observation) => observation.id === action.sourceLineage?.sourceObservationId,
+          );
+          const URLFromActualSearch =
+            sourceOperation?.executionState === 'SUCCESS' &&
+            sourceOperation.invokedAt !== undefined &&
+            sourceOperation.actualInput !== undefined &&
+            sourceOperation.actualResult !== undefined &&
+            sourceOperation.actualResult.isError !== true &&
+            sourceOperation.resultReceivedAt !== undefined &&
+            sourceOperation.observationId === sourceObservation?.id &&
+            sourceObservation !== undefined &&
+            sourceObservation.capability === 'WEB_SEARCH' &&
+            (sourceObservation.links ?? []).some((url) =>
+              sameCanonicalUrl(url, action.sourceLineage!.selectedUrl),
+            );
+          if (!URLFromActualSearch) {
+            return {
+              allowed: false,
+              reason:
+                'The planned fetch URL is not linked to an actual successful search observation.',
+            };
+          }
+        }
       }
       return { allowed: true, input: deepClone(action.input) };
     }
@@ -1250,11 +1332,59 @@ export class ContextIntelligenceEngine {
     memoryCandidates?: readonly MemoryCandidate[];
     sessionId: string;
     turnId: string;
-  }): Promise<void> {
+  }): Promise<GroundingAssessment> {
     const text = input.message.content
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join('\n');
+    const grounding = this.lastContract
+      ? evaluateGrounding(this.lastContract, input.message)
+      : initialGroundingAssessment(false);
+    if (this.lastContract) {
+      this.lastContract.grounding = grounding;
+      this.lastContract.updatedAt = now();
+      if (grounding.status === 'FAIL') {
+        this.lastContract.quality = {
+          ...this.lastContract.quality,
+          status: 'insufficient',
+          decision: 'ABSTAIN',
+          sufficient: false,
+          score: Math.min(this.lastContract.quality.score, 0.49),
+          issues: [
+            ...this.lastContract.quality.issues,
+            {
+              code: 'missing_evidence',
+              severity: 'error',
+              itemIds: grounding.unsupportedClaimIds,
+              message: 'One or more final answer claims lacked successful runtime evidence.',
+              remediation: 'reject',
+            },
+          ],
+          checkedAt: grounding.checkedAt ?? now(),
+        };
+        this.lastContract.directive = {
+          decision: 'ABSTAIN',
+          continueToModel: false,
+          actions: [],
+          reasonCodes: dedupeStrings([
+            ...this.lastContract.directive.reasonCodes,
+            ...grounding.reasonCodes,
+            'grounding_failed',
+          ]),
+          clarification: [],
+        };
+      }
+    }
+    this.emit('context-intelligence.grounding', input, {
+      status: grounding.status,
+      required: grounding.required,
+      decision: grounding.decision,
+      claim_count: grounding.claimCount,
+      supported_claim_count: grounding.supportedClaimCount,
+      unsupported_claim_ids: grounding.unsupportedClaimIds,
+      supporting_evidence_references: grounding.supportingEvidenceReferences,
+      reason_codes: grounding.reasonCodes,
+    });
     if (this.taskState && !input.message.content.some((block) => block.type === 'tool_call')) {
       const requestOperations = this.runtimeOperations.filter(
         (operation) => operation.requestId === this.activeRequestId,
@@ -1270,11 +1400,17 @@ export class ContextIntelligenceEngine {
               retry.executionState === 'SUCCESS',
           ),
       );
+      const groundingAccepted = grounding.status === 'PASS' || grounding.status === 'NOT_REQUIRED';
       const qualityAccepted =
-        this.lastContract?.directive.decision === 'ACCEPT' && this.lastContract.quality.sufficient;
+        this.lastContract?.directive.decision === 'ACCEPT' &&
+        this.lastContract.quality.sufficient &&
+        groundingAccepted;
       const unresolved = dedupeStrings([
         ...(this.lastContract?.quality.sufficient === false
           ? ['Context quality gate reported insufficiency.']
+          : []),
+        ...(grounding.status === 'FAIL'
+          ? ['Final answer grounding failed against successful runtime evidence.']
           : []),
         ...unresolvedOperations.map(
           (operation) =>
@@ -1287,7 +1423,7 @@ export class ContextIntelligenceEngine {
         unresolved,
       );
     }
-    if (this.config.features.memory) {
+    if (this.config.features.memory && grounding.status !== 'FAIL') {
       await this.updateActiveMemory(input.scope, text);
       for (const candidate of input.memoryCandidates ?? []) {
         const decision = await this.memory.admit(candidate, input.scope);
@@ -1309,6 +1445,7 @@ export class ContextIntelligenceEngine {
         });
       }
     }
+    return grounding;
   }
 
   snapshot(): PersistedContextIntelligenceState {
@@ -1592,6 +1729,7 @@ export class ContextIntelligenceEngine {
       this.plannedActions.set(action.id, action);
       this.runtimeOperations.push({
         id: action.id,
+        retrievalPlanId: action.retrievalPlanId,
         requestId: action.requestId,
         needId: action.needId,
         capability: action.capability,
@@ -1603,6 +1741,10 @@ export class ContextIntelligenceEngine {
         ...(action.retrievalInput === undefined
           ? {}
           : { retrievalInput: deepClone(action.retrievalInput) }),
+        ...(action.sourceLineage === undefined
+          ? {}
+          : { sourceLineage: deepClone(action.sourceLineage) }),
+        priorOperationIds: [...action.priorOperationIds],
         ...(action.adaptationReason === undefined
           ? {}
           : { adaptationReason: action.adaptationReason }),
@@ -1721,6 +1863,8 @@ function runtimeOperationSnapshot(operation: RuntimeRetrievalOperation): Runtime
     actualInput: _contentBearingActualInput,
     actualResult: _contentBearingActualResult,
     resourceCandidates: _contentBearingCandidates,
+    sourceLineage: _contentBearingLineage,
+    strategyChange: _contentBearingStrategyChange,
     ...snapshot
   } = operation;
   return deepClone(snapshot);
@@ -1776,6 +1920,80 @@ function observedCostFrom(
     unit: value.unit.trim().toLowerCase().slice(0, 50),
     source: 'tool_result_metadata',
   };
+}
+
+function initialGroundingAssessment(required: boolean): GroundingAssessment {
+  return {
+    status: required ? 'NOT_EVALUATED' : 'NOT_REQUIRED',
+    required,
+    ...(required ? {} : { decision: 'ACCEPT' as const }),
+    claimCount: 0,
+    supportedClaimCount: 0,
+    unsupportedClaimIds: [],
+    claims: [],
+    supportingEvidenceReferences: [],
+    reasonCodes: [],
+  };
+}
+
+function actualStrategyChange(
+  previous: RuntimeRetrievalOperation,
+  current: RuntimeRetrievalOperation,
+  actualInput: unknown,
+): NonNullable<RuntimeRetrievalOperation['strategyChange']> {
+  const previousRequest = previous.retrievalInput?.retrievalRequest;
+  const currentRequest = current.retrievalInput?.retrievalRequest;
+  const strategyChanged = previous.strategy !== current.strategy;
+  const normalizedRequestChanged = previousRequest !== currentRequest;
+  const capabilityChanged = previous.capability !== current.capability;
+  const toolChanged = previous.toolName !== current.toolName;
+  const actualInputChanged = stableHash(previous.actualInput) !== stableHash(actualInput);
+  const meaningful =
+    current.strategy !== 'TRANSIENT_RETRY' &&
+    (normalizedRequestChanged || capabilityChanged || toolChanged || actualInputChanged);
+  const differences = dedupeStrings([
+    ...(strategyChanged ? [`strategy: ${previous.strategy} -> ${current.strategy}`] : []),
+    ...(normalizedRequestChanged
+      ? [
+          `normalized request: ${previousRequest ?? 'NOT_EXPOSED'} -> ${currentRequest ?? 'NOT_EXPOSED'}`,
+        ]
+      : []),
+    ...(capabilityChanged ? [`capability: ${previous.capability} -> ${current.capability}`] : []),
+    ...(toolChanged ? [`tool: ${previous.toolName} -> ${current.toolName}`] : []),
+    ...(actualInputChanged ? ['actual tool input changed'] : []),
+    ...(!meaningful && current.strategy === 'TRANSIENT_RETRY'
+      ? ['bounded transient retry; not counted as a meaningful adaptive change']
+      : []),
+  ]);
+  return {
+    previousOperationId: previous.id,
+    previousStrategy: previous.strategy,
+    nextStrategy: current.strategy,
+    strategyChanged,
+    normalizedRequestChanged,
+    capabilityChanged,
+    toolChanged,
+    actualInputChanged,
+    meaningful,
+    differences,
+  };
+}
+
+function sameCanonicalUrl(left: string, right: string): boolean {
+  try {
+    const normalize = (value: string): string => {
+      const url = new URL(value);
+      url.hash = '';
+      for (const key of [...url.searchParams.keys()]) {
+        if (/^(?:utm_|gclid|fbclid)/i.test(key)) url.searchParams.delete(key);
+      }
+      if (url.pathname !== '/') url.pathname = url.pathname.replace(/\/+$/, '');
+      return url.toString();
+    };
+    return normalize(left) === normalize(right);
+  } catch {
+    return false;
+  }
 }
 
 function runtimeOperationStatus(

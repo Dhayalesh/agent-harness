@@ -182,6 +182,7 @@ function operation(partial: Partial<RuntimeRetrievalOperation> = {}): RuntimeRet
   const input = partial.input ?? { query: 'test query', maxResults: 5 };
   return {
     id: partial.id ?? 'op-1',
+    retrievalPlanId: partial.retrievalPlanId ?? 'retrieval-plan-1',
     requestId: 'req-1',
     needId: 'need-1',
     capability: 'WEB_SEARCH',
@@ -190,6 +191,7 @@ function operation(partial: Partial<RuntimeRetrievalOperation> = {}): RuntimeRet
     input,
     attemptKey: partial.attemptKey ?? stableHash({ toolName: 'web_search', input }),
     strategy: partial.strategy ?? 'INITIAL',
+    priorOperationIds: partial.priorOperationIds ?? [],
     iteration: partial.iteration ?? 1,
     status: partial.status ?? 'failed',
     executionState: partial.executionState ?? 'FAILED',
@@ -215,10 +217,14 @@ function observation(partial: Partial<ToolObservation> = {}): ToolObservation {
     toolCallId: 'op-1',
     toolName: 'web_search',
     outcome: partial.outcome ?? 'error',
-    content: partial.content ?? 'Invalid input for web_search: query: Too big: expected string to have <=400 characters',
+    content:
+      partial.content ??
+      'Invalid input for web_search: query: Too big: expected string to have <=400 characters',
     facts: [],
     identifiers: [],
-    errors: ['Invalid input for web_search: query: Too big: expected string to have <=400 characters'],
+    errors: [
+      'Invalid input for web_search: query: Too big: expected string to have <=400 characters',
+    ],
     source,
     provenance: {
       id: 'prov-1',
@@ -342,8 +348,7 @@ test('TC-04 output formatting instructions are excluded from the retrieval query
   const query = candidates[0]!.query;
 
   assert.ok(
-    !query.toLowerCase().includes('markdown table') &&
-      !query.toLowerCase().includes('return a'),
+    !query.toLowerCase().includes('markdown table') && !query.toLowerCase().includes('return a'),
     '"return a markdown table" must not appear in the search query',
   );
   assert.ok(
@@ -506,7 +511,8 @@ test('TC-11 invalid_input (oversized query) triggers adaptive recovery with a di
   const obs = observation({
     id: 'obs-oversized',
     toolCallId: 'op-oversized',
-    content: 'Invalid input for web_search: query: Too big: expected string to have <=400 characters',
+    content:
+      'Invalid input for web_search: query: Too big: expected string to have <=400 characters',
     failureClassification: 'invalid_input',
   });
 
@@ -522,7 +528,11 @@ test('TC-11 invalid_input (oversized query) triggers adaptive recovery with a di
   });
 
   // Must NOT terminate; must recommend a strategy that changes the query
-  assert.equal(summary.terminationReason, undefined, 'must not terminate after first invalid_input');
+  assert.equal(
+    summary.terminationReason,
+    undefined,
+    'must not terminate after first invalid_input',
+  );
   const strategies = summary.needs[0]?.recommendedStrategies ?? [];
   assert.ok(
     strategies.includes('QUERY_DECOMPOSITION') || strategies.includes('QUERY_REWRITE'),
@@ -536,7 +546,9 @@ test('TC-11 invalid_input (oversized query) triggers adaptive recovery with a di
   );
 
   // Plan the next action — must produce a DIFFERENT query
-  const intent = resolver.resolve('What are the current AWS recommendations for building production generative AI applications?');
+  const intent = resolver.resolve(
+    'What are the current AWS recommendations for building production generative AI applications?',
+  );
   const actions = new RuntimeRetrievalPlanner(plannerConfig({ WEB_SEARCH: WEB_SEARCH_MAX })).plan({
     requestId: 'req-1',
     intent,
@@ -620,10 +632,7 @@ test('TC-13 provenance records the normalized retrieval request', () => {
     action.retrievalInput!.retrievalRequest.length > 0,
     'retrievalRequest must not be empty',
   );
-  assert.ok(
-    action.retrievalInput!.informationNeed.length > 0,
-    'informationNeed must not be empty',
-  );
+  assert.ok(action.retrievalInput!.informationNeed.length > 0, 'informationNeed must not be empty');
   assert.ok(
     action.retrievalInput!.retrievalRequest.length <= WEB_SEARCH_MAX,
     `retrievalRequest must be <= ${WEB_SEARCH_MAX} chars; got ${action.retrievalInput!.retrievalRequest.length}`,
@@ -886,9 +895,7 @@ Show the grounding decision.
   const intent = resolver.resolve(prompt);
 
   assert.equal(intent.normalizedRequest, 'What is AWS AgentCore?');
-  assert.deepEqual(intent.instructionSegments.informationRequirements, [
-    'What is AWS AgentCore?',
-  ]);
+  assert.deepEqual(intent.instructionSegments.informationRequirements, ['What is AWS AgentCore?']);
   assert.ok(intent.instructionSegments.systemToolInstructions.length > 0);
 });
 
@@ -934,46 +941,50 @@ test('TC-20 canonical requested value wins over contaminated secondary candidate
 //           preserving multiple genuine information questions
 // ---------------------------------------------------------------------------
 test('TC-21 diagnostic isolation is consistent across compound directive branches', () => {
-  const retrievalDirective = resolver.resolve(`
+  const retrievalDirective = resolver.resolve(
+    `
 RUNTIME RETRIEVAL VALIDATION
 What is Project Aurora?
 Determine what evidence is missing using the available web tools.
-`.trim());
+`.trim(),
+  );
   assert.equal(retrievalDirective.normalizedRequest, 'What is Project Aurora?');
   assert.equal(retrievalDirective.instructionSegments.retrievalInstructions.length, 0);
 
-  const formattingDirective = resolver.resolve(`
+  const formattingDirective = resolver.resolve(
+    `
 RUNTIME RETRIEVAL VALIDATION
 What is Project Aurora?
 Explain why and return the result as JSON.
-`.trim());
+`.trim(),
+  );
   assert.equal(formattingDirective.normalizedRequest, 'What is Project Aurora?');
   assert.ok(formattingDirective.instructionSegments.formattingInstructions.length > 0);
 
-  const multipleQuestions = resolver.resolve(`
+  const multipleQuestions = resolver.resolve(
+    `
 RUNTIME RETRIEVAL VALIDATION
 What is Project Aurora?
 How is it deployed?
-`.trim());
+`.trim(),
+  );
   assert.deepEqual(multipleQuestions.instructionSegments.informationRequirements, [
     'What is Project Aurora?',
     'How is it deployed?',
   ]);
-  assert.equal(
-    multipleQuestions.normalizedRequest,
-    'What is Project Aurora? How is it deployed?',
-  );
+  assert.equal(multipleQuestions.normalizedRequest, 'What is Project Aurora? How is it deployed?');
 });
-
 
 test('TC-22 same-subject execution questions remain outside the information need', () => {
   const informationNeed =
     'What are the current AWS recommendations for building production generative AI applications?';
-  const intent = resolver.resolve(`
+  const intent = resolver.resolve(
+    `
 ${informationNeed}
 Was the first retrieval query for current AWS production generative AI recommendations clean?
 Did the actual tool input contain orchestration instructions?
-`.trim());
+`.trim(),
+  );
 
   assert.deepEqual(intent.instructionSegments.informationRequirements, [informationNeed]);
   assert.equal(intent.normalizedRequest, informationNeed);

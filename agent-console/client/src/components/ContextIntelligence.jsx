@@ -9,13 +9,19 @@ import {
 } from "@heroui/react";
 import { SectionCard } from "./Bits.jsx";
 import {
+  adaptationState,
   budgetRows,
+  executionState,
+  groundingState,
   humanize,
   interventionPresentation,
   issueSummary,
+  provenanceState,
   qualityPresentation,
   qualityScore,
   reportStats,
+  runtimeAttempts,
+  runtimeValue,
   terminalIntervention,
 } from "../lib/context-intelligence.js";
 
@@ -42,11 +48,7 @@ export function ContextIntelligenceIndicator({ report, intervention }) {
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[min(92vw,430px)] p-0">
-        <IntelligenceSummary
-          report={report}
-          intervention={terminal}
-          compact
-        />
+        <IntelligenceSummary report={report} intervention={terminal} compact />
       </PopoverContent>
     </Popover>
   );
@@ -100,20 +102,21 @@ export function ContextInterventionAlert({
       }}
     >
       <p className="text-tiny">{outcome.detail}</p>
-      {!compact && (reasonCodes.length > 0 || clarificationNeeds.length > 0) && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {reasonCodes.map((reason) => (
-            <Chip key={`reason:${reason}`} size="sm" variant="flat">
-              {humanize(reason)}
-            </Chip>
-          ))}
-          {clarificationNeeds.map((need) => (
-            <Chip key={`need:${need}`} size="sm" variant="bordered">
-              Needs {humanize(need)}
-            </Chip>
-          ))}
-        </div>
-      )}
+      {!compact &&
+        (reasonCodes.length > 0 || clarificationNeeds.length > 0) && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {reasonCodes.map((reason) => (
+              <Chip key={`reason:${reason}`} size="sm" variant="flat">
+                {humanize(reason)}
+              </Chip>
+            ))}
+            {clarificationNeeds.map((need) => (
+              <Chip key={`need:${need}`} size="sm" variant="bordered">
+                Needs {humanize(need)}
+              </Chip>
+            ))}
+          </div>
+        )}
     </Alert>
   );
 }
@@ -136,6 +139,11 @@ function IntelligenceSummary({ report, intervention, compact = false }) {
   const names = report.capabilities?.names ?? [];
   const reconciliation = report.memory?.reconciliation;
   const evaluation = report.evaluation;
+  const attempts = runtimeAttempts(report);
+  const adaptive = report.retrieval?.adaptive;
+  const informationNeeds = Array.isArray(report.trace?.informationNeeds)
+    ? report.trace.informationNeeds
+    : [];
 
   return (
     <div className={compact ? "w-full p-4" : "flex flex-col gap-5"}>
@@ -274,6 +282,12 @@ function IntelligenceSummary({ report, intervention, compact = false }) {
             value={countMap(report.retrieval?.operationOutcomes)}
           />
           <Decision
+            label="Execution states"
+            value={countMap(report.retrieval?.executionStates)}
+          />
+          <Decision label="Adaptation" value={adaptationState(report)} />
+          <Decision label="Grounding" value={groundingState(report)} />
+          <Decision
             label="Memory"
             value={`${report.memory?.recalled ?? 0} recalled · ${reconciliation?.retained ?? 0} retained`}
           />
@@ -286,6 +300,252 @@ function IntelligenceSummary({ report, intervention, compact = false }) {
             value={`${report.finalContext?.omittedItems ?? 0} omitted · ${report.finalContext?.offloadedArtifacts ?? 0} offloaded`}
           />
         </dl>
+      )}
+
+      {!compact && (
+        <>
+          <Alert
+            color="warning"
+            variant="flat"
+            title="Runtime execution proof"
+            classNames={{ base: "items-start border border-warning/30" }}
+          >
+            <p className="text-tiny font-semibold">
+              PLANNED ≠ EXECUTED · MODEL TOOL REQUEST ≠ ACTUAL TOOL EXECUTION
+            </p>
+            <p className="mt-1 text-tiny">
+              Only an exact runtime input, returned result, and observation can
+              produce SUCCESS.
+            </p>
+          </Alert>
+
+          <div>
+            <Heading>Information need</Heading>
+            {informationNeeds.length ? (
+              <div className="space-y-2">
+                {informationNeeds.map((need) => (
+                  <dl
+                    key={need.needId}
+                    className="divide-y divide-divider overflow-hidden rounded-medium border border-divider bg-content2"
+                  >
+                    <Decision label="Need ID" value={need.needId} />
+                    <Decision
+                      label="Information need"
+                      value={runtimeValue(need.informationNeed)}
+                    />
+                    <Decision
+                      label="Normalized request"
+                      value={runtimeValue(need.normalizedRequest)}
+                    />
+                    <Decision
+                      label="Capability"
+                      value={humanize(need.capability)}
+                    />
+                  </dl>
+                ))}
+              </div>
+            ) : (
+              <Unavailable />
+            )}
+          </div>
+
+          <div>
+            <Heading>Retrieval attempts</Heading>
+            {attempts.length ? (
+              <div className="space-y-3">
+                {attempts.map((attempt) => (
+                  <div
+                    key={attempt.attemptId}
+                    className="rounded-medium border border-divider bg-content2 p-3.5"
+                  >
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-small font-semibold">
+                        Attempt {attempt.attemptNumber}
+                      </p>
+                      <Chip
+                        size="sm"
+                        variant="flat"
+                        color={executionColor(attempt.executionState)}
+                      >
+                        {executionState(attempt.executionState)}
+                      </Chip>
+                    </div>
+                    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                      <TraceField
+                        label="Attempt ID"
+                        value={attempt.attemptId}
+                      />
+                      <TraceField
+                        label="Retrieval plan ID"
+                        value={attempt.retrievalPlanId}
+                      />
+                      <TraceField
+                        label="Capability"
+                        value={attempt.capability}
+                      />
+                      <TraceField label="Strategy" value={attempt.strategy} />
+                      <TraceField
+                        label="Normalized request"
+                        value={attempt.normalizedRequest}
+                        wide
+                      />
+                      <TraceField
+                        label="Exact actual tool input"
+                        value={attempt.actualToolInput}
+                        wide
+                        code
+                      />
+                      <TraceField
+                        label="Exact actual tool result"
+                        value={attempt.actualToolResult}
+                        wide
+                        code
+                      />
+                      <TraceField
+                        label="Actual observation"
+                        value={attempt.observation}
+                        wide
+                        code
+                      />
+                      <TraceField
+                        label="Classification"
+                        value={attempt.classification}
+                      />
+                      <TraceField
+                        label="Evidence quality"
+                        value={attempt.evidenceQuality}
+                        code
+                      />
+                      <TraceField
+                        label="Sufficient"
+                        value={String(attempt.sufficient === true)}
+                      />
+                      <TraceField
+                        label="Remaining budget"
+                        value={attempt.remainingBudget}
+                      />
+                      <TraceField
+                        label="Adaptation reason"
+                        value={attempt.adaptationReason}
+                        wide
+                      />
+                      <TraceField
+                        label="Previous → next strategy"
+                        value={
+                          attempt.previousStrategy || attempt.nextStrategy
+                            ? `${attempt.previousStrategy ?? "NOT EXPOSED"} → ${attempt.nextStrategy ?? attempt.strategy}`
+                            : undefined
+                        }
+                      />
+                      <TraceField
+                        label="Exactly what changed"
+                        value={attempt.strategyChange?.differences}
+                        wide
+                        code
+                      />
+                      <TraceField
+                        label="Termination reason"
+                        value={attempt.terminationReason}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Unavailable label="No authoritative attempt trace was exposed." />
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div>
+              <Heading>Adaptation</Heading>
+              <dl className="divide-y divide-divider overflow-hidden rounded-medium border border-divider bg-content2">
+                <Decision label="Triggered" value={adaptationState(report)} />
+                <Decision
+                  label="Reason"
+                  value={runtimeValue(adaptive?.reason)}
+                />
+                <Decision
+                  label="Evidence gap"
+                  value={runtimeValue(adaptive?.evidenceGap)}
+                />
+                <Decision
+                  label="Meaningful strategy change"
+                  value={
+                    adaptive?.meaningfulStrategyChange === true
+                      ? "PASS"
+                      : adaptive?.meaningfulStrategyChange === false
+                        ? "FAIL"
+                        : "NOT EXPOSED"
+                  }
+                />
+                <Decision
+                  label="State / termination"
+                  value={`${executionState(adaptive?.state)} · ${runtimeValue(adaptive?.terminationReason)}`}
+                />
+              </dl>
+            </div>
+
+            <div>
+              <Heading>Grounding and decision</Heading>
+              <dl className="divide-y divide-divider overflow-hidden rounded-medium border border-divider bg-content2">
+                <Decision label="Grounding" value={groundingState(report)} />
+                <Decision
+                  label="Supporting evidence"
+                  value={`${report.grounding?.supportingEvidenceReferences?.length ?? 0} references`}
+                />
+                <Decision
+                  label="Claims supported"
+                  value={`${report.grounding?.supportedClaimCount ?? 0} / ${report.grounding?.claimCount ?? 0}`}
+                />
+                <Decision
+                  label="Decision"
+                  value={humanize(
+                    report.grounding?.decision ?? report.quality?.decision,
+                  )}
+                />
+              </dl>
+              {report.grounding?.supportingEvidenceReferences?.length > 0 && (
+                <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-medium border border-divider bg-content2 p-3 text-[11px]">
+                  {runtimeValue(report.grounding.supportingEvidenceReferences)}
+                </pre>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <Heading>Provenance</Heading>
+            <div className="rounded-medium border border-divider bg-content2 p-3.5">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-tiny text-default-500">
+                  Runtime chain
+                </span>
+                <Chip
+                  size="sm"
+                  variant="flat"
+                  color={provenanceColor(provenanceState(report))}
+                >
+                  {provenanceState(report)}
+                </Chip>
+              </div>
+              {report.trace?.provenance?.stages?.length ? (
+                <ol className="space-y-1.5 text-tiny">
+                  {report.trace.provenance.stages.map((stage, index) => (
+                    <li key={`${stage.stage}:${stage.objectId}:${index}`}>
+                      <span className="font-semibold">{stage.stage}</span>
+                      <span className="text-default-500">
+                        {" "}
+                        · {stage.objectId}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <Unavailable />
+              )}
+            </div>
+          </div>
+        </>
       )}
 
       {!compact && (
@@ -340,14 +600,12 @@ function IntelligenceSummary({ report, intervention, compact = false }) {
                 value={optimizationSummary(report.optimization)}
               />
               <Decision
-                label="Operation success"
+                label="Aggregate operation success (not execution proof)"
                 value={ratioSummary(evaluation?.operationSuccess)}
               />
               <Decision
                 label="Retrieval usefulness"
-                value={ratioSummary(
-                  evaluation?.classifiedRetrievalUsefulness,
-                )}
+                value={ratioSummary(evaluation?.classifiedRetrievalUsefulness)}
               />
               <Decision
                 label="Evidence utilization"
@@ -396,6 +654,42 @@ function IntelligenceSummary({ report, intervention, compact = false }) {
       )}
     </div>
   );
+}
+
+function TraceField({ label, value, wide = false, code = false }) {
+  const rendered = runtimeValue(value);
+  return (
+    <div className={wide ? "lg:col-span-2" : ""}>
+      <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-default-500">
+        {label}
+      </p>
+      {code ? (
+        <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-medium border border-divider bg-content1 p-2.5 text-[11px]">
+          {rendered}
+        </pre>
+      ) : (
+        <p className="break-words text-tiny font-medium">{rendered}</p>
+      )}
+    </div>
+  );
+}
+
+function Unavailable({ label = "NOT EXPOSED" }) {
+  return <p className="text-small font-medium text-default-500">{label}</p>;
+}
+
+function executionColor(value) {
+  if (value === "SUCCESS") return "success";
+  if (["FAILED", "BLOCKED", "EXHAUSTED"].includes(value)) return "danger";
+  if (["EMPTY", "RETRYING", "IN_PROGRESS"].includes(value)) return "warning";
+  return "default";
+}
+
+function provenanceColor(value) {
+  if (value === "PASS") return "success";
+  if (value === "FAIL") return "danger";
+  if (value === "PARTIAL") return "warning";
+  return "default";
 }
 
 function Heading({ children }) {
@@ -449,7 +743,10 @@ function evaluationSummary(value) {
     ? `${Math.round(mean).toLocaleString()} ms mean (${samples})`
     : `${samples} latency samples`;
   const costs = Array.isArray(value.costs)
-    ? value.costs.reduce((total, entry) => total + (Number(entry.samples) || 0), 0)
+    ? value.costs.reduce(
+        (total, entry) => total + (Number(entry.samples) || 0),
+        0,
+      )
     : 0;
   return `${latency} · ${costs} observed cost samples`;
 }

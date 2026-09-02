@@ -1,5 +1,7 @@
 import type {
   ContextContract,
+  ContextIntelligenceAttemptTrace,
+  ContextIntelligenceProvenanceTrace,
   ContextIntelligenceReport,
   ContextNeedType,
   MemoryType,
@@ -12,11 +14,9 @@ import type {
 const NAME_LIMIT = 50;
 
 /**
- * Projects a rich Context Contract into the stable application/wire report.
- *
- * No raw request, item content, memory, evidence, observation content, identifiers,
- * or task text crosses this boundary. The report is deterministic and small enough
- * to emit once per model turn and persist on a run record.
+ * Projects a rich Context Contract into application telemetry. Aggregate fields
+ * stay bounded, while the local Console trace carries exact runtime-owned attempt
+ * inputs/results and grounding references. No value is reconstructed from a plan.
  */
 export function contextIntelligenceReport(contract: ContextContract): ContextIntelligenceReport {
   const providerNames = unique(contract.retrieval.results.map((result) => result.providerId));
@@ -26,8 +26,20 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
     contract.runtimeRetrieval.map((operation) => operation.iteration),
   ).size;
   const successfulRuntimeResults = contract.runtimeRetrieval.filter(
-    (operation) => operation.phase === 'retrieval' && operation.status === 'succeeded',
+    (operation) =>
+      operation.phase === 'retrieval' &&
+      operation.status === 'succeeded' &&
+      operation.executionState === 'SUCCESS' &&
+      operation.actualResult !== undefined,
   ).length;
+  const attempts = contract.runtimeRetrieval.map((operation) =>
+    attemptTrace(contract, operation.id),
+  );
+  const adaptedAttempts = attempts.filter((attempt) => attempt.attemptNumber > 1);
+  const latestAdaptation = [...adaptedAttempts]
+    .reverse()
+    .find((attempt) => attempt.adaptationReason !== undefined);
+  const provenanceTrace = runtimeProvenanceTrace(contract, attempts);
 
   return {
     version: 1,
@@ -78,6 +90,7 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
         0,
         NAME_LIMIT,
       ),
+      attempts,
       adaptive: {
         state: contract.adaptiveRetrieval.state,
         attemptCount: contract.adaptiveRetrieval.attemptCount,
@@ -89,11 +102,41 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
             .filter((outcome): outcome is RetrievalOutcomeClassification => outcome !== undefined),
         ),
         evidenceQuality: structuredClone(contract.adaptiveRetrieval.evidenceQuality),
+        triggered: adaptedAttempts.length > 0,
+        ...(latestAdaptation?.adaptationReason === undefined
+          ? {}
+          : { reason: latestAdaptation.adaptationReason }),
+        ...(adaptedAttempts.length === 0
+          ? {}
+          : {
+              evidenceGap:
+                attempts.find((attempt) => attempt.attemptNumber === 1)?.classification ??
+                'NOT_EXPOSED',
+              meaningfulStrategyChange: adaptedAttempts.some(
+                (attempt) => attempt.strategyChange?.meaningful === true,
+              ),
+            }),
         ...(contract.adaptiveRetrieval.terminationReason === undefined
           ? {}
           : { terminationReason: contract.adaptiveRetrieval.terminationReason }),
       },
     },
+    trace: {
+      informationNeeds: contract.contextNeeds.flatMap((need) =>
+        need.normalizedRetrievalRequest === undefined
+          ? []
+          : [
+              {
+                needId: need.id,
+                informationNeed: need.normalizedRetrievalRequest.informationNeed,
+                normalizedRequest: need.normalizedRetrievalRequest.request,
+                capability: need.requiredCapability,
+              },
+            ],
+      ),
+      provenance: provenanceTrace,
+    },
+    grounding: structuredClone(contract.grounding),
     memory: {
       recalled: contract.memories.length,
       types: countBy<MemoryType>(contract.memories.map((memory) => memory.type)),
@@ -197,6 +240,205 @@ export function contextIntelligenceReport(contract: ContextContract): ContextInt
       ? {}
       : { evaluation: structuredClone(contract.evaluation) }),
     updatedAt: contract.updatedAt,
+  };
+}
+
+function attemptTrace(
+  contract: ContextContract,
+  operationId: string,
+): ContextIntelligenceAttemptTrace {
+  const operation = contract.runtimeRetrieval.find((candidate) => candidate.id === operationId)!;
+  const assessment = contract.adaptiveRetrieval.attempts.find(
+    (candidate) => candidate.operationId === operation.id,
+  );
+  const observation = contract.observations.find(
+    (candidate) => candidate.id === operation.observationId,
+  );
+  const evidence = contract.evidence.filter(
+    (candidate) => candidate.observationId === operation.observationId,
+  );
+  return {
+    attemptId: operation.id,
+    retrievalPlanId: operation.retrievalPlanId,
+    attemptNumber: assessment?.attemptNumber ?? operation.iteration,
+    needId: operation.needId,
+    ...(operation.retrievalInput?.informationNeed === undefined
+      ? {}
+      : { informationNeed: operation.retrievalInput.informationNeed }),
+    ...(operation.retrievalInput?.retrievalRequest === undefined
+      ? {}
+      : { normalizedRequest: operation.retrievalInput.retrievalRequest }),
+    capability: operation.capability,
+    toolName: operation.toolName,
+    strategy: operation.strategy,
+    plannedToolInput: structuredClone(operation.input),
+    ...(operation.actualInput === undefined
+      ? {}
+      : { actualToolInput: structuredClone(operation.actualInput) }),
+    ...(operation.actualResult === undefined
+      ? {}
+      : { actualToolResult: structuredClone(operation.actualResult) }),
+    ...(operation.invokedAt === undefined ? {} : { invokedAt: operation.invokedAt }),
+    ...(operation.resultReceivedAt === undefined
+      ? {}
+      : { resultReceivedAt: operation.resultReceivedAt }),
+    executionState: operation.executionState,
+    ...(operation.retrievalState === undefined ? {} : { retrievalState: operation.retrievalState }),
+    ...(observation === undefined
+      ? {}
+      : {
+          observation: {
+            observationId: observation.id,
+            outcome: observation.outcome,
+            content: observation.content,
+            ...(observation.structured === undefined
+              ? {}
+              : { structured: structuredClone(observation.structured) }),
+            source: structuredClone(observation.source),
+            provenanceId: observation.provenance.id,
+          },
+        }),
+    ...(assessment?.outcome === undefined ? {} : { classification: assessment.outcome }),
+    evidence: evidence.map((item) => ({
+      evidenceId: item.id,
+      ...(item.observationId === undefined ? {} : { observationId: item.observationId }),
+      provenanceId: item.provenance.id,
+      source: structuredClone(item.source),
+      admitted: item.evaluation.admitted,
+    })),
+    ...(assessment?.evidenceQuality === undefined
+      ? operation.evidenceQuality === undefined
+        ? {}
+        : { evidenceQuality: structuredClone(operation.evidenceQuality) }
+      : { evidenceQuality: structuredClone(assessment.evidenceQuality) }),
+    sufficient: assessment?.outcome === 'RETRIEVAL_SUCCESS',
+    ...(operation.adaptationReason === undefined
+      ? {}
+      : { adaptationReason: operation.adaptationReason }),
+    ...(operation.previousStrategy === undefined
+      ? {}
+      : { previousStrategy: operation.previousStrategy }),
+    ...(operation.nextStrategy === undefined ? {} : { nextStrategy: operation.nextStrategy }),
+    ...(operation.strategyChange === undefined
+      ? {}
+      : { strategyChange: structuredClone(operation.strategyChange) }),
+    ...(operation.sourceLineage === undefined
+      ? {}
+      : { sourceLineage: structuredClone(operation.sourceLineage) }),
+    ...(operation.remainingRetrievalBudget === undefined
+      ? {}
+      : { remainingBudget: operation.remainingRetrievalBudget }),
+    ...(operation.terminationReason === undefined
+      ? {}
+      : { terminationReason: operation.terminationReason }),
+  };
+}
+
+function runtimeProvenanceTrace(
+  contract: ContextContract,
+  attempts: readonly ContextIntelligenceAttemptTrace[],
+): ContextIntelligenceProvenanceTrace {
+  const stages: ContextIntelligenceProvenanceTrace['stages'][number][] = [
+    { stage: 'REQUEST', objectId: contract.requestId, parentIds: [] },
+  ];
+  for (const need of contract.contextNeeds) {
+    stages.push({ stage: 'INFORMATION_NEED', objectId: need.id, parentIds: [contract.requestId] });
+    if (need.normalizedRetrievalRequest) {
+      stages.push({
+        stage: 'NORMALIZED_REQUEST',
+        objectId: `normalized:${need.id}`,
+        parentIds: [need.id],
+      });
+    }
+  }
+  for (const attempt of attempts) {
+    stages.push({
+      stage: 'RETRIEVAL_PLAN',
+      objectId: attempt.retrievalPlanId,
+      parentIds: [`normalized:${attempt.needId}`],
+    });
+    stages.push({
+      stage: 'CAPABILITY',
+      objectId: `${attempt.attemptId}:${attempt.toolName}`,
+      parentIds: [attempt.retrievalPlanId],
+    });
+    if (attempt.actualToolInput !== undefined) {
+      stages.push({
+        stage: 'TOOL_INPUT',
+        objectId: `actual-input:${attempt.attemptId}`,
+        parentIds: [attempt.retrievalPlanId],
+      });
+    }
+    if (attempt.observation) {
+      stages.push({
+        stage: 'OBSERVATION',
+        objectId: attempt.observation.observationId,
+        parentIds: [attempt.attemptId],
+      });
+    }
+    for (const evidence of attempt.evidence) {
+      stages.push({
+        stage: 'EVIDENCE_EVALUATION',
+        objectId: evidence.evidenceId,
+        parentIds: evidence.observationId ? [evidence.observationId] : [],
+      });
+    }
+    if (attempt.classification) {
+      stages.push({
+        stage: 'CLASSIFICATION',
+        objectId: `${attempt.attemptId}:${attempt.classification}`,
+        parentIds: attempt.observation ? [attempt.observation.observationId] : [attempt.attemptId],
+      });
+    }
+    if (attempt.attemptNumber > 1) {
+      stages.push({
+        stage: 'ADAPTATION',
+        objectId: `adaptation:${attempt.attemptId}`,
+        parentIds: attempt.strategyChange
+          ? [attempt.strategyChange.previousOperationId, attempt.retrievalPlanId]
+          : [attempt.retrievalPlanId],
+      });
+    }
+  }
+  if (contract.grounding.status !== 'NOT_EVALUATED') {
+    stages.push({
+      stage: 'GROUNDING',
+      objectId: `grounding:${contract.requestId}`,
+      parentIds: contract.grounding.supportingEvidenceReferences.map(
+        (reference) => reference.evidenceId,
+      ),
+    });
+  }
+  stages.push({
+    stage: 'DECISION',
+    objectId: `decision:${contract.requestId}:${contract.directive.decision}`,
+    parentIds:
+      contract.grounding.status === 'NOT_EVALUATED'
+        ? attempts.map((attempt) => attempt.attemptId)
+        : [`grounding:${contract.requestId}`],
+  });
+
+  const inconsistentSuccess = attempts.some(
+    (attempt) =>
+      attempt.executionState === 'SUCCESS' &&
+      (attempt.actualToolInput === undefined ||
+        attempt.actualToolResult === undefined ||
+        attempt.observation === undefined),
+  );
+  const requiredRetrieval = contract.contextNeeds.some(
+    (need) => need.required && need.evidenceRequirement === 'REQUIRED',
+  );
+  const incomplete =
+    (requiredRetrieval && attempts.length === 0) ||
+    attempts.some(
+      (attempt) =>
+        attempt.executionState === 'NOT_EXECUTED' ||
+        (attempt.executionState === 'SUCCESS' && attempt.classification === undefined),
+    ) ||
+    contract.grounding.status === 'NOT_EVALUATED';
+  return {
+    status: inconsistentSuccess ? 'FAIL' : incomplete ? 'PARTIAL' : 'PASS',
+    stages,
   };
 }
 

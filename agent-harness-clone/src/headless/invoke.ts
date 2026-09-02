@@ -1241,8 +1241,8 @@ class RunTotals {
         this.compactions += 1;
         break;
       case 'context.intelligence':
-        // One report is emitted per model decision. The last report describes the
-        // context behind the final model decision or terminal intervention.
+        // The pre-model report is followed by a post-response grounding report.
+        // Last-write wins so buffered and streaming consumers retain final truth.
         this.contextIntelligence = structuredClone(event.report);
         break;
       case 'warning':

@@ -138,8 +138,18 @@ export const contextIntelligenceConfigSchema = z
     budgets: z
       .object({
         maxInputTokens: z.number().int().positive().max(10000000).optional(),
-        outputReservationTokens: z.number().int().positive().max(10000000).optional(),
-        safetyMarginTokens: z.number().int().nonnegative().max(1000000).optional(),
+        outputReservationTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(10000000)
+          .optional(),
+        safetyMarginTokens: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(1000000)
+          .optional(),
         categoryShares: z
           .object({
             systemInstructions: unitInterval.optional(),
@@ -163,7 +173,12 @@ export const contextIntelligenceConfigSchema = z
           .positive()
           .max(10000000)
           .optional(),
-        maxRetrievalOperations: z.number().int().positive().max(1000).optional(),
+        maxRetrievalOperations: z
+          .number()
+          .int()
+          .positive()
+          .max(1000)
+          .optional(),
         maxToolActions: z.number().int().positive().max(1000).optional(),
         maxLoopMilliseconds: z.number().int().positive().max(600000).optional(),
       })
@@ -174,7 +189,12 @@ export const contextIntelligenceConfigSchema = z
         relevanceThreshold: unitInterval.optional(),
         sufficiencyThreshold: unitInterval.optional(),
         freshnessHalfLifeMs: z.number().int().positive().optional(),
-        maximumProvidersPerQuery: z.number().int().positive().max(100).optional(),
+        maximumProvidersPerQuery: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional(),
         deduplicationThreshold: unitInterval.optional(),
         rerank: z.boolean().optional(),
       })
@@ -198,7 +218,12 @@ export const contextIntelligenceConfigSchema = z
       .object({
         maximumExpansions: z.number().int().nonnegative().max(50).optional(),
         maximumSubqueries: z.number().int().positive().max(100).optional(),
-        minimumRewriteLength: z.number().int().nonnegative().max(10000).optional(),
+        minimumRewriteLength: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(10000)
+          .optional(),
         aliases: z.record(z.array(z.string().max(300)).max(50)).optional(),
       })
       .strict()
@@ -208,8 +233,18 @@ export const contextIntelligenceConfigSchema = z
         relevanceThreshold: unitInterval.optional(),
         authorityThreshold: unitInterval.optional(),
         freshnessThreshold: unitInterval.optional(),
-        compressionThresholdTokens: z.number().int().positive().max(10000000).optional(),
-        offloadThresholdChars: z.number().int().positive().max(100000000).optional(),
+        compressionThresholdTokens: z
+          .number()
+          .int()
+          .positive()
+          .max(10000000)
+          .optional(),
+        offloadThresholdChars: z
+          .number()
+          .int()
+          .positive()
+          .max(100000000)
+          .optional(),
         maximumActiveItems: z.number().int().positive().max(10000).optional(),
       })
       .strict()
@@ -273,11 +308,31 @@ export const contextIntelligenceConfigSchema = z
       .optional(),
     p3: z
       .object({
-        maximumFeedbackRecords: z.number().int().positive().max(1000).optional(),
-        maximumPerformanceProfiles: z.number().int().positive().max(100).optional(),
-        minimumComparableSamples: z.number().int().positive().max(100).optional(),
+        maximumFeedbackRecords: z
+          .number()
+          .int()
+          .positive()
+          .max(1000)
+          .optional(),
+        maximumPerformanceProfiles: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional(),
+        minimumComparableSamples: z
+          .number()
+          .int()
+          .positive()
+          .max(100)
+          .optional(),
         maximumPredictiveHints: z.number().int().positive().max(20).optional(),
-        maximumEvaluationOperations: z.number().int().positive().max(1000).optional(),
+        maximumEvaluationOperations: z
+          .number()
+          .int()
+          .positive()
+          .max(1000)
+          .optional(),
         maximumSourceReferencesPerFeedback: z
           .number()
           .int()
@@ -845,13 +900,87 @@ export const contextIntelligenceInterventionSchema = z
   })
   .strict();
 
+const retrievalExecutionStateSchema = z.enum([
+  "NOT_EXECUTED",
+  "IN_PROGRESS",
+  "SUCCESS",
+  "EMPTY",
+  "FAILED",
+  "RETRYING",
+  "EXHAUSTED",
+  "BLOCKED",
+]);
+const retrievalAttemptTraceSchema = z
+  .object({
+    attemptId: z.string().min(1).max(300),
+    retrievalPlanId: z.string().min(1).max(300),
+    attemptNumber: reportCount,
+    needId: z.string().min(1).max(300),
+    informationNeed: z.string().optional(),
+    normalizedRequest: z.string().optional(),
+    capability: z.string().min(1).max(100),
+    toolName: z.string().min(1).max(200),
+    strategy: z.string().min(1).max(100),
+    plannedToolInput: z.record(z.string(), z.unknown()),
+    actualToolInput: z.unknown().optional(),
+    actualToolResult: z.unknown().optional(),
+    invokedAt: z.string().max(100).optional(),
+    resultReceivedAt: z.string().max(100).optional(),
+    executionState: retrievalExecutionStateSchema,
+    retrievalState: retrievalExecutionStateSchema.optional(),
+    observation: z
+      .object({
+        observationId: z.string().min(1).max(300),
+        outcome: z.enum([
+          "success",
+          "empty",
+          "partial",
+          "error",
+          "denied",
+          "malformed",
+        ]),
+        content: z.string(),
+        structured: z.unknown().optional(),
+        source: z.record(z.string(), z.unknown()),
+        provenanceId: z.string().min(1).max(300),
+      })
+      .passthrough()
+      .optional(),
+    classification: z.string().max(100).optional(),
+    evidence: z.array(z.record(z.string(), z.unknown())).max(1000),
+    evidenceQuality: z.record(z.string(), z.unknown()).optional(),
+    sufficient: z.boolean(),
+    adaptationReason: z.string().max(4000).optional(),
+    previousStrategy: z.string().max(100).optional(),
+    nextStrategy: z.string().max(100).optional(),
+    strategyChange: z.record(z.string(), z.unknown()).optional(),
+    sourceLineage: z.record(z.string(), z.unknown()).optional(),
+    remainingBudget: reportCount.optional(),
+    terminationReason: z.string().max(100).optional(),
+  })
+  .passthrough();
+const groundingReportSchema = z
+  .object({
+    status: z.enum(["NOT_EVALUATED", "NOT_REQUIRED", "PASS", "FAIL"]),
+    required: z.boolean(),
+    decision: z.enum(["ACCEPT", "CLARIFY", "ABSTAIN"]).optional(),
+    claimCount: reportCount,
+    supportedClaimCount: reportCount,
+    unsupportedClaimIds: z.array(z.string().max(300)).max(100),
+    claims: z.array(z.record(z.string(), z.unknown())).max(100),
+    claimsTruncated: z.boolean().optional(),
+    supportingEvidenceReferences: z
+      .array(z.record(z.string(), z.unknown()))
+      .max(1000),
+    reasonCodes: z.array(z.string().max(200)).max(100),
+    checkedAt: z.string().max(100).optional(),
+  })
+  .passthrough();
+
 /**
- * Content-free Context Intelligence projection emitted by the Harness.
- *
- * Nested objects are passthrough so a newer runtime can add a decision without
- * making an otherwise valid run impossible to save. Required fields are the stable
- * v1 core the console renders; the full Context Contract deliberately never crosses
- * this boundary.
+ * Context Intelligence projection emitted by the Harness. The stable aggregate
+ * fields remain bounded; runtime trace fields are authoritative values produced
+ * by AgentCore and are never reconstructed by the Console.
  */
 export const contextIntelligenceReportSchema = z
   .object({
@@ -904,9 +1033,26 @@ export const contextIntelligenceReportSchema = z
         conflicts: reportCount,
         operations: reportCount.optional(),
         operationOutcomes: reportCountMap.optional(),
+        executionStates: reportCountMap.optional(),
+        resourceStates: reportCountMap.optional(),
         toolNames: z.array(z.string().max(200)).max(50).optional(),
+        attempts: z.array(retrievalAttemptTraceSchema).max(100).optional(),
+        adaptive: z.record(z.string(), z.unknown()).optional(),
       })
       .passthrough(),
+    trace: z
+      .object({
+        informationNeeds: z.array(z.record(z.string(), z.unknown())).max(100),
+        provenance: z
+          .object({
+            status: z.enum(["PASS", "PARTIAL", "FAIL"]),
+            stages: z.array(z.record(z.string(), z.unknown())).max(1000),
+          })
+          .passthrough(),
+      })
+      .strip()
+      .optional(),
+    grounding: groundingReportSchema.optional(),
     memory: z
       .object({
         recalled: reportCount,

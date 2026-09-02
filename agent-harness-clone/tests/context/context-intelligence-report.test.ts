@@ -10,7 +10,7 @@ import {
 
 const SECRET_REQUEST = 'compare private-project-orchid with the current plan';
 
-test('projects a Context Contract into bounded content-free application telemetry', async () => {
+test('projects aggregate decisions plus the authoritative runtime trace', async () => {
   const engine = new ContextIntelligenceEngine();
   const { contract } = await engine.prepare({
     request: SECRET_REQUEST,
@@ -39,7 +39,11 @@ test('projects a Context Contract into bounded content-free application telemetr
   assert.equal(report.budget.usedInput, contract.budget.usedInput);
   assert.equal(report.finalContext.items, contract.items.length);
   assert.equal(report.quality.status, contract.quality.status);
-  assert.equal(serialized.includes('private-project-orchid'), false);
+  assert.equal('rawRequest' in report.trace, false);
+  assert.equal(serialized.includes(SECRET_REQUEST), false);
+  assert.equal(report.trace.provenance.status, 'PASS');
+  assert.deepEqual(report.retrieval.attempts, []);
+  assert.equal(report.grounding.status, 'NOT_REQUIRED');
   assert.equal(serialized.includes('Keep internal project details private'), false);
   assert.equal('rawRequest' in report, false);
   assert.equal('items' in report.finalContext, true);
@@ -61,7 +65,9 @@ test('a Context Intelligence session emits the report on the public event stream
   const intelligence = events.find((event) => event.type === 'context.intelligence');
   assert.ok(intelligence && intelligence.type === 'context.intelligence');
   assert.equal(intelligence.report.version, 1);
-  assert.equal(JSON.stringify(intelligence.report).includes('private-project-orchid'), false);
+  assert.equal('rawRequest' in intelligence.report.trace, false);
+  assert.equal(JSON.stringify(intelligence.report).includes(SECRET_REQUEST), false);
+  assert.equal(intelligence.report.grounding.status, 'NOT_REQUIRED');
   assert.ok(
     events.indexOf(intelligence) <
       events.findIndex((event) => event.type === 'assistant.text.delta'),

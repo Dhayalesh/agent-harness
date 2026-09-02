@@ -120,6 +120,7 @@ export class RuntimeRetrievalPlanner {
     return {
       ...base,
       id: id('context_action'),
+      retrievalPlanId: id('retrieval_plan'),
       requestId: input.requestId,
       attemptKey,
       iteration: input.iteration,
@@ -162,7 +163,7 @@ type SelectedToolInput = {
 
 type PlannedAction = Omit<
   ContextRuntimeAction,
-  'id' | 'requestId' | 'attemptKey' | 'iteration' | 'priorOperationIds'
+  'id' | 'retrievalPlanId' | 'requestId' | 'attemptKey' | 'iteration' | 'priorOperationIds'
 >;
 
 function planWebAction(input: PlannerInput): PlannedAction | undefined {
@@ -216,6 +217,10 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         ...(selected.retrievalInput === undefined
           ? {}
           : { retrievalInput: selected.retrievalInput }),
+        sourceLineage: {
+          origin: 'USER_REQUEST',
+          selectedUrl: suppliedUrl,
+        },
         reason:
           prior.length === 0
             ? 'Fetch the supplied URL as source evidence.'
@@ -233,9 +238,24 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
     (observation) =>
       observation.capability === 'WEB_SEARCH' && observation.needIds?.includes(need.id),
   );
-  const successfulSearch = [...searchObservations]
-    .reverse()
-    .find((observation) => observation.outcome === 'success' || observation.outcome === 'partial');
+  const successfulSearch = [...searchObservations].reverse().find((observation) => {
+    if (observation.outcome !== 'success' && observation.outcome !== 'partial') return false;
+    const sourceOperation = operations.find(
+      (operation) =>
+        operation.observationId === observation.id &&
+        operation.capability === 'WEB_SEARCH' &&
+        operation.executionState === 'SUCCESS' &&
+        operation.invokedAt !== undefined &&
+        operation.actualInput !== undefined &&
+        operation.actualResult !== undefined &&
+        operation.actualResult.isError !== true &&
+        operation.resultReceivedAt !== undefined,
+    );
+    return sourceOperation !== undefined;
+  });
+  const successfulSearchOperation = successfulSearch
+    ? operations.find((operation) => operation.observationId === successfulSearch.id)
+    : undefined;
   const attemptedUrls = new Set(
     operations
       .filter((operation) => operation.capability === 'WEB_FETCH')
@@ -247,12 +267,13 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         (url) => !hasCanonicalUrl(attemptedUrls, url),
       )
     : undefined;
-  if (nextUrl) {
+  if (nextUrl && successfulSearch && successfulSearchOperation) {
+    const gapRequest = evidenceGapRequest(retrievalRequest, successfulSearch);
     for (const strategy of strategiesFor(input, ['ADDITIONAL_EVIDENCE', 'SOURCE_SWITCH'])) {
       const selected = unattemptedTool(
         toolPlan,
         'WEB_FETCH',
-        { url: nextUrl, query: retrievalRequest },
+        { url: nextUrl, query: gapRequest },
         operations,
         input.performanceProfiles,
         input.minimumComparableSamples,
@@ -271,6 +292,12 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
         ...(selected.retrievalInput === undefined
           ? {}
           : { retrievalInput: selected.retrievalInput }),
+        sourceLineage: {
+          origin: 'SEARCH_RESULT',
+          selectedUrl: nextUrl,
+          sourceOperationId: successfulSearchOperation.id,
+          sourceObservationId: successfulSearch.id,
+        },
         reason:
           strategy === 'ADDITIONAL_EVIDENCE'
             ? 'Fetch the highest-ranked unexamined candidate as complementary evidence.'
@@ -317,9 +344,7 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       phase: 'discovery',
       toolName: selected.tool.capability.name,
       input: selected.input,
-      ...(selected.retrievalInput === undefined
-        ? {}
-        : { retrievalInput: selected.retrievalInput }),
+      ...(selected.retrievalInput === undefined ? {} : { retrievalInput: selected.retrievalInput }),
       reason:
         strategy === 'INITIAL'
           ? 'Obtain source candidates for the missing external evidence.'
@@ -867,9 +892,8 @@ function actionInput(
         context.strategy === 'SOURCE_SWITCH' ||
         context.strategy === 'RETRIEVAL_BROADEN';
       const candidate =
-        candidates.find(
-          (entry) => permitsSameRequest || !priorRequests.has(entry.query),
-        ) ?? (permitsSameRequest ? candidates[0] : undefined);
+        candidates.find((entry) => permitsSameRequest || !priorRequests.has(entry.query)) ??
+        (permitsSameRequest ? candidates[0] : undefined);
       if (
         !candidate ||
         (minimumLength !== undefined && candidate.query.length < minimumLength) ||
@@ -1051,6 +1075,11 @@ function canonicalUrl(value: string): string | undefined {
   }
 }
 
+function evidenceGapRequest(base: string, observation: ToolObservation): string {
+  const gapTerms = uniqueTerms(observation.followUpReason ?? '').slice(0, 4);
+  return dedupeStrings([base, 'supporting primary source evidence', ...gapTerms]).join(' ');
+}
+
 function refinedQuery(
   base: string,
   attempt: number,
@@ -1069,8 +1098,7 @@ function refinedQuery(
     base,
     strategies[Math.min(attempt, strategies.length - 1)] ?? '',
     ...missingTerms,
-  ])
-    .join(' ');
+  ]).join(' ');
 }
 
 function refinedGenericQuery(
@@ -1086,6 +1114,5 @@ function refinedGenericQuery(
     base,
     attempt === 1 ? 'authoritative matching records' : 'specific unresolved evidence',
     ...reasons,
-  ])
-    .join(' ');
+  ]).join(' ');
 }
