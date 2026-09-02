@@ -160,6 +160,10 @@ function need(status: ContextNeed['status'] = 'missing'): ContextNeed {
     priority: 'high',
     status,
     inputs: { query: intent.normalizedRequest },
+    normalizedRetrievalRequest: {
+      informationNeed: intent.normalizedRequest,
+      request: intent.normalizedRequest,
+    },
   };
 }
 
@@ -959,4 +963,30 @@ How is it deployed?
     multipleQuestions.normalizedRequest,
     'What is Project Aurora? How is it deployed?',
   );
+});
+
+
+test('TC-22 same-subject execution questions remain outside the information need', () => {
+  const informationNeed =
+    'What are the current AWS recommendations for building production generative AI applications?';
+  const intent = resolver.resolve(`
+${informationNeed}
+Was the first retrieval query for current AWS production generative AI recommendations clean?
+Did the actual tool input contain orchestration instructions?
+`.trim());
+
+  assert.deepEqual(intent.instructionSegments.informationRequirements, [informationNeed]);
+  assert.equal(intent.normalizedRequest, informationNeed);
+  assert.equal(intent.instructionSegments.reportingInstructions?.length, 2);
+});
+
+test('TC-23 independent substantive questions are preserved as information requirements', () => {
+  const intent = resolver.resolve(
+    'What is the current AWS Lambda price? What security advisories affect Kubernetes 1.31?',
+  );
+
+  assert.deepEqual(intent.instructionSegments.informationRequirements, [
+    'What is the current AWS Lambda price?',
+    'What security advisories affect Kubernetes 1.31?',
+  ]);
 });

@@ -404,6 +404,10 @@ function need(status: ContextNeed['status'] = 'missing'): ContextNeed {
     priority: 'high',
     status,
     inputs: { query: intent.normalizedRequest },
+    normalizedRetrievalRequest: {
+      informationNeed: intent.normalizedRequest,
+      request: intent.normalizedRequest,
+    },
   };
 }
 

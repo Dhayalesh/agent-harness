@@ -37,10 +37,24 @@ export type RequestInstructionSegments = {
   retrievalInstructions: readonly string[];
   /** System/tool/control-plane language excluded from retrieval. */
   systemToolInstructions: readonly string[];
+  /** Context Intelligence control language excluded from retrieval. */
+  contextControlInstructions?: readonly string[];
+  /** Assertions about execution validity excluded from retrieval. */
+  validationInstructions?: readonly string[];
+  /** Requests to expose execution state or diagnostics, excluded from retrieval. */
+  reportingInstructions?: readonly string[];
   /** Output-shape directions excluded from retrieval. */
   formattingInstructions: readonly string[];
   /** Subject matter that evidence must answer. */
   informationRequirements: readonly string[];
+};
+
+/** Authoritative semantic value passed from a Context Need into retrieval planning. */
+export type NormalizedRetrievalRequest = {
+  /** The stable information need from which every attempt is derived. */
+  informationNeed: string;
+  /** The clean initial retrieval request. Adapted attempts derive from, but do not replace, it. */
+  request: string;
 };
 
 export type NormalizedIntent = {
@@ -154,6 +168,8 @@ export type ContextNeed = {
   status: ContextNeedStatus;
   /** Validated arguments with real provenance, or safe abstract query inputs. */
   inputs: Readonly<Record<string, unknown>>;
+  /** Canonical semantic request consumed by retrieval planning; never reconstructed from raw input. */
+  normalizedRetrievalRequest?: NormalizedRetrievalRequest;
 };
 
 export type SourceType =

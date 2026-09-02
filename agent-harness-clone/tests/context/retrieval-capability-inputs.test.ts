@@ -88,6 +88,22 @@ function diagnosticPromptFor(informationNeed: string): string {
   return diagnosticPrompt.replace('"What is AWS AgentCore?"', `"${informationNeed}"`);
 }
 
+const currentResearchInformationNeed =
+  'What are the current AWS recommendations for building production generative AI applications?';
+const currentResearchDiagnosticPrompt = `
+${currentResearchInformationNeed}
+
+Determine the actual information required to answer the research.
+What actual information need was extracted?
+Was the first retrieval query clean?
+Did it contain test/orchestration instructions?
+
+Use current web information and official sources.
+Capture every capability invocation and its actual input.
+Evaluate the evidence and report execution telemetry.
+Return a validation report with the final response.
+`.trim();
+
 const config = {
   ...DEFAULT_CONTEXT_INTELLIGENCE_CONFIG,
   budgets: {
@@ -253,6 +269,10 @@ function contextNeed(
     priority: 'critical',
     status: 'missing',
     inputs: input.inputs ?? { query: intent.normalizedRequest },
+    normalizedRetrievalRequest: {
+      informationNeed: intent.normalizedRequest,
+      request: intent.normalizedRequest,
+    },
   };
 }
 
@@ -517,6 +537,104 @@ test('diagnostic orchestration and report fields never enter the actual web_sear
     'do not modify',
   ]) {
     assert.equal(query.toLowerCase().includes(forbidden), false, forbidden);
+  }
+});
+
+test('current research diagnostics are structurally separated from the information need', () => {
+  const intent = resolver.resolve(currentResearchDiagnosticPrompt);
+
+  assert.equal(intent.normalizedRequest, currentResearchInformationNeed);
+  assert.deepEqual(intent.instructionSegments.informationRequirements, [
+    currentResearchInformationNeed,
+  ]);
+  assert.ok((intent.instructionSegments.contextControlInstructions?.length ?? 0) > 0);
+  assert.ok((intent.instructionSegments.reportingInstructions?.length ?? 0) > 0);
+});
+
+test('AgentSession sends clean current-research inputs to web_search and web_fetch', async () => {
+  const captured = await executeRuntimePrompt(currentResearchDiagnosticPrompt);
+
+  assert.ok(captured.searches.length >= 1, 'web_search must execute');
+  assert.ok(captured.fetches.length >= 1, 'web_fetch must execute');
+  const actualSearch = captured.searches[0]!.query;
+  const actualFetch = captured.fetches[0]!.prompt ?? '';
+  for (const actualInput of [actualSearch, actualFetch]) {
+    assert.match(actualInput, /current AWS recommendations/i);
+    assert.match(actualInput, /production generative AI applications/i);
+    for (const excluded of [
+      'actual information required',
+      'information need was extracted',
+      'first retrieval query',
+      'test/orchestration instructions',
+      'capability invocation',
+      'execution telemetry',
+      'validation report',
+      'final response',
+    ]) {
+      assert.equal(actualInput.toLowerCase().includes(excluded), false, excluded);
+    }
+  }
+  assert.equal(captured.fetches[0]?.url, selectedResultUrl);
+});
+
+test('unplanned retrieval cannot bypass the normalized capability-input boundary', async () => {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const [search, fetch] = runtimeTools(captured);
+  const engine = new ContextIntelligenceEngine({
+    config: { query: { capabilityQueryLengths: { WEB_SEARCH: 400, WEB_FETCH: 400 } } },
+  });
+  const prepared = await engine.prepare({
+    request: currentResearchDiagnosticPrompt,
+    messages: [],
+    tools: [search, fetch],
+    systemPrompt: '',
+    scope: { conversationId: 'conversation-1', taskId: 'task-1', namespaces: ['test'] },
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    inputLimit: 128_000,
+    outputReservation: 8_192,
+    signal: new AbortController().signal,
+  });
+  const action = prepared.contract.directive.actions[0];
+
+  assert.ok(action);
+  const planned = engine.bindRuntimeToolInput({
+    tool: search,
+    toolCallId: action.id,
+    proposedInput: action.input,
+  });
+  assert.equal(planned.allowed, true);
+  if (planned.allowed) {
+    assert.deepEqual(planned.input, action.input);
+    assert.notEqual(
+      (planned.input as SearchInput).query,
+      currentResearchDiagnosticPrompt,
+    );
+  }
+
+  const unplanned = engine.bindRuntimeToolInput({
+    tool: search,
+    toolCallId: 'model-generated-retrieval',
+    proposedInput: { query: currentResearchDiagnosticPrompt },
+  });
+  assert.equal(unplanned.allowed, false);
+  if (!unplanned.allowed) {
+    assert.match(unplanned.reason, /normalized Context Intelligence retrieval plan/i);
+  }
+  assert.deepEqual(captured.searches, [], 'binding must not invoke the capability');
+});
+
+test('current-research adaptation changes only the clean normalized request', async () => {
+  const captured = await executeRuntimePrompt(currentResearchDiagnosticPrompt, {
+    failFirstSearch: true,
+  });
+
+  assert.ok(captured.searches.length >= 2);
+  assert.notEqual(captured.searches[1]?.query, captured.searches[0]?.query);
+  for (const attempt of captured.searches.slice(0, 2)) {
+    assert.match(attempt.query, /AWS/i);
+    assert.equal(attempt.query.toLowerCase().includes('information need was extracted'), false);
+    assert.equal(attempt.query.toLowerCase().includes('execution telemetry'), false);
   }
 });
 
@@ -1117,4 +1235,126 @@ test('pre-execution validation failure records no actual tool input', async () =
     assert.equal(attempt.data.actual_tool_input, undefined);
     assert.equal(attempt.data.retrieval_failure_reason, 'invalid_input');
   }
+});
+
+
+test('QUERY_DECOMPOSITION derives action and trace only from the canonical Context Need request', () => {
+  const canonicalIntent = resolver.resolve(
+    'What are Project Aurora deployment controls?; What are Project Aurora security controls?',
+  );
+  const need = contextNeed(canonicalIntent);
+  const initial = plan(canonicalIntent, need, webCapabilities())[0];
+  assert.ok(initial);
+
+  const failedOperation = operation(initial.input, {
+    id: initial.id,
+    attemptKey: initial.attemptKey,
+    status: 'failed',
+    executionState: 'FAILED',
+    resourceState: 'RETRIEVAL_FAILED',
+    failureClassification: 'invalid_input',
+    ...(initial.retrievalInput === undefined ? {} : { retrievalInput: initial.retrievalInput }),
+  });
+  const failedObservation = observation({
+    toolCallId: initial.id,
+    outcome: 'error',
+    content: 'The previous retrieval input was rejected.',
+    facts: [],
+    errors: ['The previous retrieval input was rejected.'],
+    links: [],
+    failureClassification: 'invalid_input',
+  });
+  const evaluated = new AdaptiveRetrievalIntelligence(config).evaluate({
+    requestId: 'request-1',
+    needs: [need],
+    operations: [failedOperation],
+    observations: [failedObservation],
+    evaluatedEvidence: [],
+    conflicts: [],
+    elapsedMs: 2,
+  });
+  const adaptive: AdaptiveRetrievalSummary = {
+    ...evaluated,
+    needs: evaluated.needs.map((assessment) => ({
+      ...assessment,
+      recommendedStrategies: ['QUERY_DECOMPOSITION'] as const,
+      adaptationReason: 'Decompose the canonical information need.',
+    })),
+  };
+  const diagnosticIntent: NormalizedIntent = {
+    ...canonicalIntent,
+    normalizedRequest: 'Was the first retrieval query clean?',
+    instructionSegments: {
+      ...canonicalIntent.instructionSegments,
+      userIntent: 'Was the first retrieval query clean?',
+      informationRequirements: [
+        'Was the first retrieval query clean?',
+        'Did it contain orchestration instructions?',
+      ],
+    },
+  };
+
+  const second = plan(diagnosticIntent, need, webCapabilities(), {
+    operations: [failedOperation],
+    observations: [failedObservation],
+    adaptive,
+  })[0];
+  const actualQuery = String(second?.input.query ?? '');
+
+  assert.ok(second);
+  assert.equal(second.strategy, 'QUERY_DECOMPOSITION');
+  assert.equal(second.retrievalInput?.informationNeed, canonicalIntent.normalizedRequest);
+  assert.equal(second.retrievalInput?.retrievalRequest, actualQuery);
+  assert.match(actualQuery, /Project Aurora/i);
+  assert.equal(actualQuery.toLowerCase().includes('first retrieval query'), false);
+  assert.equal(actualQuery.toLowerCase().includes('orchestration instructions'), false);
+});
+
+test('inferred retrieval is denied when no Context Need was detected', async () => {
+  const captured = { searches: [] as SearchInput[], fetches: [] as FetchInput[] };
+  const [search] = runtimeTools(captured);
+  const engine = new ContextIntelligenceEngine();
+  const prepared = await engine.prepare({
+    request: 'Do not modify anything. Report runtime telemetry and PASS or FAIL.',
+    messages: [],
+    tools: [search],
+    systemPrompt: '',
+    scope: { conversationId: 'conversation-1', taskId: 'task-1', namespaces: ['test'] },
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    inputLimit: 128_000,
+    outputReservation: 8_192,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(prepared.contract.contextNeeds.length, 0);
+  assert.equal(prepared.contract.directive.actions.length, 0);
+  const binding = engine.bindRuntimeToolInput({
+    tool: search,
+    toolCallId: 'unplanned-model-search',
+    proposedInput: { query: 'runtime telemetry PASS FAIL' },
+  });
+
+  assert.equal(binding.allowed, false);
+  if (!binding.allowed) {
+    assert.match(binding.reason, /normalized Context Intelligence retrieval plan/i);
+  }
+  assert.deepEqual(captured.searches, []);
+});
+
+test('query-bearing WEB_FETCH does not degrade to a URL-only capability input', () => {
+  const intent = resolver.resolve('What is Project Aurora?');
+  const need = contextNeed(intent, {
+    inputs: { url: selectedResultUrl },
+  });
+  const urlOnlyFetch = selectedCapability(
+    'url_only_fetch',
+    'WEB_FETCH',
+    { url: { type: 'string' } },
+    ['url'],
+  );
+
+  const actions = plan(intent, need, [urlOnlyFetch]);
+
+  assert.deepEqual(actions, []);
 });

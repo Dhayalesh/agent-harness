@@ -236,7 +236,15 @@ export function inferGenericCapabilities(tool: Tool): ExecutableContextCapabilit
   if (readLike && /\b(api|graphql|endpoint|web service)\b/.test(searchable)) {
     capabilities.push('API_RETRIEVAL');
   }
-  if (readLike && (tool.name.startsWith('mcp__') || /\bmcp\b/.test(searchable))) {
+  const mcpTransport = tool.name.startsWith('mcp__') || /\bmcp\b/.test(searchable);
+  const mcpRetrievalSemantics =
+    /\b(?:read|get|list|search|fetch|query|retrieve|lookup|recall)\b/.test(
+      `${tool.name} ${tool.description}`.toLowerCase().replace(/[^a-z0-9]+/g, ' '),
+    ) ||
+    properties.some((property) =>
+      ['query', 'url', 'uri', 'path', 'resource', 'resourceid'].includes(property),
+    );
+  if (readLike && mcpTransport && mcpRetrievalSemantics) {
     capabilities.push('MCP_RETRIEVAL');
   }
   if (readLike && /\b(memory|recall|remembered)\b/.test(searchable)) {

@@ -168,6 +168,15 @@ type PlannedAction = Omit<
 function planWebAction(input: PlannerInput): PlannedAction | undefined {
   const { need, intent, toolPlan, observations, operations } = input;
   if (!need.sourceKinds.includes('WEB')) return undefined;
+  const normalizedRetrievalRequest = need.normalizedRetrievalRequest;
+  if (
+    !normalizedRetrievalRequest ||
+    normalizedRetrievalRequest.request.trim().length === 0 ||
+    normalizedRetrievalRequest.informationNeed.trim().length === 0
+  ) {
+    return undefined;
+  }
+  const retrievalRequest = normalizedRetrievalRequest.request;
   const searchTool = toolForCapability(
     toolPlan,
     'WEB_SEARCH',
@@ -188,7 +197,7 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       const selected = toolForStrategy(
         toolPlan,
         'WEB_FETCH',
-        { url: suppliedUrl, query: intent.normalizedRequest },
+        { url: suppliedUrl, query: retrievalRequest },
         operations,
         input.performanceProfiles,
         input.minimumComparableSamples,
@@ -243,7 +252,7 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
       const selected = unattemptedTool(
         toolPlan,
         'WEB_FETCH',
-        { url: nextUrl, query: intent.normalizedRequest },
+        { url: nextUrl, query: retrievalRequest },
         operations,
         input.performanceProfiles,
         input.minimumComparableSamples,
@@ -285,8 +294,8 @@ function planWebAction(input: PlannerInput): PlannedAction | undefined {
   ])) {
     const query =
       strategy === 'INITIAL' || strategy === 'SOURCE_SWITCH' || strategy === 'RETRIEVAL_BROADEN'
-        ? intent.normalizedRequest
-        : refinedQuery(intent.normalizedRequest, searchAttempts.length, searchObservations);
+        ? retrievalRequest
+        : refinedQuery(retrievalRequest, searchAttempts.length, searchObservations);
     const maxResults =
       strategy === 'RETRIEVAL_BROADEN' ? Math.min(20, 5 + searchAttempts.length * 5) : 5;
     const selected = toolForStrategy(
@@ -497,6 +506,11 @@ function planGenericReadAction(input: PlannerInput): PlannedAction | undefined {
     for (const capability of orderedCapabilities) {
       const prior = input.operations.filter((operation) => operation.capability === capability);
       const genericInputs = { ...input.need.inputs } as Record<string, unknown>;
+      if (typeof genericInputs.query === 'string') {
+        const normalizedRetrievalRequest = input.need.normalizedRetrievalRequest;
+        if (!normalizedRetrievalRequest?.request.trim()) continue;
+        genericInputs.query = normalizedRetrievalRequest.request;
+      }
       if (strategy === 'RETRIEVAL_BROADEN') {
         genericInputs.maxResults = Math.min(100, 20 + input.operations.length * 20);
       }
@@ -796,7 +810,12 @@ function actionInput(
     if (value === undefined) continue;
     const explicitAlias = aliases[genericName];
     const target = explicitAlias ?? matchingProperty(genericName, properties);
-    if (!target && properties.length > 0) continue;
+    if (!target && properties.length > 0) {
+      // Query-bearing retrieval actions must never degrade into identifier-only calls:
+      // that would discard the normalized extraction requirement and its trace.
+      if (genericName === 'query') return undefined;
+      continue;
+    }
     const argumentName = target ?? genericName;
     const definition = propertyDefinition(propertyDefinitions[argumentName]);
     if (genericName === 'query' && typeof value === 'string') {
@@ -814,9 +833,13 @@ function actionInput(
           : undefined;
       const maximumLength = schemaMaxLength ?? capabilityMaxLength ?? configMaxLength;
       const minimumLength = numericConstraint(definition.minLength);
+      const stableInformationNeed =
+        context.operations.find((operation) => operation.retrievalInput?.informationNeed)
+          ?.retrievalInput?.informationNeed ?? value;
       const candidates = buildRetrievalRequestCandidates({
         intent: context.intent,
         ...(context.queryPlan === undefined ? {} : { plan: context.queryPlan }),
+        informationNeed: stableInformationNeed,
         requested: value,
         ...(maximumLength === undefined ? {} : { maximumLength }),
         maximumCandidates: 8,

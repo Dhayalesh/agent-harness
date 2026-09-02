@@ -1008,8 +1008,30 @@ class AgentSessionImpl implements AgentSession {
       return result;
     }
 
+    const inputBinding = this.contextIntelligence?.bindRuntimeToolInput({
+      tool,
+      toolCallId: call.id,
+      proposedInput: call.input,
+    });
+    if (inputBinding && !inputBinding.allowed) {
+      let result = this.toolError(call.id, inputBinding.reason);
+      result = await this.processToolFailure(tool, call, result, turnId);
+      this.logToolTerminal(call, turnId, result, lifecycleStarted, {
+        event: 'tool.execution.denied',
+        failureStage: 'context_input_binding',
+        code: 'CONTEXT_RETRIEVAL_INPUT_REJECTED',
+        tool,
+      });
+      yield this.event({ type: 'tool.completed', turnId, result });
+      return result;
+    }
+    if (inputBinding) {
+      call = { ...call, input: structuredClone(inputBinding.input) };
+    }
+
     const actionBudget = this.contextIntelligence?.reserveToolAction({
       toolName: tool.name,
+      toolCallId: call.id,
       sessionId: this.id,
       turnId,
     });

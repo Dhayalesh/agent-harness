@@ -658,6 +658,7 @@ export type {
   MemoryType,
   MeasuredRatio,
   NormalizedIntent,
+  NormalizedRetrievalRequest,
   ObservedCost,
   OffloadedArtifact,
   PersistedContextIntelligenceState,

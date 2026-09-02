@@ -34,7 +34,7 @@ export class ContextNeedIntelligence {
         createNeed({
           requestId,
           type: 'CURRENT_EXTERNAL_INFORMATION',
-          requiredInformation: ['current externally observable state'],
+          requiredInformation: [intent.normalizedRequest],
           missingInformation: ['current external evidence'],
           reason:
             'The request depends on externally observable information or information that can change after model training.',
@@ -274,6 +274,14 @@ function createNeed(input: NeedInput): ContextNeed {
     priority: input.priority,
     status: input.status ?? 'missing',
     inputs: input.inputs,
+    ...(typeof input.inputs.query === 'string' && input.inputs.query.trim().length > 0
+      ? {
+          normalizedRetrievalRequest: {
+            informationNeed: input.inputs.query.trim(),
+            request: input.inputs.query.trim(),
+          },
+        }
+      : {}),
   };
 }
 

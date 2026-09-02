@@ -73,6 +73,7 @@ import {
   provenance,
   sourceMetadata,
   appendProvenance,
+  stableHash,
 } from './utils.js';
 
 export type ContextIntelligenceTelemetryEvent = {
@@ -1063,7 +1064,73 @@ export class ContextIntelligenceEngine {
     };
   }
 
-  reserveToolAction(input: { toolName: string; sessionId: string; turnId: string }): {
+  bindRuntimeToolInput(input: {
+    tool: Tool;
+    toolCallId: string;
+    proposedInput: unknown;
+  }): { allowed: true; input: unknown } | { allowed: false; reason: string } {
+    const action = this.plannedActions.get(input.toolCallId);
+    if (action) {
+      if (action.toolName !== input.tool.name) {
+        return {
+          allowed: false,
+          reason: 'The runtime tool does not match the planned Context Intelligence capability.',
+        };
+      }
+      if (stableHash(input.proposedInput) !== stableHash(action.input)) {
+        return {
+          allowed: false,
+          reason:
+            'The runtime capability input differs from the normalized retrieval input planned by Context Intelligence.',
+        };
+      }
+      const trace = action.retrievalInput;
+      if (
+        trace &&
+        action.input[trace.argumentName] !== trace.retrievalRequest
+      ) {
+        return {
+          allowed: false,
+          reason:
+            'The planned capability input is inconsistent with its normalized retrieval request.',
+        };
+      }
+      return { allowed: true, input: deepClone(action.input) };
+    }
+
+    const governedNeedIds = new Set(
+      (this.lastContract?.toolPlan.resolutions ?? [])
+        .filter((resolution) => resolution.toolNames.includes(input.tool.name))
+        .map((resolution) => resolution.needId),
+    );
+    const governedRetrieval = (this.lastContract?.contextNeeds ?? []).some(
+      (need) => governedNeedIds.has(need.id) && need.capabilityRequirement.readOnly,
+    );
+    const runtimeCapabilities =
+      this.capabilities.registry.get(input.tool.name)?.provides ??
+      input.tool.contextMetadata?.provides ??
+      inferGenericCapabilities(input.tool);
+    const retrievalCapability = runtimeCapabilities.some(
+      (capability) =>
+        capability !== 'MARKDOWN_ARTIFACT_CREATE' &&
+        capability !== 'DOCUMENT_ARTIFACT_CREATE',
+    );
+    if (governedRetrieval || retrievalCapability) {
+      return {
+        allowed: false,
+        reason:
+          'Retrieval capabilities may execute only from a normalized Context Intelligence retrieval plan.',
+      };
+    }
+    return { allowed: true, input: input.proposedInput };
+  }
+
+  reserveToolAction(input: {
+    toolName: string;
+    toolCallId: string;
+    sessionId: string;
+    turnId: string;
+  }): {
     allowed: boolean;
     used: number;
     limit: number;
@@ -1080,7 +1147,7 @@ export class ContextIntelligenceEngine {
     }
     this.toolActionCount += 1;
     const plannedOperation = this.runtimeOperations.find(
-      (operation) => operation.status === 'planned' && operation.toolName === input.toolName,
+      (operation) => operation.id === input.toolCallId && operation.status === 'planned',
     );
     if (plannedOperation) plannedOperation.retrievalState = 'IN_PROGRESS';
     this.emit('context-intelligence.lifecycle', input, {
