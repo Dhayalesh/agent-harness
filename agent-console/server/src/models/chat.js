@@ -1,5 +1,18 @@
 import mongoose from "mongoose";
 
+const usageSchema = new mongoose.Schema(
+  {
+    inputTokens: Number,
+    outputTokens: Number,
+    totalTokens: Number,
+    cacheReadTokens: Number,
+    cacheWriteTokens: Number,
+    reasoningTokens: Number,
+    estimatedCostUsd: Number,
+  },
+  { _id: false, strict: false },
+);
+
 const artifactStorageSchema = new mongoose.Schema(
   {
     kind: { type: String, enum: ["s3"], required: true },
@@ -55,6 +68,11 @@ const toolCallSchema = new mongoose.Schema(
       enum: ["pending", "running", "done", "error"],
       required: true,
     },
+    /** Usage belongs to the model step that requested this tool. */
+    usage: { type: usageSchema },
+    usageTurn: Number,
+    /** Greater than one means several tools share this one model-step reading. */
+    usageSharedAcross: Number,
   },
   { _id: false },
 );
@@ -97,6 +115,8 @@ const chatMessageSchema = new mongoose.Schema(
     attachments: { type: [messageAttachmentSchema], default: undefined },
     artifacts: { type: [artifactSchema], default: undefined },
     toolCalls: { type: [toolCallSchema], default: undefined },
+    usage: { type: usageSchema },
+    usageDetails: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     runId: String,
     createdAt: { type: String, required: true },
     error: {

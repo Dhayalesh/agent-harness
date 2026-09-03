@@ -283,7 +283,8 @@ test('client history recovers a missing session once and never duplicates a stor
 
 test('a payload runs a full turn with no database, no S3, and no env vars', async (t) => {
   const endpoint = await scriptedEndpoint([
-    toolCallChunk('call-1', 'write_file', { path: 'hello.txt', content: 'hi' }),
+    toolCallChunk('call-1', 'write_file', { path: 'hello.txt', content: 'hi' }) +
+      frame({ usage: { prompt_tokens: 40, completion_tokens: 8 } }),
     textChunk('Wrote hello.txt.'),
   ]);
   const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'headless-run-'));
@@ -305,8 +306,19 @@ test('a payload runs a full turn with no database, no S3, and no env vars', asyn
     result.tools.map((tool) => [tool.name, tool.calls, tool.errors]),
     [['write_file', 1, 0]],
   );
-  assert.equal(result.usage.inputTokens, 120);
-  assert.equal(result.usage.outputTokens, 30);
+  assert.equal(result.usage.inputTokens, 160);
+  assert.equal(result.usage.outputTokens, 38);
+  assert.equal(result.usageDetails.length, 2);
+  assert.deepEqual(result.usageDetails[0]?.toolCallIds, ['call-1']);
+  assert.deepEqual(result.usageDetails[0]?.usage, {
+    inputTokens: 40,
+    outputTokens: 8,
+  });
+  assert.deepEqual(result.usageDetails[1]?.toolCallIds, []);
+  assert.deepEqual(result.usageDetails[1]?.usage, {
+    inputTokens: 120,
+    outputTokens: 30,
+  });
   assert.ok(result.context);
   assert.ok(result.context.usedTokens >= 0);
   assert.ok(result.context.budgetTokens > 0);

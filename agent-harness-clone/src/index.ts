@@ -570,6 +570,7 @@ export type {
   HeadlessRunOptions,
   HeadlessSessionInfo,
   HeadlessToolSummary,
+  HeadlessUsageDetail,
 } from './headless/invoke.js';
 export {
   AGENTCORE_RUNTIME_SESSION_HEADER,

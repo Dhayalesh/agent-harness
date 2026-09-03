@@ -11,9 +11,12 @@ const ARTIFACT_TOOL_KINDS = {
 
 /** Adds current-turn tool detail to a buffered runtime result. */
 export function hydrateRuntimeToolCalls(result) {
+  const toolCalls = toolCallsFromMessages(result?.messages).map((call) =>
+    withUsageDetail(call, result?.usageDetails),
+  );
   return {
     ...result,
-    toolCalls: toolCallsFromMessages(result?.messages),
+    toolCalls,
   };
 }
 
@@ -72,6 +75,7 @@ export function toolCallsFromMessages(messages) {
 /** Normalizes one stream-folded call into the same bounded persisted shape. */
 export function presentedToolCall(call) {
   const name = clean(call?.name, 200) || "tool";
+  const usage = presentedUsage(call?.usage);
   return {
     id: clean(call?.id, 300) || `tool-${Date.now()}`,
     name,
@@ -82,7 +86,47 @@ export function presentedToolCall(call) {
       : call?.isError
         ? "error"
         : "done",
+    ...(usage ? { usage } : {}),
+    ...(Number.isInteger(call?.usageTurn) && call.usageTurn > 0
+      ? { usageTurn: call.usageTurn }
+      : {}),
+    ...(Number.isInteger(call?.usageSharedAcross) && call.usageSharedAcross > 1
+      ? { usageSharedAcross: call.usageSharedAcross }
+      : {}),
   };
+}
+
+function withUsageDetail(call, details) {
+  const detail = (Array.isArray(details) ? details : []).find((entry) =>
+    entry?.toolCallIds?.includes(call.id),
+  );
+  if (!detail?.usage) return call;
+  return presentedToolCall({
+    ...call,
+    usage: detail.usage,
+    usageTurn: detail.turn,
+    usageSharedAcross: detail.toolCallIds.length,
+  });
+}
+
+function presentedUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const result = {};
+  for (const field of [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "reasoningTokens",
+    "estimatedCostUsd",
+  ]) {
+    if (Number.isFinite(usage[field]) && usage[field] >= 0) {
+      result[field] = usage[field];
+    }
+  }
+  if (!("inputTokens" in result) && !("outputTokens" in result)) return null;
+  result.totalTokens = (result.inputTokens ?? 0) + (result.outputTokens ?? 0);
+  return result;
 }
 
 function inputText(name, input) {

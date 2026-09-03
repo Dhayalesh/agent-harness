@@ -162,6 +162,20 @@ export type HeadlessToolSummary = {
   errors: number;
 };
 
+/**
+ * Usage for one model request inside an agent run.
+ *
+ * A single model request may ask for several tools, so the call ids are kept as a
+ * group. Consumers can show the usage beside every related tool while still making
+ * it clear that the number is shared rather than charging it once per tool.
+ */
+export type HeadlessUsageDetail = {
+  turnId: string;
+  turn?: number;
+  usage?: ModelUsage;
+  toolCallIds: readonly string[];
+};
+
 export type HeadlessResult = {
   status: 'success' | 'error';
   sessionId: string;
@@ -182,6 +196,8 @@ export type HeadlessResult = {
   stopReason?: StopReason | 'closed';
   turns: number;
   usage: ModelUsage;
+  /** Per-model-request usage, including the final response-only request. */
+  usageDetails: readonly HeadlessUsageDetail[];
   tools: readonly HeadlessToolSummary[];
   /**
    * How full the model context was on the last turn of this run.
@@ -1106,6 +1122,7 @@ class RunTotals {
   private readonly toolCalls = new Map<string, HeadlessToolSummary>();
   private readonly toolNamesByCallId = new Map<string, string>();
   private readonly usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
+  private readonly usageDetails = new Map<string, HeadlessUsageDetail>();
   private turns = 0;
   private stopReason: StopReason | 'closed' | undefined;
   private failure: { code: string; message: string; recoverable: boolean } | undefined;
@@ -1123,6 +1140,9 @@ class RunTotals {
       case 'artifact.created':
         this.artifacts.push(event.artifact);
         break;
+      case 'turn.started':
+        this.usageDetail(event.turnId).turn = event.turn;
+        break;
       case 'turn.completed':
         this.turns = Math.max(this.turns, event.turn);
         this.stopReason = event.reason;
@@ -1137,6 +1157,12 @@ class RunTotals {
       case 'tool.requested':
         this.toolNamesByCallId.set(event.call.id, event.call.name);
         this.summary(event.call.name).calls += 1;
+        {
+          const detail = this.usageDetail(event.turnId);
+          if (!detail.toolCallIds.includes(event.call.id)) {
+            detail.toolCallIds = [...detail.toolCallIds, event.call.id];
+          }
+        }
         break;
       case 'tool.completed': {
         if (!event.result.isError) break;
@@ -1146,6 +1172,10 @@ class RunTotals {
       }
       case 'usage.updated':
         this.addUsage(event.usage);
+        {
+          const detail = this.usageDetail(event.turnId);
+          detail.usage = addModelUsage(detail.usage, event.usage);
+        }
         break;
       // Last one wins: the meter shows where the context stands now, which is what
       // the most recent turn measured.
@@ -1236,6 +1266,7 @@ class RunTotals {
       ...(this.stopReason === undefined ? {} : { stopReason: this.stopReason }),
       turns: this.turns,
       usage: this.usage,
+      usageDetails: [...this.usageDetails.values()],
       tools: [...this.toolCalls.values()],
       ...(this.context === undefined
         ? {}
@@ -1253,6 +1284,14 @@ class RunTotals {
     return created;
   }
 
+  private usageDetail(turnId: string): HeadlessUsageDetail {
+    const existing = this.usageDetails.get(turnId);
+    if (existing) return existing;
+    const created: HeadlessUsageDetail = { turnId, toolCallIds: [] };
+    this.usageDetails.set(turnId, created);
+    return created;
+  }
+
   private addUsage(usage: ModelUsage): void {
     this.usage.inputTokens += usage.inputTokens;
     this.usage.outputTokens += usage.outputTokens;
@@ -1265,5 +1304,27 @@ class RunTotals {
     if (usage.estimatedCostUsd !== undefined) {
       this.usage.estimatedCostUsd = (this.usage.estimatedCostUsd ?? 0) + usage.estimatedCostUsd;
     }
+    if (usage.reasoningTokens !== undefined) {
+      this.usage.reasoningTokens = (this.usage.reasoningTokens ?? 0) + usage.reasoningTokens;
+    }
   }
+}
+
+function addModelUsage(current: ModelUsage | undefined, addition: ModelUsage): ModelUsage {
+  const result: ModelUsage = {
+    inputTokens: current?.inputTokens ?? 0,
+    outputTokens: current?.outputTokens ?? 0,
+  };
+  for (const field of [
+    'inputTokens',
+    'outputTokens',
+    'cacheReadTokens',
+    'cacheWriteTokens',
+    'reasoningTokens',
+    'estimatedCostUsd',
+  ] as const) {
+    const value = addition[field];
+    if (value !== undefined) result[field] = (result[field] ?? 0) + value;
+  }
+  return result;
 }

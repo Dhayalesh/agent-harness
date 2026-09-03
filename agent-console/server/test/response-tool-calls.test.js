@@ -49,6 +49,37 @@ test("keeps only current-turn tool history and correlates results", () => {
   ]);
 });
 
+test("adds buffered model-step usage to every correlated tool call", () => {
+  const result = hydrateRuntimeToolCalls({
+    messages: [
+      { role: "user", content: [{ type: "text", text: "inspect" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_call", id: "call-1", name: "read_file", input: {} },
+          { type: "tool_call", id: "call-2", name: "grep", input: {} },
+        ],
+      },
+    ],
+    usageDetails: [
+      {
+        turnId: "turn-1",
+        turn: 1,
+        toolCallIds: ["call-1", "call-2"],
+        usage: { inputTokens: 80, outputTokens: 12 },
+      },
+    ],
+  });
+
+  assert.deepEqual(result.toolCalls[1].usage, {
+    inputTokens: 80,
+    outputTokens: 12,
+    totalTokens: 92,
+  });
+  assert.equal(result.toolCalls[1].usageTurn, 1);
+  assert.equal(result.toolCalls[1].usageSharedAcross, 2);
+});
+
 test("does not duplicate generated Markdown in persisted tool history", () => {
   const result = hydrateRuntimeToolCalls({
     messages: [

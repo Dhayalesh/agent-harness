@@ -134,6 +134,73 @@ test("folding a stream produces the same result shape the buffered path returns"
   assert.equal(result.durationMs, 4321);
 });
 
+test("attributes each usage reading to its model step and related tool calls", () => {
+  const totals = new RunTotals();
+  for (const event of [
+    { type: "turn.started", turnId: "turn-tools", turn: 1 },
+    {
+      type: "tool.requested",
+      turnId: "turn-tools",
+      call: { id: "call-1", name: "read_file", input: {} },
+    },
+    {
+      type: "tool.requested",
+      turnId: "turn-tools",
+      call: { id: "call-2", name: "grep", input: {} },
+    },
+    {
+      type: "usage.updated",
+      turnId: "turn-tools",
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 60 },
+    },
+    { type: "turn.started", turnId: "turn-answer", turn: 2 },
+    {
+      type: "usage.updated",
+      turnId: "turn-answer",
+      usage: { inputTokens: 125, outputTokens: 30, reasoningTokens: 8 },
+    },
+    {
+      type: "turn.completed",
+      turnId: "turn-answer",
+      turn: 2,
+      reason: "end_turn",
+    },
+    { type: "session.completed", reason: "end_turn" },
+  ]) {
+    totals.observe(event);
+  }
+
+  const result = totals.result({ agentName: "a", durationMs: 1 });
+  assert.deepEqual(result.usage, {
+    inputTokens: 225,
+    outputTokens: 50,
+    cacheReadTokens: 60,
+    reasoningTokens: 8,
+  });
+  assert.deepEqual(result.usageDetails, [
+    {
+      turnId: "turn-tools",
+      turn: 1,
+      toolCallIds: ["call-1", "call-2"],
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 60 },
+    },
+    {
+      turnId: "turn-answer",
+      turn: 2,
+      toolCallIds: [],
+      usage: { inputTokens: 125, outputTokens: 30, reasoningTokens: 8 },
+    },
+  ]);
+  assert.deepEqual(result.toolCalls[0].usage, {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 60,
+    totalTokens: 120,
+  });
+  assert.equal(result.toolCalls[0].usageSharedAcross, 2);
+  assert.equal(result.toolCalls[1].usageSharedAcross, 2);
+});
+
 test("a reported error and a truncated stream both fold to a failed run", () => {
   const failed = new RunTotals();
   failed.observe({ type: "assistant.text.delta", delta: "Partial" });

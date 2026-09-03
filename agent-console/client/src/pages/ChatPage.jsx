@@ -42,6 +42,13 @@ import {
 import { Icon } from "../components/Icon.jsx";
 import { ContextIndicator } from "../components/ContextIndicator.js";
 import { applyContextEvent } from "../lib/context-inspector.js";
+import {
+  addTokenUsage,
+  hasTokenUsage,
+  tokenTotal,
+  upsertUsageDetail,
+  usageForTool,
+} from "../lib/token-usage.js";
 import { MarkdownDocument } from "../components/MarkdownDocument.jsx";
 import { ArtifactPreview } from "../components/artifacts/ArtifactPreview.jsx";
 import {
@@ -1468,7 +1475,10 @@ function Message({ message, agentName, onOpenDocument }) {
             <ThinkingBlock reasoning={message.reasoning} />
           )}
           {role !== "user" && message.toolCalls?.length > 0 && (
-            <ToolHistory toolCalls={message.toolCalls} />
+            <ToolHistory
+              toolCalls={message.toolCalls}
+              usageDetails={message.usageDetails}
+            />
           )}
           {message.attachments?.length > 0 && (
             <ul
@@ -1504,6 +1514,13 @@ function Message({ message, agentName, onOpenDocument }) {
               onOpen={() => onOpenDocument(artifact)}
             />
           ))}
+          {role !== "user" && hasTokenUsage(message.usage) && (
+            <TokenUsageDetails
+              usage={message.usage}
+              usageDetails={message.usageDetails}
+              toolCalls={message.toolCalls}
+            />
+          )}
         </div>
 
         <footer
@@ -1532,6 +1549,8 @@ const EMPTY_LIVE = {
   tools: [],
   artifacts: [],
   warnings: [],
+  usage: null,
+  usageDetails: [],
   /** The last `context.usage` this run reported. Null until the first turn measures. */
   context: null,
   compactions: 0,
@@ -1558,7 +1577,14 @@ function applyLiveEvent(live, event) {
     case "session.started":
       return { ...current, status: "Thinking" };
     case "turn.started":
-      return { ...current, status: `Turn ${event.turn}` };
+      return {
+        ...current,
+        status: `Turn ${event.turn}`,
+        usageDetails: upsertUsageDetail(current.usageDetails, {
+          turnId: event.turnId,
+          turn: event.turn,
+        }),
+      };
     case "assistant.reasoning.delta":
       return {
         ...current,
@@ -1601,6 +1627,7 @@ function applyLiveEvent(live, event) {
           ...tool,
           name: event.toolName || tool.name,
           input: tool.input + (event.delta ?? ""),
+          turnId: event.turnId ?? tool.turnId,
         })),
       };
     case "tool.requested":
@@ -1608,10 +1635,15 @@ function applyLiveEvent(live, event) {
       return {
         ...current,
         status: `Running ${event.call?.name ?? "a tool"}`,
+        usageDetails: upsertUsageDetail(current.usageDetails, {
+          turnId: event.turnId,
+          toolCallId: event.call?.id,
+        }),
         tools: upsertTool(current.tools, event.call?.id, (tool) => ({
           ...tool,
           name: event.call?.name ?? tool.name,
           input: tool.input || formatToolInput(event.call?.input),
+          turnId: event.turnId ?? tool.turnId,
           state: event.type === "tool.started" ? "running" : tool.state,
         })),
       };
@@ -1656,6 +1688,15 @@ function applyLiveEvent(live, event) {
             message: event.message ?? "The runtime reported a warning.",
           },
         ].slice(-5),
+      };
+    case "usage.updated":
+      return {
+        ...current,
+        usage: addTokenUsage(current.usage, event.usage),
+        usageDetails: upsertUsageDetail(current.usageDetails, {
+          turnId: event.turnId,
+          usage: event.usage,
+        }),
       };
     // The meter follows the newest measurement, so it falls as soon as a
     // compaction lands rather than at the end of the run. All of the accumulation —
@@ -1853,20 +1894,26 @@ function LiveMessage({ live, agentName }) {
 
         {live.reasoning && <ThinkingBlock reasoning={live.reasoning} live />}
 
-        {live.tools.length > 0 && <ToolHistory toolCalls={live.tools} live />}
+        {live.tools.length > 0 && (
+          <ToolHistory
+            toolCalls={live.tools}
+            usageDetails={live.usageDetails}
+            live
+          />
+        )}
 
         {live.artifacts.map((artifact) => (
           <LiveDocumentCard key={artifact.id} artifact={artifact} />
         ))}
 
         {live.warnings.map((warning, index) => (
-            <p
-              className="mb-2 rounded-medium border border-warning-200 bg-warning-50 px-2.5 py-1.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400"
-              key={`${warning.code}:${index}`}
-            >
-              {warning.message}
-            </p>
-          ))}
+          <p
+            className="mb-2 rounded-medium border border-warning-200 bg-warning-50 px-2.5 py-1.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400"
+            key={`${warning.code}:${index}`}
+          >
+            {warning.message}
+          </p>
+        ))}
 
         {live.text ? (
           <MarkdownDocument
@@ -1880,6 +1927,14 @@ function LiveMessage({ live, agentName }) {
           </p>
         ) : null}
         {!busy && <span className="sr-only">{live.status}</span>}
+        {hasTokenUsage(live.usage) && (
+          <TokenUsageDetails
+            usage={live.usage}
+            usageDetails={live.usageDetails}
+            toolCalls={live.tools}
+            live
+          />
+        )}
       </div>
     </article>
   );
@@ -2115,7 +2170,137 @@ function ThinkingBlock({ reasoning, live = false }) {
   );
 }
 
-function ToolHistory({ toolCalls, live = false }) {
+function TokenUsageDetails({
+  usage,
+  usageDetails = [],
+  toolCalls = [],
+  live = false,
+}) {
+  const details = usageDetails.filter((entry) => hasTokenUsage(entry?.usage));
+  return (
+    <details className="group/usage mt-3 overflow-hidden rounded-medium border border-divider bg-content2/45">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-tiny [&::-webkit-details-marker]:hidden">
+        <Icon name="tokens" className="h-4 w-4 text-secondary" />
+        <span className="font-semibold text-foreground">Token usage</span>
+        <span className="rounded-full bg-secondary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-secondary">
+          {formatTokenCount(tokenTotal(usage))}
+        </span>
+        <span className="hidden text-default-400 sm:inline">
+          {formatTokenCount(usage.inputTokens ?? 0, "in")} ·{" "}
+          {formatTokenCount(usage.outputTokens ?? 0, "out")}
+        </span>
+        {live && <ActivityIndicator size="sm" className="ml-0.5" />}
+        <Icon
+          name="chevron"
+          className="ml-auto h-3.5 w-3.5 text-default-400 transition-transform group-open/usage:rotate-180"
+        />
+      </summary>
+      <div className="space-y-3 border-t border-divider bg-content1/35 px-3 py-3">
+        <UsageMetricGrid usage={usage} />
+        {details.length > 0 && (
+          <section>
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <h4 className="text-[10px] font-semibold uppercase tracking-[0.09em] text-default-400">
+                Model requests
+              </h4>
+              <span className="text-[10px] text-default-400">
+                {details.length} {details.length === 1 ? "step" : "steps"}
+              </span>
+            </div>
+            <div className="overflow-hidden rounded-medium border border-divider bg-content1">
+              {details.map((detail, index) => (
+                <UsageStepRow
+                  key={detail.turnId ?? index}
+                  detail={detail}
+                  index={index}
+                  toolCalls={toolCalls}
+                />
+              ))}
+            </div>
+          </section>
+        )}
+        <p className="text-[10px] leading-4 text-default-400">
+          Provider-reported model usage. Cached and reasoning tokens are shown
+          as subsets and are not added to the total again.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function UsageMetricGrid({ usage }) {
+  const metrics = [
+    ["Total", tokenTotal(usage)],
+    ["Input", usage?.inputTokens],
+    ["Output", usage?.outputTokens],
+    ["Cache read", usage?.cacheReadTokens],
+    ["Cache write", usage?.cacheWriteTokens],
+    ["Reasoning", usage?.reasoningTokens],
+  ].filter(([, value], index) => index < 3 || Number.isFinite(value));
+  if (Number.isFinite(usage?.estimatedCostUsd)) {
+    metrics.push(["Estimated cost", usage.estimatedCostUsd, "cost"]);
+  }
+  return (
+    <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+      {metrics.map(([label, value, kind]) => (
+        <div
+          key={label}
+          className="rounded-medium border border-divider bg-content1 px-2.5 py-2"
+        >
+          <dt className="text-[10px] uppercase tracking-[0.08em] text-default-400">
+            {label}
+          </dt>
+          <dd className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
+            {kind === "cost"
+              ? formatCost(value)
+              : Number(value ?? 0).toLocaleString()}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function UsageStepRow({ detail, index, toolCalls }) {
+  const ids = new Set(detail.toolCallIds ?? []);
+  const tools = toolCalls
+    .filter(
+      (tool) =>
+        ids.has(tool.id ?? tool.key) ||
+        (detail.turnId && tool.turnId === detail.turnId),
+    )
+    .map((tool) => tool.name || "tool");
+  const uniqueTools = [...new Set(tools)];
+  const label = uniqueTools.length ? uniqueTools.join(", ") : "Final response";
+  return (
+    <div className="flex items-center gap-3 border-b border-divider px-2.5 py-2 last:border-b-0">
+      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-content2 font-mono text-[10px] font-semibold text-default-500">
+        {detail.turn ?? index + 1}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[11px] text-default-500">
+        {label}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] font-semibold text-foreground">
+        {formatTokenCount(tokenTotal(detail.usage))}
+      </span>
+    </div>
+  );
+}
+
+function formatTokenCount(value, suffix = "tokens") {
+  return `${Number(value ?? 0).toLocaleString()} ${suffix}`;
+}
+
+function formatCost(value) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 6,
+  }).format(value ?? 0);
+}
+
+function ToolHistory({ toolCalls, usageDetails = [], live = false }) {
   const calls = (toolCalls ?? []).map((tool) => ({
     ...tool,
     key: tool.key ?? tool.id,
@@ -2150,14 +2335,14 @@ function ToolHistory({ toolCalls, live = false }) {
       </summary>
       <div className="divide-y divide-divider border-t border-divider">
         {calls.map((tool) => (
-          <ToolCard key={tool.key} tool={tool} />
+          <ToolCard key={tool.key} tool={tool} usageDetails={usageDetails} />
         ))}
       </div>
     </details>
   );
 }
 
-function ToolCard({ tool }) {
+function ToolCard({ tool, usageDetails }) {
   const output = Array.isArray(tool.output)
     ? tool.output
     : tool.output
@@ -2175,6 +2360,7 @@ function ToolCard({ tool }) {
     done: "Complete",
     error: "Failed",
   }[tool.state];
+  const usageInfo = usageForTool(tool, usageDetails);
 
   return (
     <details className="group/tool bg-content1/35">
@@ -2192,7 +2378,14 @@ function ToolCard({ tool }) {
         <code className="min-w-0 truncate font-semibold text-foreground">
           {tool.name || "tool"}
         </code>
-        <span className={`ml-auto shrink-0 text-[11px] ${tone}`}>
+        {usageInfo && (
+          <span className="ml-auto shrink-0 rounded-full bg-secondary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-secondary">
+            {formatTokenCount(tokenTotal(usageInfo.usage), "tok")}
+          </span>
+        )}
+        <span
+          className={`${usageInfo ? "" : "ml-auto"} shrink-0 text-[11px] ${tone}`}
+        >
           {stateLabel || "Complete"}
         </span>
         <Icon
@@ -2201,6 +2394,22 @@ function ToolCard({ tool }) {
         />
       </summary>
       <div className="space-y-3 border-t border-divider bg-content2/35 px-3 py-3">
+        {usageInfo && (
+          <section>
+            <div className="mb-1.5 flex items-center justify-between gap-3">
+              <h4 className="text-[10px] font-semibold uppercase tracking-[0.09em] text-default-400">
+                Model-step usage
+              </h4>
+              <span className="text-[10px] text-default-400">
+                {usageInfo.turn ? `Step ${usageInfo.turn}` : "Requesting step"}
+                {usageInfo.sharedAcross > 1
+                  ? ` · shared by ${usageInfo.sharedAcross} calls`
+                  : ""}
+              </span>
+            </div>
+            <UsageMetricGrid usage={usageInfo.usage} />
+          </section>
+        )}
         {tool.input && <ToolDetail label="Input" value={tool.input} />}
         {output.length > 0 && (
           <ToolDetail label="Output" value={output.join("\n")} />

@@ -241,6 +241,7 @@ function applyRuntimeResult(run, result, invocation) {
     totalTokens:
       (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
   };
+  run.usageDetails = result.usageDetails;
   // Left unset rather than zeroed when the runtime reported none, so "no context
   // layer" stays distinguishable from "an empty context".
   if (result.context) run.context = result.context;

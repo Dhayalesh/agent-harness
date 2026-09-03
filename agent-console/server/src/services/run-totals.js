@@ -29,6 +29,7 @@ export class RunTotals {
   #tools = new Map();
   #toolNamesByCallId = new Map();
   #usage = { inputTokens: 0, outputTokens: 0 };
+  #usageDetails = new Map();
   #turns = 0;
   #stopReason;
   #failure;
@@ -53,6 +54,11 @@ export class RunTotals {
         this.#text.push(event.delta ?? "");
         this.#messageText.push(event.delta ?? "");
         break;
+      case "turn.started": {
+        const detail = this.#usageDetail(event.turnId);
+        if (detail) detail.turn = event.turn;
+        break;
+      }
       case "tool.input.delta": {
         const key = event.toolCallId || `index-${event.index}`;
         const input = (this.#toolInputs.get(key) ?? "") + (event.delta ?? "");
@@ -60,6 +66,7 @@ export class RunTotals {
         this.#updateActivity(key, {
           name: event.toolName,
           input,
+          turnId: event.turnId,
           status: "pending",
         });
         break;
@@ -95,10 +102,15 @@ export class RunTotals {
       case "tool.requested":
         this.#countCall(event.call);
         if (event.call?.id) {
+          const detail = this.#usageDetail(event.turnId);
+          if (detail && !detail.toolCallIds.includes(event.call.id)) {
+            detail.toolCallIds.push(event.call.id);
+          }
           this.#toolInputs.set(event.call.id, event.call.input);
           this.#updateActivity(event.call.id, {
             name: event.call.name,
             input: event.call.input,
+            turnId: event.turnId,
             status: "pending",
           });
         }
@@ -108,6 +120,7 @@ export class RunTotals {
           this.#updateActivity(event.call.id, {
             name: event.call.name,
             input: event.call.input,
+            turnId: event.turnId,
             status: "running",
           });
         }
@@ -141,6 +154,7 @@ export class RunTotals {
       }
       case "usage.updated":
         this.#addUsage(event.usage);
+        this.#addUsageDetail(event.turnId, event.usage);
         break;
       // Last one wins: the meter shows where the context stands now, which is
       // what the most recent turn measured.
@@ -164,7 +178,9 @@ export class RunTotals {
           this.#timeline.push({
             ...(typeof event.turn === "number" ? { turn: event.turn } : {}),
             usedPercent: event.usedPercent ?? 0,
-            ...(typeof event.action === "string" ? { action: event.action } : {}),
+            ...(typeof event.action === "string"
+              ? { action: event.action }
+              : {}),
             ...(event.compacted === true ? { compacted: true } : {}),
           });
           if (this.#timeline.length > CONTEXT_TIMELINE_LIMIT) {
@@ -268,6 +284,21 @@ export class RunTotals {
     }
   }
 
+  #usageDetail(turnId) {
+    if (typeof turnId !== "string" || !turnId) return null;
+    const existing = this.#usageDetails.get(turnId);
+    if (existing) return existing;
+    const created = { turnId, toolCallIds: [] };
+    this.#usageDetails.set(turnId, created);
+    return created;
+  }
+
+  #addUsageDetail(turnId, usage) {
+    const detail = this.#usageDetail(turnId);
+    if (!detail || !usage) return;
+    detail.usage = addUsage(detail.usage, usage);
+  }
+
   #completeAssistantMessage(message) {
     const text = (message?.content ?? [])
       .filter((block) => block?.type === "text")
@@ -341,7 +372,15 @@ export class RunTotals {
         ? { type: "files", files: artifacts }
         : { type: "text", text: output },
       artifacts,
-      toolCalls: [...this.#toolActivity.values()].map(presentedToolCall),
+      toolCalls: [...this.#toolActivity.values()].map((call) => {
+        const detail = this.#usageDetails.get(call.turnId);
+        return presentedToolCall({
+          ...call,
+          usage: detail?.usage,
+          usageTurn: detail?.turn,
+          usageSharedAcross: detail?.toolCallIds.length,
+        });
+      }),
       ...(this.reasoning
         ? { reasoning: presentedReasoning(this.reasoning) }
         : {}),
@@ -352,6 +391,7 @@ export class RunTotals {
         : { stopReason: this.#stopReason }),
       turns: this.#turns,
       usage: this.#usage,
+      usageDetails: [...this.#usageDetails.values()],
       tools: [...this.#tools.values()],
       ...(this.#context
         ? { context: { ...this.#context, compactions: this.#compactions } }
@@ -360,6 +400,22 @@ export class RunTotals {
       ...(failure ? { error: failure } : {}),
     };
   }
+}
+
+function addUsage(current, addition) {
+  const result = { ...(current ?? {}) };
+  for (const field of [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "reasoningTokens",
+    "estimatedCostUsd",
+  ]) {
+    if (typeof addition?.[field] !== "number") continue;
+    result[field] = (result[field] ?? 0) + addition[field];
+  }
+  return result;
 }
 
 function appendMissingSuffix(target, streamed, completed) {

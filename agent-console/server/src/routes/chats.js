@@ -157,12 +157,18 @@ chatsRouter.post(
     for (const file of files) {
       const descriptor = describeAttachment(file.originalname);
       if (!descriptor.supported) {
-        rejected.push({ filename: file.originalname, reason: descriptor.reason });
+        rejected.push({
+          filename: file.originalname,
+          reason: descriptor.reason,
+        });
         continue;
       }
       const extraction = extractAttachment(file.buffer, descriptor);
       if (!extraction.ok) {
-        rejected.push({ filename: file.originalname, reason: extraction.reason });
+        rejected.push({
+          filename: file.originalname,
+          reason: extraction.reason,
+        });
         continue;
       }
       const stored = await storeAttachmentBytes({
@@ -626,7 +632,8 @@ export async function performChatContextCompaction(
         updatedAt: completedAt,
         "session.status": previousStatus,
         "session.origin": session?.origin ?? leased.session?.origin ?? "new",
-        "session.storage": session?.storage ?? leased.session?.storage ?? "custom",
+        "session.storage":
+          session?.storage ?? leased.session?.storage ?? "custom",
         "session.resumed": session?.resumed === true,
         "session.historyMessageCount":
           session?.historyMessageCount ?? leased.messages.length,
@@ -678,6 +685,19 @@ async function appendResult(chat, invocation, requestId) {
       : {}),
     ...(invocation.result.toolCalls?.length
       ? { toolCalls: invocation.result.toolCalls }
+      : {}),
+    ...(invocation.result.usage
+      ? {
+          usage: {
+            ...invocation.result.usage,
+            totalTokens:
+              (invocation.result.usage.inputTokens ?? 0) +
+              (invocation.result.usage.outputTokens ?? 0),
+          },
+        }
+      : {}),
+    ...(invocation.result.usageDetails?.length
+      ? { usageDetails: invocation.result.usageDetails }
       : {}),
     ...(invocation.result.reasoning
       ? { reasoning: invocation.result.reasoning }

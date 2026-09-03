@@ -116,22 +116,18 @@ export function validateStoredSession(value: unknown): StoredSession {
   ) {
     throw new AgentHarnessError('Stored session is invalid', 'INVALID_STORED_SESSION');
   }
-  const session = value as StoredSession & {
-    preparedContext?: unknown;
-    /** Legacy derived state is accepted only so old canonical sessions still load. */
-    contextIntelligence?: unknown;
-  };
+  const session = value as StoredSession & { preparedContext?: unknown };
   const preparedContext = validatePreparedContextCheckpoint(
     session.preparedContext,
     session.messages,
   );
-  const {
-    preparedContext: _untrustedPrepared,
-    contextIntelligence: _legacyContextIntelligence,
-    ...canonical
-  } = session;
   return {
-    ...canonical,
+    version: session.version,
+    id: session.id,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    messages: session.messages,
+    metadata: session.metadata,
     ...(preparedContext === undefined ? {} : { preparedContext }),
   };
 }

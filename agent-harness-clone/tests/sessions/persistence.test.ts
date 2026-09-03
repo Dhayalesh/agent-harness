@@ -168,31 +168,29 @@ test('prepared checkpoints are separate from canonical history and reject rewrit
   assert.deepEqual(validateStoredSession(rewritten).messages, rewritten.messages);
 });
 
-
-test('legacy Context Intelligence state is accepted and discarded on load', () => {
+test('stored session validation keeps only canonical fields', () => {
   const timestamp = '2026-01-01T00:00:00.000Z';
-  const legacy = {
+  const stored = {
     version: 1,
-    id: 'legacy-context-state',
+    id: 'canonical-fields-only',
     createdAt: timestamp,
     updatedAt: timestamp,
     messages: [textMessage('request', 'user', 'Continue', timestamp)],
-    metadata: { source: 'legacy' },
-    contextIntelligence: {
-      version: 1,
-      retrieval: { iterations: 3 },
-      rawRequest: 'derived state must not survive',
-    },
+    metadata: { source: 'persistence-test' },
+    retiredDerivedState: { rawRequest: 'must not survive' },
   };
 
-  const validated = validateStoredSession(legacy);
+  const validated = validateStoredSession(stored);
 
-  assert.equal(validated.id, legacy.id);
-  assert.deepEqual(validated.messages, legacy.messages);
-  assert.deepEqual(validated.metadata, legacy.metadata);
-  assert.equal('contextIntelligence' in validated, false);
+  assert.deepEqual(Object.keys(validated).sort(), [
+    'createdAt',
+    'id',
+    'messages',
+    'metadata',
+    'updatedAt',
+    'version',
+  ]);
 });
-
 
 test('resumed prepared checkpoints retain canonical tool-result provenance', async () => {
   const timestamp = '2026-01-01T00:00:00.000Z';

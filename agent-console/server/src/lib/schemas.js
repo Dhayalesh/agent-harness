@@ -593,9 +593,38 @@ export const runtimeResultSchema = z
         outputTokens: z.number().nonnegative(),
         cacheReadTokens: z.number().nonnegative().optional(),
         cacheWriteTokens: z.number().nonnegative().optional(),
+        reasoningTokens: z.number().nonnegative().optional(),
         estimatedCostUsd: z.number().nonnegative().optional(),
       })
       .passthrough(),
+    /**
+     * One entry per model request. A request can produce several tool calls, so
+     * toolCallIds is an array and the reported usage must not be multiplied by its
+     * length when a client presents it beside those calls.
+     */
+    usageDetails: z
+      .array(
+        z
+          .object({
+            turnId: z.string().min(1).max(300),
+            turn: z.number().int().positive().optional(),
+            usage: z
+              .object({
+                inputTokens: z.number().nonnegative(),
+                outputTokens: z.number().nonnegative(),
+                cacheReadTokens: z.number().nonnegative().optional(),
+                cacheWriteTokens: z.number().nonnegative().optional(),
+                reasoningTokens: z.number().nonnegative().optional(),
+                estimatedCostUsd: z.number().nonnegative().optional(),
+              })
+              .passthrough()
+              .optional(),
+            toolCallIds: z.array(z.string().min(1).max(300)).max(50),
+          })
+          .strict(),
+      )
+      .max(1_000)
+      .optional(),
     tools: z.array(
       z
         .object({
