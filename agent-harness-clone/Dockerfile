@@ -8,7 +8,9 @@
 #
 # The contract this serves is POST /invocations and GET /ping on 8080.
 
-FROM --platform=linux/arm64 node:22-bookworm-slim AS build
+ARG NODE_IMAGE=public.ecr.aws/docker/library/node:22-bookworm-slim
+
+FROM --platform=linux/arm64 ${NODE_IMAGE} AS build
 WORKDIR /app
 
 # Dependencies first, so a source-only change does not reinstall them.
@@ -23,7 +25,7 @@ RUN npm run build
 # `--omit=dev` after the build, not before: tsc and its types are devDependencies.
 RUN npm prune --omit=dev
 
-FROM --platform=linux/arm64 node:22-bookworm-slim AS runtime
+FROM --platform=linux/arm64 ${NODE_IMAGE} AS runtime
 WORKDIR /app
 
 # git is here because payloads commonly name the shell tool and prompts ask for

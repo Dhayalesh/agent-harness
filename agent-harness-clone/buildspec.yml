@@ -7,6 +7,12 @@ env:
     AWS_DEFAULT_OUTPUT: json
     DOCKER_BUILDKIT: "1"
 
+    # Keep public image pulls inside AWS. CodeBuild egress shares Docker Hub's
+    # anonymous rate limit, which can make otherwise healthy builds fail before
+    # the application image is built.
+    BINFMT_IMAGE: "public.ecr.aws/eks-distro-build-tooling/binfmt-misc:qemu-v7.0.0"
+    ARM64_TEST_IMAGE: "public.ecr.aws/docker/library/alpine:3.22"
+
     # Deployment configuration.
     # Application/runtime variables remain in CodeBuild Project Settings.
     AWS_REGION: "us-east-1"
@@ -175,7 +181,7 @@ phases:
         docker run \
           --privileged \
           --rm \
-          tonistiigi/binfmt:latest \
+          "$BINFMT_IMAGE" \
           --install arm64
 
         echo "=========================================="
@@ -186,7 +192,7 @@ phases:
           docker run \
             --rm \
             --platform linux/arm64 \
-            arm64v8/alpine:latest \
+            "$ARM64_TEST_IMAGE" \
             uname -m
         )"
 
