@@ -118,7 +118,6 @@ function presentedUsage(usage) {
     "cacheReadTokens",
     "cacheWriteTokens",
     "reasoningTokens",
-    "estimatedCostUsd",
   ]) {
     if (Number.isFinite(usage[field]) && usage[field] >= 0) {
       result[field] = usage[field];

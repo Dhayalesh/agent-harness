@@ -21,7 +21,6 @@ import {
   PageHeader,
   SectionCard,
   StatusPill,
-  cost,
   duration,
   relative,
   tokens,
@@ -232,7 +231,6 @@ export function DashboardPage() {
                 <TableColumn>Agent</TableColumn>
                 <TableColumn>Status</TableColumn>
                 <TableColumn>Tokens</TableColumn>
-                <TableColumn>Cost</TableColumn>
                 <TableColumn>Duration</TableColumn>
                 <TableColumn>When</TableColumn>
                 <TableColumn hideHeader>Open</TableColumn>
@@ -248,9 +246,6 @@ export function DashboardPage() {
                     </TableCell>
                     <TableCell className="text-default-500">
                       {tokens(run.usage)}
-                    </TableCell>
-                    <TableCell className="font-mono text-default-500">
-                      {cost(run.cost ?? run.usage)}
                     </TableCell>
                     <TableCell className="text-default-500">
                       {duration(run.durationMs)}

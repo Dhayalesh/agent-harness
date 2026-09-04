@@ -41,7 +41,6 @@ const capabilities = {
   supportsTools: true,
   supportsStreaming: true,
   supportsReasoning: true,
-  reportsCost: false,
 };
 
 const openAiCompatibleProvider = {

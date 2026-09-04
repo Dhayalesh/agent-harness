@@ -162,12 +162,6 @@ export function ModelProvidersPage() {
                 }
                 meta={[
                   {
-                    label: "Input / output",
-                    value: modelProvider.pricing
-                      ? `${rate(modelProvider.pricing.inputPerMillionTokens)} / ${rate(modelProvider.pricing.outputPerMillionTokens)} per 1M`
-                      : "unpriced",
-                  },
-                  {
                     label: "Context",
                     value: `${
                       modelProvider.capabilities?.contextWindow?.toLocaleString() ??
@@ -198,11 +192,3 @@ export function ModelProvidersPage() {
   );
 }
 
-function rate(value) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value ?? 0);
-}

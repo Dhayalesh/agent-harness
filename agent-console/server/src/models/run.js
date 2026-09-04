@@ -8,7 +8,6 @@ const usageSchema = new mongoose.Schema(
     cacheReadTokens: Number,
     cacheWriteTokens: Number,
     reasoningTokens: Number,
-    estimatedCostUsd: Number,
   },
   { _id: false, strict: false },
 );
@@ -16,29 +15,6 @@ const usageSchema = new mongoose.Schema(
 const toolSummarySchema = new mongoose.Schema(
   { name: String, calls: Number, errors: Number },
   { _id: false, suppressReservedKeysWarning: true },
-);
-
-const costSchema = new mongoose.Schema(
-  {
-    currency: String,
-    totalUsd: Number,
-    inputUsd: Number,
-    outputUsd: Number,
-    cacheReadUsd: Number,
-    cacheWriteUsd: Number,
-    reasoningUsd: Number,
-    requestUsd: Number,
-    requestCount: Number,
-    source: String,
-    estimated: Boolean,
-    modelProviderId: String,
-    modelProviderName: String,
-    provider: String,
-    model: String,
-    pricing: mongoose.Schema.Types.Mixed,
-    calculatedAt: String,
-  },
-  { _id: false, strict: false },
 );
 
 /**
@@ -100,7 +76,6 @@ const runSchema = new mongoose.Schema(
     stopReason: String,
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
-    cost: { type: costSchema },
     usageDetails: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     context: { type: contextUsageSchema },
     tools: { type: [toolSummarySchema], default: [] },
@@ -165,7 +140,6 @@ export function runSummaries(filter = {}, limit = 50, sortDirection = -1) {
         stopReason: 1,
         turns: 1,
         usage: 1,
-        cost: 1,
         tools: 1,
         agentRuntimeArn: 1,
         agentRuntimeQualifier: 1,

@@ -277,7 +277,6 @@ export class RunTotals {
       "cacheReadTokens",
       "cacheWriteTokens",
       "reasoningTokens",
-      "estimatedCostUsd",
     ]) {
       if (typeof usage[field] !== "number") continue;
       this.#usage[field] = (this.#usage[field] ?? 0) + usage[field];
@@ -410,7 +409,6 @@ function addUsage(current, addition) {
     "cacheReadTokens",
     "cacheWriteTokens",
     "reasoningTokens",
-    "estimatedCostUsd",
   ]) {
     if (typeof addition?.[field] !== "number") continue;
     result[field] = (result[field] ?? 0) + addition[field];

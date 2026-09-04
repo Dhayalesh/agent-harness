@@ -10,8 +10,6 @@ const modelProviderSchema = new mongoose.Schema(
     auth: { type: mongoose.Schema.Types.Mixed, required: true },
     capabilities: { type: mongoose.Schema.Types.Mixed, required: true },
     wire: mongoose.Schema.Types.Mixed,
-    /** Server-discovered rate card; never entered manually in the console. */
-    pricing: mongoose.Schema.Types.Mixed,
     headers: { type: mongoose.Schema.Types.Mixed, select: false },
     enabled: { type: Boolean, required: true, default: true, index: true },
     isDefault: Boolean,

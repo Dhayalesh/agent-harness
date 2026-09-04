@@ -8,7 +8,6 @@ import {
 import { buildPayload } from "./payload.js";
 import { nowIso } from "./platform.js";
 import { RunTotals } from "./run-totals.js";
-import { applyUsageCost } from "./usage-cost.js";
 import {
   artifactMetadata,
   hydrateRuntimeArtifacts,
@@ -64,7 +63,6 @@ export async function invokeStoredAgent({
         hydrateRuntimeToolCalls(hydrateRuntimeArtifacts(invocation.result)),
       ),
     );
-    priceResult(invocation.result, resolved);
   } catch (error) {
     await failRun(run, error);
     throw error;
@@ -157,7 +155,6 @@ export async function streamStoredAgent({
       durationMs: Date.now() - started,
       runtimeSessionId,
     });
-    priceResult(result, resolved);
     result.status = "error";
     result.error = {
       code: "RUNTIME_STREAM_FAILED",
@@ -174,7 +171,6 @@ export async function streamStoredAgent({
     durationMs: Date.now() - started,
     runtimeSessionId,
   });
-  priceResult(result, resolved);
   applyRuntimeResult(run, result, stream);
   await run.save();
 
@@ -251,7 +247,6 @@ function applyRuntimeResult(run, result, invocation) {
       (result.usage?.inputTokens ?? 0) + (result.usage?.outputTokens ?? 0),
   };
   run.usageDetails = result.usageDetails;
-  run.cost = result.cost;
   // Left unset rather than zeroed when the runtime reported none, so "no context
   // layer" stays distinguishable from "an empty context".
   if (result.context) run.context = result.context;
@@ -265,14 +260,4 @@ function applyRuntimeResult(run, result, invocation) {
   run.traceId = invocation.traceId;
   if (result.error) run.error = result.error;
   run.updatedAt = nowIso();
-}
-
-function priceResult(result, resolved) {
-  return applyUsageCost(result, {
-    pricing: resolved.modelProvider.value.pricing,
-    modelProviderId: resolved.modelProvider.document._id.toString(),
-    modelProviderName: resolved.modelProvider.value.name,
-    provider: resolved.modelProvider.value.provider,
-    model: resolved.agent.value.model ?? resolved.modelProvider.value.model,
-  });
 }

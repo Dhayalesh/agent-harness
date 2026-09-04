@@ -178,32 +178,6 @@ export function ChatPage() {
     selectedAgent,
   ]);
 
-  const sessionSpend = useMemo(() => {
-    const completed = (chat?.messages ?? []).filter(
-      (message) => message.role !== "user" && hasTokenUsage(message.usage),
-    );
-    const entries = live?.usage
-      ? [...completed, { usage: live.usage }]
-      : completed;
-    const priced = entries.filter((message) =>
-      Number.isFinite(
-        message.cost?.totalUsd ?? message.usage?.estimatedCostUsd,
-      ),
-    );
-    return {
-      hasUsage: entries.length > 0,
-      complete: entries.length > 0 && priced.length === entries.length,
-      totalUsd: priced.reduce(
-        (total, message) =>
-          total +
-          (message.cost?.totalUsd ?? message.usage?.estimatedCostUsd ?? 0),
-        0,
-      ),
-      pricedTurns: priced.length,
-      turns: entries.length,
-    };
-  }, [chat?.messages, live?.usage]);
-
   const visibleChats = useMemo(() => {
     const needle = search.trim().toLowerCase();
     if (!needle) return chats;
@@ -811,32 +785,6 @@ export function ChatPage() {
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  {sessionSpend.hasUsage && (
-                    <Tooltip
-                      content={
-                        sessionSpend.complete
-                          ? `Cost across ${sessionSpend.turns} model turn${sessionSpend.turns === 1 ? "" : "s"}`
-                          : `${sessionSpend.pricedTurns} of ${sessionSpend.turns} model turns have pricing`
-                      }
-                      size="sm"
-                    >
-                      <Chip
-                        size="sm"
-                        variant="flat"
-                        color="secondary"
-                        classNames={{
-                          base: "hidden h-6 rounded-full md:flex",
-                          content: "px-1 font-mono text-tiny font-semibold",
-                        }}
-                      >
-                        {sessionSpend.complete
-                          ? `${formatCost(sessionSpend.totalUsd)} session`
-                          : sessionSpend.pricedTurns
-                            ? `${formatCost(sessionSpend.totalUsd)} tracked`
-                            : "Unpriced session"}
-                      </Chip>
-                    </Tooltip>
-                  )}
                   <Chip
                     size="sm"
                     variant="flat"
@@ -1154,15 +1102,6 @@ export function ChatPage() {
                         <>
                           <StatusPill status={lastRun.status} />
                           <span>{duration(lastRun.durationMs)}</span>
-                          {(lastRun.cost ||
-                            Number.isFinite(lastRun.usage?.estimatedCostUsd)) && (
-                            <span className="font-mono">
-                              {formatCost(
-                                lastRun.cost?.totalUsd ??
-                                  lastRun.usage.estimatedCostUsd,
-                              )}
-                            </span>
-                          )}
                           <HeroLink href={`/runs/${lastRun.id}`} size="sm">
                             Open run
                           </HeroLink>
@@ -1578,7 +1517,6 @@ function Message({ message, agentName, onOpenDocument }) {
           {role !== "user" && hasTokenUsage(message.usage) && (
             <TokenUsageDetails
               usage={message.usage}
-              costInfo={message.cost}
               usageDetails={message.usageDetails}
               toolCalls={message.toolCalls}
             />
@@ -2234,7 +2172,6 @@ function ThinkingBlock({ reasoning, live = false }) {
 
 function TokenUsageDetails({
   usage,
-  costInfo,
   usageDetails = [],
   toolCalls = [],
   live = false,
@@ -2244,15 +2181,10 @@ function TokenUsageDetails({
     <details className="group/usage mt-3 overflow-hidden rounded-medium border border-divider bg-content2/45">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-tiny [&::-webkit-details-marker]:hidden">
         <Icon name="tokens" className="h-4 w-4 text-secondary" />
-        <span className="font-semibold text-foreground">Usage &amp; cost</span>
+        <span className="font-semibold text-foreground">Usage</span>
         <span className="rounded-full bg-secondary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-secondary">
           {formatTokenCount(tokenTotal(usage))}
         </span>
-        {Number.isFinite(usage?.estimatedCostUsd) && (
-          <span className="rounded-full bg-success/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-success-700 dark:text-success-400">
-            {formatCost(usage.estimatedCostUsd)}
-          </span>
-        )}
         <span className="hidden text-default-400 sm:inline">
           {formatTokenCount(usage.inputTokens ?? 0, "in")} ·{" "}
           {formatTokenCount(usage.outputTokens ?? 0, "out")}
@@ -2288,14 +2220,8 @@ function TokenUsageDetails({
           </section>
         )}
         <p className="text-[10px] leading-4 text-default-400">
-          Provider-reported token usage. Cost uses the provider charge when
-          present, otherwise the model's stored rate snapshot. Cached and
-          reasoning tokens are subsets and are not added to the total again.
-          {costInfo?.source === "provider-reported"
-            ? " This charge was reported by the provider."
-            : costInfo?.estimated
-              ? " This charge is an estimate from the saved rate card."
-              : ""}
+          Provider-reported token usage. Cached and reasoning tokens are
+          subsets and are not added to the total again.
         </p>
       </div>
     </details>
@@ -2311,12 +2237,9 @@ function UsageMetricGrid({ usage }) {
     ["Cache write", usage?.cacheWriteTokens],
     ["Reasoning", usage?.reasoningTokens],
   ].filter(([, value], index) => index < 3 || Number.isFinite(value));
-  if (Number.isFinite(usage?.estimatedCostUsd)) {
-    metrics.push(["Estimated cost", usage.estimatedCostUsd, "cost"]);
-  }
   return (
     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-      {metrics.map(([label, value, kind]) => (
+      {metrics.map(([label, value]) => (
         <div
           key={label}
           className="rounded-medium border border-divider bg-content1 px-2.5 py-2"
@@ -2325,9 +2248,7 @@ function UsageMetricGrid({ usage }) {
             {label}
           </dt>
           <dd className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
-            {kind === "cost"
-              ? formatCost(value)
-              : Number(value ?? 0).toLocaleString()}
+            {Number(value ?? 0).toLocaleString()}
           </dd>
         </div>
       ))}
@@ -2363,15 +2284,6 @@ function UsageStepRow({ detail, index, toolCalls }) {
 
 function formatTokenCount(value, suffix = "tokens") {
   return `${Number(value ?? 0).toLocaleString()} ${suffix}`;
-}
-
-function formatCost(value) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 4,
-    maximumFractionDigits: 6,
-  }).format(value ?? 0);
 }
 
 function ToolHistory({ toolCalls, usageDetails = [], live = false }) {

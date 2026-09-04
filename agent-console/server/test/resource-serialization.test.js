@@ -27,7 +27,6 @@ test("serializes model providers without credential or header values", () => {
       supportsTools: true,
       supportsStreaming: true,
       supportsReasoning: false,
-      reportsCost: false,
     },
     headers: {
       "X-OpenRouter-Title": "Agent Console",

@@ -22,7 +22,6 @@ import {
   SectionCard,
   StatTile,
   StatusPill,
-  cost,
   duration,
   tokens,
   useConfirm,
@@ -98,18 +97,9 @@ export function RunDetailPage() {
 
       <ErrorNote error={error} />
 
-      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
+      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <StatTile label="Turns" value={run.turns ?? "—"} />
         <StatTile label="Tokens" value={tokens(run.usage)} />
-        <StatTile
-          label={run.cost?.estimated ? "Estimated cost" : "Cost"}
-          value={cost(run.cost ?? run.usage)}
-          detail={
-            run.cost?.source === "provider-reported"
-              ? "Provider reported"
-              : undefined
-          }
-        />
         <StatTile label="Duration" value={duration(run.durationMs)} />
         <StatTile label="Stop reason" value={run.stopReason ?? "—"} />
       </div>
@@ -220,63 +210,6 @@ export function RunDetailPage() {
         </SectionCard>
 
         <SectionCard
-          title="Cost breakdown"
-          description="The charge and rate snapshot stored when this run completed."
-        >
-          {run.cost ? (
-            <>
-              <MetaGrid
-                wide
-                items={[
-                  { label: "Total", value: cost(run.cost) },
-                  { label: "Input", value: moneyOrDash(run.cost.inputUsd) },
-                  { label: "Output", value: moneyOrDash(run.cost.outputUsd) },
-                  {
-                    label: "Cache read",
-                    value: moneyOrDash(run.cost.cacheReadUsd),
-                  },
-                  {
-                    label: "Cache write",
-                    value: moneyOrDash(run.cost.cacheWriteUsd),
-                  },
-                  {
-                    label: "Reasoning",
-                    value: moneyOrDash(run.cost.reasoningUsd),
-                  },
-                  {
-                    label: "Provider",
-                    value: run.cost.modelProviderName ?? run.cost.provider,
-                  },
-                  {
-                    label: "Model",
-                    value: <CopyableId value={run.cost.model} />,
-                  },
-                  {
-                    label: "Method",
-                    value:
-                      run.cost.source === "provider-reported"
-                        ? "Provider-reported charge"
-                        : "Rate-card estimate",
-                  },
-                ]}
-              />
-              {run.cost.pricing && (
-                <p className="mt-3 text-tiny text-default-400">
-                  Rate snapshot:{" "}
-                  {moneyOrDash(run.cost.pricing.inputPerMillionTokens)} input /{" "}
-                  {moneyOrDash(run.cost.pricing.outputPerMillionTokens)} output per
-                  1M tokens · {run.cost.pricing.sourceLabel}
-                </p>
-              )}
-            </>
-          ) : (
-            <p className="text-small text-default-500">
-              No provider charge or matching rate card was available for this historical run.
-            </p>
-          )}
-        </SectionCard>
-
-        <SectionCard
           title="Token detail"
           description="The usage record exactly as it was stored."
           bodyClassName="px-5 pb-5 pt-1"
@@ -313,6 +246,3 @@ function CopyableId({ value }) {
   );
 }
 
-function moneyOrDash(value) {
-  return Number.isFinite(value) ? cost({ totalUsd: value }) : "—";
-}

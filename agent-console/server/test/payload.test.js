@@ -43,7 +43,6 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
       supportsTools: true,
       supportsStreaming: true,
       supportsReasoning: false,
-      reportsCost: false,
     },
     enabled: true,
     createdAt: timestamp,

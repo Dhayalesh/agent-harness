@@ -24,8 +24,7 @@ The console reads and writes the historical platform collections in place:
   `modelProviderId`, ordered `mcpServerIds`, and ordered `skills[].skillId` entries.
   It also carries the explicit tool allowlist, `stream` response preference, and
   deterministic context limits such as `compactionThresholdPercent`.
-- `model_providers` stores model configuration, its API credential, and the latest
-  server-discovered USD rate card for the selected model.
+- `model_providers` stores model configuration and its API credential.
 - `mcp_servers` stores stdio or HTTP MCP configuration and its credentials,
   environment, and headers.
 - `skills` stores skill metadata and an S3 URI for the full skill document.
@@ -34,9 +33,9 @@ It adds two console collections in the same database:
 
 - `chats` stores conversation messages, a stable AgentCore runtime session ID, and
   the latest deterministic context-usage snapshot and bounded inspection timeline.
-- `runs` stores invocation status, output, usage, an immutable cost/rate snapshot,
-  tool counts, timing, AgentCore metadata, and any context-management action reported
-  by the runtime. A chat-originated run also has a `chatId`.
+- `runs` stores invocation status, output, usage, tool counts, timing, AgentCore
+  metadata, and any context-management action reported by the runtime. A
+  chat-originated run also has a `chatId`.
 
 The intended database is `trueai_agent_platform`. A pathless MongoDB URI falls back to
 that database rather than MongoDB's implicit `test` database. `MONGODB_DB_NAME` overrides
@@ -64,30 +63,7 @@ carry inline API keys and there is no environment-key fallback. The deployed har
 accepts `openrouter`, `nvidia`, `bedrock`, and `openai-compatible` provider identities
 with bearer authentication. NVIDIA NIM and Amazon Bedrock's OpenAI-compatible
 Runtime/Mantle endpoints use the common chat-completions adapter while retaining their
-identity for model and price discovery.
-
-### Automated usage cost
-
-The model-provider form has **Fetch models & pricing**. The server calls that
-provider's `/models` endpoint, returns the routable model IDs, and attaches token
-limits, capabilities, and pricing when available. OpenRouter rates come directly from
-its model catalogue. Bedrock availability comes from its regional OpenAI-compatible
-endpoint and is joined by exact model ID to the cached LiteLLM rate catalogue (whose
-rows link back to their pricing source). NVIDIA's public hosted developer endpoint is
-marked as zero-cost prototyping; self-hosted or contract-priced NIM endpoints remain
-unpriced unless their API reports a charge.
-
-At run completion the console uses this precedence:
-
-1. Provider-reported request cost, when present (the billing authority).
-2. A local estimate from the selected model's saved input/output/cache/reasoning rate
-   snapshot.
-3. Explicitly `Unpriced` when neither exists. It never borrows another model's rate.
-
-Every run retains the rate snapshot used, so later catalogue price changes do not
-rewrite history. Run lists and details show the charge and calculation method; chat
-shows each turn's cost and the running session total. These are inference charges,
-not infrastructure, AgentCore, network, or enterprise-license costs.
+identity for model discovery.
 
 ## Run it
 

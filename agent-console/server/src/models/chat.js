@@ -8,7 +8,6 @@ const usageSchema = new mongoose.Schema(
     cacheReadTokens: Number,
     cacheWriteTokens: Number,
     reasoningTokens: Number,
-    estimatedCostUsd: Number,
   },
   { _id: false, strict: false },
 );
@@ -116,7 +115,6 @@ const chatMessageSchema = new mongoose.Schema(
     artifacts: { type: [artifactSchema], default: undefined },
     toolCalls: { type: [toolCallSchema], default: undefined },
     usage: { type: usageSchema },
-    cost: { type: mongoose.Schema.Types.Mixed },
     usageDetails: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     runId: String,
     createdAt: { type: String, required: true },

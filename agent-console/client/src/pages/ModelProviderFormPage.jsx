@@ -2,7 +2,6 @@ import {
   Autocomplete,
   AutocompleteItem,
   Button,
-  Chip,
   Input,
   Select,
   SelectItem,
@@ -36,8 +35,6 @@ const EMPTY = {
   supportsTools: true,
   supportsStreaming: true,
   supportsReasoning: false,
-  reportsCost: true,
-  pricing: null,
   headers: [],
   enabled: true,
   isDefault: false,
@@ -54,6 +51,19 @@ export function ModelProviderFormPage({ mode }) {
   const [catalogue, setCatalogue] = useState([]);
   const [catalogueError, setCatalogueError] = useState(null);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [providers, setProviders] = useState([EMPTY.provider]);
+
+  useEffect(() => {
+    void api
+      .tools()
+      .then(({ providers: found }) => {
+        if (found?.length) setProviders(found);
+      })
+      .catch(() => {
+        // The provider dropdown falls back to the current value; the rest of
+        // the form still works without the discovered adapter list.
+      });
+  }, []);
 
   useEffect(() => {
     if (!editing) return;
@@ -78,9 +88,6 @@ export function ModelProviderFormPage({ mode }) {
           supportsReasoning:
             modelProvider.capabilities?.supportsReasoning ??
             EMPTY.supportsReasoning,
-          reportsCost:
-            modelProvider.capabilities?.reportsCost ?? EMPTY.reportsCost,
-          pricing: modelProvider.pricing ?? null,
           headers: rowsFromSecretMap(
             modelProvider.headers,
             modelProvider.headerNames,
@@ -121,8 +128,6 @@ export function ModelProviderFormPage({ mode }) {
       ...current,
       provider,
       baseURL: providerDefaultUrl(provider),
-      pricing: null,
-      reportsCost: provider === "openrouter",
     }));
   };
 
@@ -130,7 +135,6 @@ export function ModelProviderFormPage({ mode }) {
     setForm((current) => ({
       ...current,
       model,
-      pricing: current.pricing?.model === model ? current.pricing : null,
     }));
 
   const selectModel = (key) => {
@@ -182,13 +186,7 @@ export function ModelProviderFormPage({ mode }) {
         supportsTools: form.supportsTools,
         supportsStreaming: form.supportsStreaming,
         supportsReasoning: form.supportsReasoning,
-        reportsCost: form.reportsCost,
       },
-      ...(form.pricing?.model === form.model
-        ? { pricing: form.pricing }
-        : editing
-          ? { pricing: null }
-          : {}),
       headers: secretMapFromRows(form.headers),
       enabled: form.enabled,
       isDefault: form.isDefault,
@@ -257,10 +255,9 @@ export function ModelProviderFormPage({ mode }) {
               isInvalid={Boolean(fieldErrors.provider)}
               errorMessage={fieldErrors.provider}
             >
-              <SelectItem key="openrouter">openrouter</SelectItem>
-              <SelectItem key="nvidia">nvidia</SelectItem>
-              <SelectItem key="bedrock">bedrock</SelectItem>
-              <SelectItem key="openai-compatible">openai-compatible</SelectItem>
+              {providers.map((provider) => (
+                <SelectItem key={provider}>{provider}</SelectItem>
+              ))}
             </Select>
             {catalogue.length ? (
               <Autocomplete
@@ -334,7 +331,7 @@ export function ModelProviderFormPage({ mode }) {
             <div className="min-w-0 flex-1">
               <p className="text-small font-medium">Automatic model catalogue</p>
               <p className="text-tiny text-default-500">
-                Fetch model IDs, token limits, capabilities, and available input/output rates from the connected provider.
+                Fetch model IDs, token limits, and capabilities from the connected provider.
               </p>
             </div>
             <Button
@@ -346,17 +343,15 @@ export function ModelProviderFormPage({ mode }) {
               isDisabled={fetchingModels || (!editing && !form.apiKey.trim())}
               onPress={fetchModels}
             >
-              {catalogue.length ? "Refresh models" : "Fetch models & pricing"}
+              {catalogue.length ? "Refresh models" : "Fetch models"}
             </Button>
           </div>
           {catalogueError && <ErrorNote error={catalogueError} />}
           {catalogue.length > 0 && (
             <p className="text-tiny text-default-500">
-              {catalogue.length.toLocaleString()} models fetched ·{" "}
-              {catalogue.filter((model) => model.pricing).length.toLocaleString()} with pricing
+              {catalogue.length.toLocaleString()} models fetched
             </p>
           )}
-          <PricingSummary pricing={form.pricing} model={form.model} />
         </SectionCard>
 
         <SectionCard
@@ -455,11 +450,6 @@ export function ModelProviderFormPage({ mode }) {
               isSelected={form.supportsReasoning}
               onValueChange={set("supportsReasoning")}
             />
-            <ToggleCard
-              label="Reports cost"
-              isSelected={form.reportsCost}
-              onValueChange={set("reportsCost")}
-            />
           </div>
         </SectionCard>
 
@@ -493,43 +483,6 @@ export function ModelProviderFormPage({ mode }) {
   );
 }
 
-function PricingSummary({ pricing, model }) {
-  if (!pricing || pricing.model !== model) {
-    return (
-      <div className="rounded-medium border border-warning-200 bg-warning-50 px-3 py-2.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400">
-        No verified rate card is attached to this model yet. Provider-reported cost will still be stored when available; otherwise runs remain explicitly unpriced.
-      </div>
-    );
-  }
-  return (
-    <div className="flex flex-col gap-2 rounded-medium border border-success-200 bg-success-50 px-3 py-3 dark:border-success-500/25 dark:bg-success-500/10">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-small font-semibold text-success-700 dark:text-success-400">
-          Pricing synced
-        </span>
-        <Chip size="sm" variant="flat" color="success" className="h-5">
-          USD / 1M tokens
-        </Chip>
-      </div>
-      <p className="font-mono text-small text-foreground">
-        {money(pricing.inputPerMillionTokens)} input ·{" "}
-        {money(pricing.outputPerMillionTokens)} output
-      </p>
-      <p className="text-tiny text-default-500">
-        <a
-          href={pricing.sourceUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="text-secondary hover:underline"
-        >
-          {pricing.sourceLabel}
-        </a>{" "}
-        · fetched {new Date(pricing.fetchedAt).toLocaleString()}
-      </p>
-    </div>
-  );
-}
-
 function applyCatalogModel(current, selected) {
   const contextWindow = selected.contextWindow ?? current.contextWindow;
   let maxOutputTokens = selected.maxOutputTokens ?? current.maxOutputTokens;
@@ -549,8 +502,6 @@ function applyCatalogModel(current, selected) {
       selected.supportsStreaming ?? current.supportsStreaming,
     supportsReasoning:
       selected.supportsReasoning ?? current.supportsReasoning,
-    reportsCost: Boolean(selected.pricing),
-    pricing: selected.pricing ?? null,
   };
 }
 
@@ -562,11 +513,3 @@ function providerDefaultUrl(provider) {
   return "";
 }
 
-function money(value) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 4,
-  }).format(value ?? 0);
-}

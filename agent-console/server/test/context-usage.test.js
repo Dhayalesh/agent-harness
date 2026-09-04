@@ -66,7 +66,6 @@ function fixtures({ contextWindow = 256_000, maxOutputTokens = 16_000 } = {}) {
       supportsTools: true,
       supportsStreaming: true,
       supportsReasoning: false,
-      reportsCost: false,
     },
     enabled: true,
     createdAt: timestamp,

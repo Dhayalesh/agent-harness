@@ -4,7 +4,6 @@ const TOKEN_FIELDS = [
   "cacheReadTokens",
   "cacheWriteTokens",
   "reasoningTokens",
-  "estimatedCostUsd",
 ];
 
 /** Total model tokens. Cache and reasoning figures are subsets, not extra tokens. */
