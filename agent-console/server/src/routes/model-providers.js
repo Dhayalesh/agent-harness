@@ -1,8 +1,9 @@
 import express from "express";
 import { config } from "../config.js";
-import { asyncHandler, conflict } from "../lib/http-error.js";
+import { asyncHandler, badRequest, conflict } from "../lib/http-error.js";
 import {
   modelProviderCreateSchema,
+  modelCatalogDiscoverySchema,
   modelProviderRecordSchema,
   modelProviderUpdateSchema,
   parseOrThrow,
@@ -16,8 +17,34 @@ import {
   safeModelProvider,
   saveMergedRecord,
 } from "../services/platform.js";
+import { discoverProviderModels } from "../services/model-catalog.js";
 
 export const modelProvidersRouter = express.Router();
+
+modelProvidersRouter.post("/discover", asyncHandler(async (request, response) => {
+  const input = parseOrThrow(modelCatalogDiscoverySchema, request.body);
+  let stored;
+  if (input.modelProviderId) {
+    stored = await loadModelProvider(input.modelProviderId, { withSecrets: true });
+  }
+  const suppliedKey = input.apiKey?.trim();
+  const mayReuseStoredKey =
+    stored &&
+    stored.provider === input.provider &&
+    sameEndpoint(stored.baseURL, input.baseURL);
+  if (!suppliedKey && stored?.apiKey && !mayReuseStoredKey) {
+    throw badRequest(
+      "Enter the API key again after changing the provider or base URL.",
+    );
+  }
+  const catalogue = await discoverProviderModels({
+    provider: input.provider,
+    baseURL: input.baseURL,
+    // A stored credential can only travel to the endpoint it was saved for.
+    apiKey: suppliedKey || (mayReuseStoredKey ? stored.apiKey : undefined),
+  });
+  response.json({ catalogue });
+}));
 
 modelProvidersRouter.get("/", asyncHandler(async (request, response) => {
   const filter = searchFilter(request.query.q);
@@ -123,4 +150,10 @@ function escapeSearch(value) {
         : character,
     )
     .join("");
+}
+
+function sameEndpoint(left, right) {
+  const normalize = (value) =>
+    typeof value === "string" ? value.trim().replace(/\/+$/, "") : "";
+  return normalize(left) === normalize(right);
 }

@@ -18,6 +18,29 @@ const toolSummarySchema = new mongoose.Schema(
   { _id: false, suppressReservedKeysWarning: true },
 );
 
+const costSchema = new mongoose.Schema(
+  {
+    currency: String,
+    totalUsd: Number,
+    inputUsd: Number,
+    outputUsd: Number,
+    cacheReadUsd: Number,
+    cacheWriteUsd: Number,
+    reasoningUsd: Number,
+    requestUsd: Number,
+    requestCount: Number,
+    source: String,
+    estimated: Boolean,
+    modelProviderId: String,
+    modelProviderName: String,
+    provider: String,
+    model: String,
+    pricing: mongoose.Schema.Types.Mixed,
+    calculatedAt: String,
+  },
+  { _id: false, strict: false },
+);
+
 /**
  * How full the model context was when this run ended.
  *
@@ -61,6 +84,10 @@ const runSchema = new mongoose.Schema(
   {
     agentId: { type: String, required: true, index: true },
     agentName: { type: String, required: true },
+    modelProviderId: String,
+    modelProviderName: String,
+    provider: String,
+    model: String,
     chatId: { type: String, index: true },
     prompt: { type: String, required: true },
     status: {
@@ -73,6 +100,7 @@ const runSchema = new mongoose.Schema(
     stopReason: String,
     turns: { type: Number, default: 0 },
     usage: { type: usageSchema, default: () => ({}) },
+    cost: { type: costSchema },
     usageDetails: { type: [mongoose.Schema.Types.Mixed], default: undefined },
     context: { type: contextUsageSchema },
     tools: { type: [toolSummarySchema], default: [] },
@@ -127,12 +155,17 @@ export function runSummaries(filter = {}, limit = 50, sortDirection = -1) {
         id: { $toString: "$_id" },
         agentId: 1,
         agentName: 1,
+        modelProviderId: 1,
+        modelProviderName: 1,
+        provider: 1,
+        model: 1,
         chatId: 1,
         prompt: { $substrCP: [{ $ifNull: ["$prompt", ""] }, 0, 240] },
         status: 1,
         stopReason: 1,
         turns: 1,
         usage: 1,
+        cost: 1,
         tools: 1,
         agentRuntimeArn: 1,
         agentRuntimeQualifier: 1,

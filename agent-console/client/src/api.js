@@ -241,6 +241,8 @@ export const api = {
     request(`/model-providers/${id}`, { method: "PATCH", body }),
   deleteModelProvider: (id) =>
     request(`/model-providers/${id}`, { method: "DELETE" }),
+  discoverModels: (body, signal) =>
+    request("/model-providers/discover", { method: "POST", body, signal }),
 
   listMcpServers: ({ q = "" } = {}) =>
     request(`/mcp-servers${q ? `?q=${encodeURIComponent(q)}` : ""}`),

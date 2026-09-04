@@ -13,11 +13,8 @@ import type { ModelProviderAuth, ModelProviderWire } from './model-provider-defi
  * When the portability phases land, this file is the only thing that changes.
  */
 export const RUNTIME_SUPPORT = {
-  /**
-   * `bedrock` has no adapter. Resolution constructs an OpenAI-compatible
-   * client, and there is no SigV4 signing path.
-   */
-  providers: ['openrouter', 'openai-compatible'] as const,
+  /** NVIDIA NIM and Bedrock API-key endpoints both use chat-completions. */
+  providers: ['openrouter', 'nvidia', 'bedrock', 'openai-compatible'] as const,
   /**
    * `Authorization: Bearer <key>` is hardcoded at
    * `src/models/openai-compatible-provider.ts:62`, so `header` cannot be

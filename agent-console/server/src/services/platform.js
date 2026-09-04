@@ -108,6 +108,9 @@ export function safeTemplate(document) {
 export function safeAgent(document, { includeSystemPrompt = false } = {}) {
   const value = plain(document);
   if (!includeSystemPrompt) delete value.systemPrompt;
+  // Do not expose retired Context Intelligence configuration that may remain on
+  // historical MongoDB records. Invocation validation strips the same field.
+  delete value.contextIntelligence;
   return {
     ...value,
     id: document._id.toString(),

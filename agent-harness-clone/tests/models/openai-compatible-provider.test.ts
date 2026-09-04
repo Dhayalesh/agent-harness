@@ -60,7 +60,12 @@ test('OpenAI-compatible provider maps messages, tools, usage, and streamed tool 
               finish_reason: 'tool_calls',
             },
           ],
-          usage: { prompt_tokens: 12, completion_tokens: 4, cost: 0.001 },
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 4,
+            prompt_tokens_details: { cached_tokens: 7, cache_write_tokens: 2 },
+            cost: '0.001',
+          },
         },
       ]);
     },
@@ -87,7 +92,13 @@ test('OpenAI-compatible provider maps messages, tools, usage, and streamed tool 
     },
     {
       type: 'usage',
-      usage: { inputTokens: 12, outputTokens: 4, estimatedCostUsd: 0.001 },
+      usage: {
+        inputTokens: 12,
+        outputTokens: 4,
+        cacheReadTokens: 7,
+        cacheWriteTokens: 2,
+        estimatedCostUsd: 0.001,
+      },
     },
     {
       type: 'tool_call_delta',

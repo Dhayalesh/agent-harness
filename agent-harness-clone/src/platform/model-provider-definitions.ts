@@ -68,7 +68,7 @@ export const modelProviderWireSchema = z
  */
 const modelProviderShape = {
   name: identifier,
-  provider: z.enum(['openrouter', 'openai-compatible', 'bedrock']),
+  provider: z.enum(['openrouter', 'nvidia', 'openai-compatible', 'bedrock']),
   model: z.string().min(1).max(300),
   baseURL: z.url().optional(),
   apiKey: apiKeyValue.optional(),
@@ -84,7 +84,7 @@ const modelProviderShape = {
 };
 
 type CrossFieldShape = {
-  provider: 'openrouter' | 'openai-compatible' | 'bedrock';
+  provider: 'openrouter' | 'nvidia' | 'openai-compatible' | 'bedrock';
   baseURL?: string | undefined;
   apiKey?: string | undefined;
   auth: { kind: 'bearer' | 'header' | 'none' };

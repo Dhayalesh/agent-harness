@@ -235,7 +235,7 @@ test("enforces the deployed model-provider runtime constraints", () => {
       ...openAiCompatibleProvider,
       provider: "bedrock",
     }).success,
-    false,
+    true,
   );
   for (const baseURL of [
     "https://user:password@models.example.test/v1",

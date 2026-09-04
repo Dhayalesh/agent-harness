@@ -69,7 +69,7 @@ const headerMap = z.record(z.string(), z.string());
 export const headlessModelProviderSchema = z
   .object({
     name: identifier.default('payload-model-provider'),
-    provider: z.enum(['openrouter', 'openai-compatible', 'bedrock']),
+    provider: z.enum(['openrouter', 'nvidia', 'openai-compatible', 'bedrock']),
     model: z.string().min(1).max(300),
     /** Required for every provider except `openrouter`, which has a known default. */
     baseURL: z.url().optional(),

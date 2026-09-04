@@ -179,7 +179,7 @@ test('a record without apiKey is a coded error, with no environment to fall back
   }
 });
 
-test('unsupported providers, auth kinds, and wire fields are rejected at write', () => {
+test('compatible provider identities work while unsupported auth and wire fields are rejected', () => {
   const writable = {
     name: 'primary',
     model: 'zai.glm-5',
@@ -191,15 +191,9 @@ test('unsupported providers, auth kinds, and wire fields are rejected at write',
   };
 
   const bedrock = parseModelProviderInput({ ...writable, provider: 'bedrock' });
-  assert.throws(
-    () => assertRuntimeSupport(bedrock),
-    (error: unknown) => {
-      assert.equal((error as { code?: string }).code, 'UNSUPPORTED_MODEL_PROVIDER');
-      assert.match((error as Error).message, /'provider'/);
-      assert.match((error as Error).message, /bedrock/);
-      return true;
-    },
-  );
+  assert.doesNotThrow(() => assertRuntimeSupport(bedrock));
+  const nvidia = parseModelProviderInput({ ...writable, provider: 'nvidia' });
+  assert.doesNotThrow(() => assertRuntimeSupport(nvidia));
 
   const noAuth = parseModelProviderInput({
     ...writable,

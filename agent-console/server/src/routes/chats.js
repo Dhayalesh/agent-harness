@@ -699,6 +699,7 @@ async function appendResult(chat, invocation, requestId) {
     ...(invocation.result.usageDetails?.length
       ? { usageDetails: invocation.result.usageDetails }
       : {}),
+    ...(invocation.result.cost ? { cost: invocation.result.cost } : {}),
     ...(invocation.result.reasoning
       ? { reasoning: invocation.result.reasoning }
       : {}),

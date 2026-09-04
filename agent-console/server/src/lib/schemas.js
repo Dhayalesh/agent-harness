@@ -146,12 +146,18 @@ export const agentUpdateSchema = z
 export const agentRecordSchema = z
   .object({
     ...agentShape,
+    // Context Intelligence was removed in `da17de6`, but records created before
+    // that cleanup can still carry its configuration in MongoDB. Accept it only
+    // on the stored-record read path, then strip it from the value used to build a
+    // modern harness payload. Create/update schemas remain strict and cannot add it.
+    contextIntelligence: z.unknown().optional(),
     createdAt: isoTimestamp,
     updatedAt: isoTimestamp,
     createdBy: identifier,
   })
   .strict()
-  .superRefine(refineAgent);
+  .superRefine(refineAgent)
+  .transform(({ contextIntelligence: _legacy, ...record }) => record);
 
 const authSchema = z
   .object({
@@ -180,6 +186,34 @@ const modelCapabilitiesSchema = z
     }
   });
 
+const usdRate = z.number().finite().nonnegative().max(1_000_000);
+
+/**
+ * A server-discovered rate card. Rates are stored per million tokens because
+ * that is the unit operators recognise and it avoids unreadable 0.00000x values.
+ * `model` makes a stale card impossible to apply to an agent-level model override.
+ */
+export const modelPricingSchema = z
+  .object({
+    model: z.string().trim().min(1).max(300),
+    currency: z.literal("USD"),
+    inputPerMillionTokens: usdRate,
+    outputPerMillionTokens: usdRate,
+    cacheReadPerMillionTokens: usdRate.optional(),
+    cacheWritePerMillionTokens: usdRate.optional(),
+    reasoningPerMillionTokens: usdRate.optional(),
+    requestUsd: usdRate.optional(),
+    source: z.enum([
+      "provider-catalog",
+      "litellm-catalog",
+      "nvidia-hosted-free",
+    ]),
+    sourceLabel: z.string().trim().min(1).max(200),
+    sourceUrl: z.string().trim().url().max(2_048),
+    fetchedAt: isoTimestamp,
+  })
+  .strict();
+
 const modelWireSchema = z
   .object({
     maxTokensField: z.enum(["max_tokens", "max_completion_tokens"]).optional(),
@@ -195,6 +229,7 @@ const modelProviderShape = {
   auth: authSchema,
   capabilities: modelCapabilitiesSchema,
   wire: modelWireSchema.optional(),
+  pricing: modelPricingSchema.optional(),
   headers: stringMap.optional(),
   enabled: z.boolean().default(true),
   isDefault: z.boolean().optional(),
@@ -236,6 +271,13 @@ const refineModelProvider = (value, context) => {
       "OpenRouter fixes the max token field",
     );
   }
+  if (value.pricing && value.pricing.model !== value.model) {
+    issue(
+      context,
+      ["pricing", "model"],
+      "Pricing must belong to the configured model",
+    );
+  }
   for (const name of Object.keys(value.headers ?? {})) {
     if (!allowedModelHeaders.has(name)) {
       issue(context, ["headers", name], "Unsupported model header");
@@ -257,11 +299,28 @@ export const modelProviderUpdateSchema = z
     apiKey: z.union([z.string().max(8_192), z.null()]).optional(),
     headers: nullableStringMapPatch,
     wire: z.union([modelWireSchema, z.null()]).optional(),
+    pricing: z.union([modelPricingSchema, z.null()]).optional(),
     isDefault: z.boolean().nullable().optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, {
     message: "No fields to update",
+  });
+
+/** Draft connection details used only for the read-only model catalogue call. */
+export const modelCatalogDiscoverySchema = z
+  .object({
+    modelProviderId: objectIdString.optional(),
+    provider: z.enum(SUPPORTED_MODEL_PROVIDERS),
+    baseURL: z.string().trim().url().max(2_048).optional(),
+    apiKey: z.string().max(8_192).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (!["openrouter", "nvidia"].includes(value.provider) && !value.baseURL) {
+      issue(context, ["baseURL"], value.provider + " requires baseURL");
+    }
+    if (value.baseURL) validatePublicEndpoint(value.baseURL, ["baseURL"], context);
   });
 export const modelProviderRecordSchema = z
   .object({

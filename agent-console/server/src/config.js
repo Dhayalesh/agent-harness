@@ -169,8 +169,19 @@ export const config = {
   createdBy: trimmed("PLATFORM_CREATED_BY", "agent-console"),
 };
 
-/** Providers with an adapter in the currently deployed harness. */
-export const SUPPORTED_MODEL_PROVIDERS = ["openrouter", "openai-compatible"];
+/**
+ * Providers with an adapter in the currently deployed harness.
+ *
+ * NVIDIA NIM and the Bedrock OpenAI endpoints both speak chat-completions, so
+ * they deliberately use the same runtime adapter while retaining their provider
+ * identity for catalogue discovery and pricing.
+ */
+export const SUPPORTED_MODEL_PROVIDERS = [
+  "openrouter",
+  "nvidia",
+  "bedrock",
+  "openai-compatible",
+];
 
 /** Every tool the harness can build across its supported hosts. */
 const KNOWN_TOOLS = [

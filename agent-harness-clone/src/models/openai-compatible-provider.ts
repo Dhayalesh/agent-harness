@@ -160,15 +160,26 @@ export class OpenAICompatibleModelProvider implements ModelProvider {
       }
       const usage = asRecord(chunk.usage);
       if (usage) {
+        const inputDetails = asRecord(usage.prompt_tokens_details);
         const outputDetails = asRecord(usage.completion_tokens_details);
-        const reasoningTokens = outputDetails?.reasoning_tokens;
+        const reasoningTokens = numberOrUndefined(outputDetails?.reasoning_tokens);
+        const cacheReadTokens =
+          numberOrUndefined(inputDetails?.cached_tokens) ??
+          numberOrUndefined(usage.cache_read_tokens);
+        const cacheWriteTokens =
+          numberOrUndefined(inputDetails?.cache_write_tokens) ??
+          numberOrUndefined(usage.cache_write_tokens) ??
+          numberOrUndefined(usage.cache_creation_input_tokens);
+        const reportedCost = numberOrUndefined(usage.cost);
         yield {
           type: 'usage',
           usage: {
             inputTokens: numberValue(usage.prompt_tokens),
             outputTokens: numberValue(usage.completion_tokens),
-            ...(typeof reasoningTokens === 'number' ? { reasoningTokens } : {}),
-            ...(typeof usage.cost === 'number' ? { estimatedCostUsd: usage.cost } : {}),
+            ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+            ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+            ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+            ...(reportedCost === undefined ? {} : { estimatedCostUsd: reportedCost }),
           },
         };
       }
@@ -380,4 +391,13 @@ function arrayValue(value: unknown): unknown[] {
 
 function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }

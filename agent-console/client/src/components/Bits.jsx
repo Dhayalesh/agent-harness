@@ -548,6 +548,22 @@ export function tokens(usage) {
   return `${total.toLocaleString()} tok`;
 }
 
+/** Compact USD for run tables; retains micro-costs instead of rounding them to zero. */
+export function cost(value) {
+  const amount = Number.isFinite(value?.totalUsd)
+    ? value.totalUsd
+    : Number.isFinite(value?.estimatedCostUsd)
+      ? value.estimatedCostUsd
+      : undefined;
+  if (amount === undefined) return "Unpriced";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: amount === 0 || amount >= 0.01 ? 2 : 4,
+    maximumFractionDigits: amount >= 0.01 ? 4 : 6,
+  }).format(amount);
+}
+
 /**
  * The monogram an agent is recognised by across the console. Square in lists and
  * headers; the chat surface asks for the circular variant so it reads as a speaker

@@ -18,6 +18,7 @@ import {
   Loading,
   PageHeader,
   StatusPill,
+  cost,
   duration,
   tokens,
   when,
@@ -98,6 +99,7 @@ export function RunsPage() {
               <TableColumn>Status</TableColumn>
               <TableColumn>Turns</TableColumn>
               <TableColumn>Tokens</TableColumn>
+              <TableColumn>Cost</TableColumn>
               <TableColumn>Duration</TableColumn>
               <TableColumn hideHeader>Open</TableColumn>
             </TableHeader>
@@ -126,6 +128,9 @@ export function RunsPage() {
                   <TableCell className="text-default-500">{run.turns}</TableCell>
                   <TableCell className="whitespace-nowrap text-default-500">
                     {tokens(run.usage)}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap font-mono text-default-500">
+                    {cost(run.cost ?? run.usage)}
                   </TableCell>
                   <TableCell className="whitespace-nowrap text-default-500">
                     {duration(run.durationMs)}
