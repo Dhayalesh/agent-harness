@@ -173,6 +173,16 @@ const modelCapabilitiesSchema = z
     supportsTools: z.boolean(),
     supportsStreaming: z.boolean(),
     supportsReasoning: z.boolean(),
+    /**
+     * Part of the deployed harness's model-provider contract, which validates
+     * `capabilities` strictly and requires this key: a payload without it is
+     * rejected with HTTP 400 before the run starts. The runtime stores it but
+     * does not act on it (`RUNTIME_SUPPORT.capabilitiesHonoured` covers only
+     * contextWindow, maxOutputTokens, and supportsReasoning), so it is defaulted
+     * rather than surfaced as an operator-facing toggle. Removing cost reporting
+     * from the console must not remove the field from the wire.
+     */
+    reportsCost: z.boolean().default(false),
   })
   .strict()
   .superRefine((value, context) => {
