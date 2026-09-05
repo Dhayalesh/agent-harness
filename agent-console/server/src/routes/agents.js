@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
-import { AVAILABLE_TOOLS, READ_ONLY_TOOLS, SUPPORTED_MODEL_PROVIDERS, config } from "../config.js";
+import { AVAILABLE_TOOLS, READ_ONLY_TOOLS, CONFIGURABLE_MODEL_PROVIDERS, config } from "../config.js";
 import { asyncHandler, conflict } from "../lib/http-error.js";
 import {
   agentCreateSchema,
@@ -33,7 +33,7 @@ agentsRouter.get("/meta/tools", (_request, response) => {
       name,
       readOnly: READ_ONLY_TOOLS.includes(name),
     })),
-    providers: SUPPORTED_MODEL_PROVIDERS,
+    providers: CONFIGURABLE_MODEL_PROVIDERS,
   });
 });
 

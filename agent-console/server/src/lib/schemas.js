@@ -215,6 +215,11 @@ const modelProviderShape = {
   isDefault: z.boolean().optional(),
 };
 
+const configurableModelProviderShape = {
+  ...modelProviderShape,
+  provider: z.literal("openai-compatible"),
+};
+
 const allowedModelHeaders = new Set([
   "HTTP-Referer",
   "X-OpenRouter-Title",
@@ -259,11 +264,11 @@ const refineModelProvider = (value, context) => {
 };
 
 export const modelProviderCreateSchema = z
-  .object(modelProviderShape)
+  .object(configurableModelProviderShape)
   .strict()
   .superRefine(refineModelProvider);
 export const modelProviderUpdateSchema = z
-  .object(modelProviderShape)
+  .object(configurableModelProviderShape)
   .partial()
   .extend({
     baseURL: z
@@ -283,13 +288,13 @@ export const modelProviderUpdateSchema = z
 export const modelCatalogDiscoverySchema = z
   .object({
     modelProviderId: objectIdString.optional(),
-    provider: z.enum(SUPPORTED_MODEL_PROVIDERS),
+    provider: z.literal("openai-compatible"),
     baseURL: z.string().trim().url().max(2_048).optional(),
     apiKey: z.string().max(8_192).optional(),
   })
   .strict()
   .superRefine((value, context) => {
-    if (!["openrouter", "nvidia"].includes(value.provider) && !value.baseURL) {
+    if (!value.baseURL) {
       issue(context, ["baseURL"], value.provider + " requires baseURL");
     }
     if (value.baseURL) validatePublicEndpoint(value.baseURL, ["baseURL"], context);

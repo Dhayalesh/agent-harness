@@ -25,8 +25,8 @@ import {
 
 const EMPTY = {
   name: "",
-  provider: "openrouter",
-  model: "anthropic/claude-sonnet-4.6",
+  provider: "openai-compatible",
+  model: "",
   baseURL: "",
   apiKey: "",
   hasApiKey: false,
@@ -57,7 +57,10 @@ export function ModelProviderFormPage({ mode }) {
     void api
       .tools()
       .then(({ providers: found }) => {
-        if (found?.length) setProviders(found);
+        const configurable = found?.filter(
+          (provider) => provider === EMPTY.provider,
+        );
+        if (configurable?.length) setProviders(configurable);
       })
       .catch(() => {
         // The provider dropdown falls back to the current value; the rest of
@@ -73,6 +76,7 @@ export function ModelProviderFormPage({ mode }) {
         setForm({
           ...EMPTY,
           ...modelProvider,
+          provider: EMPTY.provider,
           baseURL: modelProvider.baseURL ?? "",
           apiKey: "",
           contextWindow:
@@ -121,13 +125,12 @@ export function ModelProviderFormPage({ mode }) {
     }));
 
   const changeProvider = (keys) => {
-    const provider = [...keys][0] ?? "openrouter";
+    const provider = [...keys][0] ?? EMPTY.provider;
     setCatalogue([]);
     setCatalogueError(null);
     setForm((current) => ({
       ...current,
       provider,
-      baseURL: providerDefaultUrl(provider),
     }));
   };
 
@@ -235,7 +238,7 @@ export function ModelProviderFormPage({ mode }) {
             isRequired
             label="Name"
             labelPlacement="outside"
-            placeholder="openrouter-sonnet"
+            placeholder="openai-compatible"
             variant="bordered"
             maxLength={100}
             value={form.name}
@@ -248,7 +251,7 @@ export function ModelProviderFormPage({ mode }) {
             <Select
               label="Provider"
               labelPlacement="outside"
-              placeholder="Choose an adapter"
+              placeholder="OpenAI-compatible"
               variant="bordered"
               selectedKeys={[form.provider]}
               onSelectionChange={changeProvider}
@@ -295,7 +298,7 @@ export function ModelProviderFormPage({ mode }) {
                 isRequired
                 label="Model"
                 labelPlacement="outside"
-                placeholder="anthropic/claude-sonnet-4.6"
+                placeholder="provider/model-id"
                 variant="bordered"
                 maxLength={300}
                 value={form.model}
@@ -312,18 +315,10 @@ export function ModelProviderFormPage({ mode }) {
             placeholder="https://api.example.com/v1"
             variant="bordered"
             spellCheck={false}
-            isRequired={form.provider === "openai-compatible"}
+            isRequired
             value={form.baseURL}
             onValueChange={set("baseURL")}
-            description={
-              form.provider === "openrouter"
-                ? "Optional. Blank uses OpenRouter's default endpoint."
-                : form.provider === "nvidia"
-                  ? "NVIDIA's hosted NIM endpoint, or your OpenAI-compatible NIM URL."
-                  : form.provider === "bedrock"
-                    ? "Bedrock Runtime or Mantle OpenAI-compatible endpoint for its AWS region."
-                    : "Required for an OpenAI-compatible provider."
-            }
+            description="Required for an OpenAI-compatible provider."
             isInvalid={Boolean(fieldErrors.baseURL)}
             errorMessage={fieldErrors.baseURL}
           />
@@ -503,13 +498,5 @@ function applyCatalogModel(current, selected) {
     supportsReasoning:
       selected.supportsReasoning ?? current.supportsReasoning,
   };
-}
-
-function providerDefaultUrl(provider) {
-  if (provider === "nvidia") return "https://integrate.api.nvidia.com/v1";
-  if (provider === "bedrock") {
-    return "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1";
-  }
-  return "";
 }
 

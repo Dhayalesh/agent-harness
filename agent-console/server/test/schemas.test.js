@@ -229,10 +229,20 @@ test("enforces the deployed model-provider runtime constraints", () => {
     }).success,
     false,
   );
+  const historicalBedrockProvider = {
+    ...openAiCompatibleProvider,
+    provider: "bedrock",
+  };
   assert.equal(
-    modelProviderCreateSchema.safeParse({
-      ...openAiCompatibleProvider,
-      provider: "bedrock",
+    modelProviderCreateSchema.safeParse(historicalBedrockProvider).success,
+    false,
+  );
+  assert.equal(
+    modelProviderRecordSchema.safeParse({
+      ...historicalBedrockProvider,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: "agent-console",
     }).success,
     true,
   );

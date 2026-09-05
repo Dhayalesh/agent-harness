@@ -157,7 +157,7 @@ export function ModelProvidersPage() {
                       {modelProvider.model}
                     </Code>
                     {" via "}
-                    {modelProvider.baseURL || "the OpenRouter default endpoint"}
+                    {modelProvider.baseURL || "no endpoint configured"}
                   </>
                 }
                 meta={[
