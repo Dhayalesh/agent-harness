@@ -1,17 +1,4 @@
 import {
-  Button,
-  Chip,
-  Dropdown,
-  DropdownItem,
-  DropdownMenu,
-  DropdownTrigger,
-  Link as HeroLink,
-  Input,
-  Select,
-  SelectItem,
-  Tooltip,
-} from "@heroui/react";
-import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -39,6 +26,7 @@ import {
   usePrompt,
   when,
 } from "../components/Bits.jsx";
+import { BrandLockup, BrandMark } from "../components/Brand.jsx";
 import { Icon } from "../components/Icon.jsx";
 import { ContextIndicator } from "../components/ContextIndicator.js";
 import { applyContextEvent } from "../lib/context-inspector.js";
@@ -58,6 +46,43 @@ import {
   artifactLabel,
   artifactModes,
 } from "../components/artifacts/artifact-utils.js";
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Tooltip } from "@/components/ui/tooltip";
+
+/**
+ * An inline link to another screen in the console. Replaces the component
+ * library's Link so navigation stays with react-router rather than a raw anchor
+ * that would reload the app.
+ */
+function InlineLink({ to, children, className }) {
+  return (
+    <Link
+      to={to}
+      className={cn(
+        "font-medium text-primary transition-colors hover:underline",
+        className,
+      )}
+    >
+      {children}
+    </Link>
+  );
+}
 
 export function ChatPage() {
   const { agentId } = useParams();
@@ -560,119 +585,110 @@ export function ChatPage() {
   if (loading && agents.length === 0) return <Loading what="chat workspace" />;
 
   return (
-    <section className="flex min-h-0 min-w-0 flex-1 flex-col bg-content1">
+    <section className="chat-workspace flex min-h-0 min-w-0 flex-1 flex-col bg-content2 p-2 sm:p-3">
       <h1 className="sr-only">Chat</h1>
 
       {/*
         The row is `minmax(0,1fr)` rather than the implicit `auto`: a grid item
-        keeps `min-height: auto`, so an auto row would size itself to the whole
-        transcript and overflow the card instead of letting the thread scroll.
+ keeps `min-height: auto`, so an auto row would size itself to the whole
+ transcript and overflow the card instead of letting the thread scroll.
       */}
       <div
-        className={`relative grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] overflow-hidden bg-content1 lg:grid-cols-[264px_minmax(0,1fr)] ${
+        className={`relative grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-3 overflow-hidden bg-transparent lg:grid-cols-[264px_minmax(0,1fr)] ${
           documentPane
             ? "xl:grid-cols-[264px_minmax(400px,1fr)_minmax(380px,42vw)]"
             : ""
         }`}
       >
         <aside
-          className={`absolute inset-y-0 left-0 z-20 flex min-h-0 w-[264px] min-w-0 flex-col border-r border-divider bg-[#f7f6f2] transition-transform duration-200 dark:bg-[#1f1e1b] lg:static lg:translate-x-0 ${
-            sidebarOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
+          className={`absolute inset-y-0 left-0 z-20 flex min-h-0 w-[264px] min-w-0 flex-col rounded-2xl border border-divider bg-content1 shadow-sm transition-transform duration-200 lg:static lg:translate-x-0 ${
+            sidebarOpen ? "translate-x-0 shadow-overlay" : "-translate-x-full"
           }`}
           aria-label="Chat history"
         >
-          <div className="flex flex-col gap-3 border-b border-divider p-3">
+          <div className="flex flex-col gap-4 border-b border-divider p-4">
             <div className="flex min-h-10 items-center justify-between gap-2">
               <Link
                 to="/"
-                className="flex min-w-0 items-center gap-2.5 rounded-medium outline-none transition-opacity hover:opacity-75"
+                className="flex min-w-0 items-center gap-2.5 outline-none transition-opacity hover:opacity-75"
               >
-                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-medium bg-[#d97757] text-white shadow-[inset_0_0_0_1px_rgba(75,35,23,0.12)] dark:bg-[#c86f50]">
-                  <Icon name="spark" className="h-4 w-4" />
-                </span>
-                <span className="min-w-0">
-                  <strong className="block truncate text-small font-semibold">
-                    Agent Console
-                  </strong>
-                  <span className="block truncate text-[10px] text-default-500">
-                    Chat workspace
-                  </span>
-                </span>
+                <BrandLockup
+                  subtitle="Chat workspace"
+                  nameClassName="text-small"
+                />
               </Link>
               <Button
-                isIconOnly
-                size="sm"
-                variant="light"
+                size="icon-sm"
+                variant="ghost"
                 className="lg:hidden"
                 aria-label="Close chat history"
-                onPress={() => setSidebarOpen(false)}
+                onClick={() => setSidebarOpen(false)}
               >
                 <Icon name="close" className="h-4 w-4" />
               </Button>
             </div>
 
             <Button
-              size="sm"
-              radius="md"
-              className="h-9 bg-[#302e2b] font-medium text-white shadow-[0_1px_2px_rgba(27,25,22,0.16)] hover:bg-[#242220] dark:bg-[#ece8df] dark:text-[#242220] dark:hover:bg-white"
-              isDisabled={!agentId}
-              onPress={newChat}
-              startContent={<Icon name="plus" className="h-4 w-4" />}
+              className="h-11 rounded-xl font-semibold shadow-sm"
+              disabled={!agentId}
+              onClick={newChat}
             >
+              <Icon name="plus" className="h-4 w-4" />
               New chat
             </Button>
 
-            <span className="px-0.5 text-[10px] font-semibold uppercase tracking-[0.13em] text-default-500">
-              Active agent
-            </span>
-            <Select
-              aria-label="Choose an agent"
-              size="sm"
-              variant="bordered"
-              placeholder="Choose an agent"
-              classNames={{ trigger: "bg-content1" }}
-              selectedKeys={agentId ? [agentId] : []}
-              disabledKeys={agents
-                .filter((agent) => !agent.enabled)
-                .map((agent) => agent.id)}
-              onSelectionChange={(keys) => selectAgent([...keys][0] ?? "")}
-            >
-              {agents.map((agent) => (
-                <SelectItem key={agent.id} textValue={agent.name}>
-                  {agent.name}
-                  {!agent.enabled ? " (disabled)" : ""}
-                </SelectItem>
-              ))}
+            <span className="text-tiny font-semibold text-default-500">Active agent</span>
+            <Select value={agentId || undefined} onValueChange={selectAgent}>
+              <SelectTrigger
+                aria-label="Choose an agent"
+                className="h-10 rounded-xl bg-content2/60"
+              >
+                <SelectValue placeholder="Choose an agent" />
+              </SelectTrigger>
+              <SelectContent>
+                {agents.map((agent) => (
+                  // A disabled agent stays listed but unselectable, so it is clear
+                  // why it cannot be chosen rather than simply absent.
+                  <SelectItem
+                    key={agent.id}
+                    value={agent.id}
+                    disabled={!agent.enabled}
+                    description={agent.enabled ? undefined : "Disabled"}
+                  >
+                    {agent.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
             </Select>
           </div>
 
-          <div className="px-3 pb-2 pt-3">
-            <Input
-              type="search"
-              size="sm"
-              variant="flat"
-              aria-label="Search chats"
-              placeholder="Search chats"
-              value={search}
-              onValueChange={setSearch}
-              startContent={
-                <Icon name="search" className="h-4 w-4 text-default-400" />
-              }
-              classNames={{
-                inputWrapper:
-                  "h-9 border border-transparent bg-content2 shadow-none data-[focus=true]:border-divider data-[focus=true]:bg-content1",
-              }}
-            />
+          <div className="px-4 pb-3 pt-4">
+            {/* The icon is overlaid rather than slotted: shadcn's Input is a bare
+                <input>, so the padding is opened up to make room for it. */}
+            <div className="relative">
+              <Icon
+                name="search"
+                className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-default-400"
+              />
+              <Input
+                type="search"
+                aria-label="Search chats"
+                placeholder="Search chats"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="h-10 rounded-xl border-divider bg-content2/60 pl-8 focus-visible:bg-content1"
+              />
+            </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
             {visibleChats.length ? (
               groupChats(visibleChats).map((group) => (
                 <div className="mt-2 first:mt-0" key={group.label}>
-                  <span className="block px-2 pb-1 pt-2 text-[10px] font-bold uppercase tracking-[0.1em] text-default-400">
+                  <span className="block px-2 pb-1 pt-2 text-tiny font-semibold text-default-600">
                     {group.label}
                   </span>
-                  <ul className="flex flex-col gap-0.5">
+                  <ul className="flex flex-col gap-1.5">
                     {group.items.map((item) => (
                       <ChatListItem
                         key={item.id}
@@ -687,36 +703,42 @@ export function ChatPage() {
                 </div>
               ))
             ) : (
-              <p className="px-3 py-4 text-tiny text-default-500">
-                {search.trim()
-                  ? "No chats match that search."
-                  : "No chats yet. Start one below."}
-              </p>
+              <div className="mx-1 mt-3 rounded-xl border border-dashed border-divider bg-content2/50 px-4 py-6 text-center">
+                <Icon name={search.trim() ? "search" : "chat"} className="mx-auto mb-3 size-5 text-default-400" />
+                <p className="text-small font-medium text-foreground">
+                  {search.trim() ? "No matching conversations" : "Your conversations live here"}
+                </p>
+                <p className="mt-2 text-tiny leading-5 text-default-500">
+                  {search.trim() ? "Try another name or search term." : "Choose an agent and start a new chat."}
+                </p>
+              </div>
             )}
           </div>
 
-          <div className="grid grid-cols-2 gap-1 border-t border-divider p-2">
+          <div className="grid grid-cols-2 gap-1 border-t border-divider bg-content2/40 p-3">
             <Button
-              as={Link}
-              to="/"
+              asChild
               size="sm"
-              variant="light"
+              variant="ghost"
               className="justify-start text-default-600"
-              startContent={<Icon name="dashboard" className="h-4 w-4" />}
             >
-              Workspace
+              <Link to="/">
+                <Icon name="dashboard" className="h-4 w-4" />
+                Workspace
+              </Link>
             </Button>
             <Button
-              as={Link}
-              to="/runs"
+              asChild
               size="sm"
-              variant="light"
+              variant="ghost"
               className="justify-start text-default-600"
-              startContent={<Icon name="runs" className="h-4 w-4" />}
             >
-              Runs
+              <Link to="/runs">
+                <Icon name="runs" className="h-4 w-4" />
+                Runs
+              </Link>
             </Button>
-            <span className="col-span-2 px-2 pb-1 text-[10px] text-default-400">
+            <span className="col-span-2 px-2 pb-1 text-micro text-default-400">
               {chats.length} {chats.length === 1 ? "chat" : "chats"}
             </span>
           </div>
@@ -732,7 +754,7 @@ export function ChatPage() {
         )}
 
         <div
-          className="relative flex min-h-0 min-w-0 flex-col bg-content1"
+          className="relative flex min-h-0 min-w-0 flex-col overflow-hidden rounded-2xl border border-divider bg-content1 shadow-sm"
           onDragEnter={onDragEnter}
           onDragLeave={onDragLeave}
           // Without preventDefault on dragover the browser refuses the drop and
@@ -746,7 +768,7 @@ export function ChatPage() {
         >
           {dragging && selectedAgent && (
             <div
-              className="pointer-events-none absolute inset-3 z-40 grid place-items-center rounded-large border-2 border-dashed border-secondary/60 bg-background/80 backdrop-blur-sm"
+              className="pointer-events-none absolute inset-3 z-40 grid place-items-center rounded-2xl border-2 border-dashed border-secondary/60 bg-background/80 backdrop-blur-sm"
               role="status"
             >
               <span className="flex flex-col items-center gap-2 text-small font-medium text-secondary">
@@ -755,15 +777,14 @@ export function ChatPage() {
               </span>
             </div>
           )}
-          <header className="flex min-h-[64px] items-center gap-3 border-b border-divider bg-content1/95 px-4 py-2.5 backdrop-blur sm:px-5">
+          <header className="flex min-h-[76px] flex-wrap items-center gap-3 border-b border-divider bg-content1/95 px-4 py-4 backdrop-blur sm:px-6">
             <Button
-              isIconOnly
-              size="sm"
-              variant="light"
+              size="icon-sm"
+              variant="ghost"
               className="lg:hidden"
               aria-label="Open chat history"
               aria-expanded={sidebarOpen}
-              onPress={() => setSidebarOpen(true)}
+              onClick={() => setSidebarOpen(true)}
             >
               <Icon name="menu" className="h-5 w-5" />
             </Button>
@@ -784,82 +805,66 @@ export function ChatPage() {
                       : ""}
                   </span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <Chip
-                    size="sm"
-                    variant="flat"
-                    color={agentReady ? "success" : "warning"}
-                    classNames={{
-                      base: "hidden h-6 rounded-full sm:flex",
-                      content: "px-1 text-tiny font-semibold",
-                    }}
-                    startContent={
-                      <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-current" />
-                    }
+                <div className="ml-auto flex max-w-full basis-full items-center justify-end gap-1 rounded-xl bg-content2/60 p-1 sm:basis-auto">
+                  <Badge
+                    variant={agentReady ? "success" : "warning"}
+                    className="hidden h-7 rounded-full border-transparent px-2.5 text-tiny normal-case tracking-normal sm:inline-flex"
                   >
+                    <span
+                      aria-hidden="true"
+                      className="size-1.5 rounded-full bg-current"
+                    />
                     {agentReady ? "Ready" : "Needs setup"}
-                  </Chip>
+                  </Badge>
                   {chat && (
-                    <Tooltip
-                      content={sessionDescription(chat.session)}
-                      size="sm"
-                    >
-                      <Chip
-                        size="sm"
-                        variant="flat"
-                        color={sessionPresentation(chat.session).color}
-                        classNames={{
-                          base: "hidden h-6 rounded-full md:flex",
-                          content: "px-1 text-tiny font-semibold",
-                        }}
-                        startContent={
-                          <span className="ml-1.5 h-1.5 w-1.5 rounded-full bg-current" />
-                        }
+                    <Tooltip content={sessionDescription(chat.session)}>
+                      <Badge
+                        variant={sessionPresentation(chat.session).variant}
+                        className="hidden h-7 rounded-full border-transparent px-2.5 text-tiny normal-case tracking-normal md:inline-flex"
                       >
+                        <span
+                          aria-hidden="true"
+                          className="size-1.5 rounded-full bg-current"
+                        />
                         {sessionPresentation(chat.session).label}
-                      </Chip>
+                      </Badge>
                     </Tooltip>
                   )}
-                  <Tooltip content="Agent configuration" size="sm">
+                  <Tooltip content="Agent configuration">
                     <Button
-                      as={Link}
-                      to={`/agents/${selectedAgent.id}`}
-                      isIconOnly
-                      size="sm"
-                      variant="light"
+                      asChild
+                      size="icon-sm"
+                      variant="ghost"
                       aria-label="Open agent configuration"
                     >
-                      <Icon name="settings" className="h-4 w-4" />
+                      <Link to={`/agents/${selectedAgent.id}`}>
+                        <Icon name="settings" className="h-4 w-4" />
+                      </Link>
                     </Button>
                   </Tooltip>
                   {chat && (
-                    <Tooltip content="Rename chat" size="sm">
+                    <Tooltip content="Rename chat">
                       <Button
-                        isIconOnly
-                        size="sm"
-                        variant="light"
+                        size="icon-sm"
+                        variant="ghost"
                         aria-label="Rename this chat"
-                        onPress={() => renameChat(chat)}
+                        onClick={() => renameChat(chat)}
                       >
                         <Icon name="edit" className="h-4 w-4" />
                       </Button>
                     </Tooltip>
                   )}
                   {chat && (
-                    <Tooltip
-                      content={chat.pinned ? "Unpin chat" : "Pin chat"}
-                      size="sm"
-                    >
+                    <Tooltip content={chat.pinned ? "Unpin chat" : "Pin chat"}>
                       <Button
-                        isIconOnly
-                        size="sm"
-                        variant="light"
+                        size="icon-sm"
+                        variant="ghost"
                         aria-label={
                           chat.pinned ? "Unpin this chat" : "Pin this chat"
                         }
                         aria-pressed={Boolean(chat.pinned)}
                         className={chat.pinned ? "text-secondary" : undefined}
-                        onPress={() => togglePin(chat)}
+                        onClick={() => togglePin(chat)}
                       >
                         <Icon
                           name={chat.pinned ? "unpin" : "pin"}
@@ -869,14 +874,13 @@ export function ChatPage() {
                     </Tooltip>
                   )}
                   {chat && (
-                    <Tooltip content="Reset agent context" size="sm">
+                    <Tooltip content="Reset agent context">
                       <Button
-                        isIconOnly
-                        size="sm"
-                        variant="light"
+                        size="icon-sm"
+                        variant="ghost"
                         aria-label="Reset agent context"
-                        isDisabled={sending || resettingSession}
-                        onPress={resetSession}
+                        disabled={sending || resettingSession}
+                        onClick={resetSession}
                       >
                         {resettingSession ? (
                           <ActivityIndicator size="sm" />
@@ -887,14 +891,13 @@ export function ChatPage() {
                     </Tooltip>
                   )}
                   {chat && (
-                    <Tooltip content="Delete chat" size="sm" color="danger">
+                    <Tooltip content="Delete chat">
                       <Button
-                        isIconOnly
-                        size="sm"
-                        variant="light"
-                        color="danger"
+                        size="icon-sm"
+                        variant="ghost"
                         aria-label="Delete this chat"
-                        onPress={() => removeChat(chat)}
+                        className="text-danger hover:bg-danger/10 hover:text-danger"
+                        onClick={() => removeChat(chat)}
                       >
                         <Icon name="trash" className="h-4 w-4" />
                       </Button>
@@ -915,17 +918,17 @@ export function ChatPage() {
           </header>
 
           {!selectedAgent ? (
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-content2/40">
               <AgentPicker agents={agents} onSelect={selectAgent} />
             </div>
           ) : (
             <>
               <div
-                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain"
+                className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain bg-content2/40"
                 onScroll={trackScroll}
                 aria-live="polite"
               >
-                <div className="mx-auto flex w-full max-w-[840px] flex-1 flex-col gap-8 px-4 pb-5 pt-8 sm:px-8 lg:px-10">
+                <div className="mx-auto flex w-full max-w-[880px] flex-1 flex-col gap-7 px-4 py-8 sm:px-8 lg:px-10">
                   {chat?.messages?.length ? (
                     chat.messages.map((message, index) => (
                       <Message
@@ -953,16 +956,15 @@ export function ChatPage() {
                 </div>
               </div>
 
-              <div className="relative mx-auto w-full max-w-[840px] px-4 pb-5 pt-2 sm:px-8 lg:px-10">
+              <div className="relative mx-auto w-full max-w-[880px] shrink-0 px-3 pb-4 pt-3 sm:px-8 sm:pb-5 lg:px-10">
                 {!atBottom && (
                   <Button
-                    isIconOnly
-                    size="sm"
-                    radius="full"
-                    variant="flat"
-                    className="absolute -top-10 left-1/2 z-10 -translate-x-1/2 border border-divider bg-content1 shadow-md"
+                    size="icon-sm"
+                    variant="secondary"
+                    // Floating above the transcript, so a shadow is honest here.
+                    className="absolute -top-10 left-1/2 z-10 -translate-x-1/2 border border-divider bg-content1 shadow-overlay"
                     aria-label="Scroll to latest message"
-                    onPress={() =>
+                    onClick={() =>
                       threadEnd.current?.scrollIntoView({
                         block: "end",
                         behavior: "smooth",
@@ -976,7 +978,7 @@ export function ChatPage() {
                 <ErrorNote error={error} />
 
                 {!agentReady && (
-                  <div className="mb-2.5 rounded-medium border border-warning-200 bg-warning-50 px-3 py-2.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400">
+                  <div className="mb-2.5 border-l-2 border-l-warning bg-warning/[0.07] px-3 py-2.5 text-tiny text-warning-600 dark:text-warning-400">
                     <strong className="block font-semibold">
                       This agent needs configuration before it can run.
                     </strong>
@@ -989,18 +991,17 @@ export function ChatPage() {
                         ),
                       )}
                     </ul>
-                    <HeroLink
-                      href={`/agents/${selectedAgent.id}`}
-                      size="sm"
-                      color="warning"
+                    <InlineLink
+                      to={`/agents/${selectedAgent.id}`}
+                      className="text-warning-600 dark:text-warning-400"
                     >
                       Review agent configuration
-                    </HeroLink>
+                    </InlineLink>
                   </div>
                 )}
 
                 <form
-                  className="rounded-[20px] border border-divider bg-content1 py-2.5 pl-4 pr-2.5 shadow-[0_8px_28px_rgba(36,32,27,0.08),0_1px_3px_rgba(36,32,27,0.06)] transition-all focus-within:border-secondary/50 focus-within:shadow-[0_10px_32px_rgba(36,32,27,0.11),0_0_0_3px_rgba(182,95,66,0.08)] dark:shadow-[0_10px_28px_rgba(0,0,0,0.24)]"
+                  className="rounded-2xl border border-divider bg-content1 p-3 shadow-[0_2px_12px_-4px_rgb(0_0_0/0.12)] transition-colors focus-within:border-primary/40 focus-within:ring-4 focus-within:ring-primary/[0.05] sm:p-4"
                   onSubmit={send}
                 >
                   <label className="sr-only" htmlFor="chat-message">
@@ -1026,16 +1027,15 @@ export function ChatPage() {
                         event.target.value = "";
                       }}
                     />
-                    <Tooltip content="Attach files" size="sm">
+                    <Tooltip content="Attach files">
                       <Button
-                        isIconOnly
-                        radius="md"
-                        size="sm"
-                        variant="light"
-                        className="h-9 w-9 shrink-0 text-default-500"
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="shrink-0 text-default-500"
                         aria-label="Attach files"
-                        isDisabled={sending || resettingSession || !agentReady}
-                        onPress={() => filePicker.current?.click()}
+                        disabled={sending || resettingSession || !agentReady}
+                        onClick={() => filePicker.current?.click()}
                       >
                         <Icon name="paperclip" className="h-4 w-4" />
                       </Button>
@@ -1064,16 +1064,14 @@ export function ChatPage() {
                       disabled={
                         sending || compacting || resettingSession || !agentReady
                       }
-                      className="max-h-[208px] min-h-[30px] w-full resize-none border-0 bg-transparent py-1 text-[15px] leading-6 text-foreground outline-none placeholder:text-default-400 disabled:opacity-60"
+                      className="max-h-[208px] min-h-[52px] w-full resize-none border-0 bg-transparent py-1 text-medium leading-6 text-foreground outline-none placeholder:text-default-400 focus-visible:ring-0 focus-visible:ring-offset-0 disabled:opacity-60"
                     />
                     <Button
                       type="submit"
-                      isIconOnly
-                      radius="md"
-                      size="sm"
-                      className="h-9 w-9 shrink-0 bg-[#302e2b] text-white shadow-[0_1px_2px_rgba(30,28,25,0.16)] hover:bg-[#242220] dark:bg-[#ece8df] dark:text-[#242220] dark:hover:bg-white"
+                      size="icon"
+                      className="shrink-0"
                       aria-label={sending ? "Running" : "Send message"}
-                      isDisabled={
+                      disabled={
                         // Files alone are a valid message.
                         (!draft.trim() && attachments.length === 0) ||
                         uploading ||
@@ -1086,25 +1084,26 @@ export function ChatPage() {
                       {sending ? (
                         <ActivityIndicator
                           size="sm"
-                          className="text-white dark:text-black"
+                          className="text-primary-foreground"
                         />
                       ) : (
                         <Icon name="send" className="h-4 w-4" />
                       )}
                     </Button>
                   </div>
-                  <div className="flex min-h-6 items-center justify-between gap-3 px-0.5 pb-0.5 pt-1.5">
+                  <div className="mt-2 flex min-h-6 flex-wrap items-center justify-between gap-2 border-t border-divider/60 px-1 pt-3">
                     <span className="hidden text-tiny text-default-400 sm:block">
-                      Enter to send · Shift + Enter for a new line
+                      Enter to send · Shift + Enter for a new
+                      line
                     </span>
-                    <div className="ml-auto flex items-center gap-2.5 text-tiny text-default-500">
+                    <div className="ml-auto flex flex-wrap items-center justify-end gap-2.5 text-tiny text-default-500">
                       {lastRun && (
                         <>
                           <StatusPill status={lastRun.status} />
                           <span>{duration(lastRun.durationMs)}</span>
-                          <HeroLink href={`/runs/${lastRun.id}`} size="sm">
+                          <InlineLink to={`/runs/${lastRun.id}`}>
                             Open run
-                          </HeroLink>
+                          </InlineLink>
                         </>
                       )}
                       <ContextIndicator
@@ -1147,7 +1146,7 @@ function AttachmentTray({ attachments, uploading, onRemove }) {
         </li>
       ))}
       {uploading && (
-        <li className="flex h-8 items-center gap-2 rounded-medium border border-divider bg-content2 px-2.5 text-tiny text-default-500">
+        <li className="flex h-9 items-center gap-2 rounded-lg border border-divider bg-content2 px-2.5 text-tiny text-default-500">
           <ActivityIndicator size="sm" />
           Reading files…
         </li>
@@ -1174,11 +1173,11 @@ function AttachmentChip({ attachment, onRemove }) {
     ...(attachment.notes ?? []),
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join("· ");
 
   return (
     <span
-      className={`group/chip flex h-8 max-w-[240px] items-center gap-1.5 rounded-medium border border-divider bg-content2 pl-2 text-tiny ${
+      className={`group/chip flex h-9 max-w-[240px] items-center gap-1.5 rounded-lg border border-divider bg-content2 pl-2 text-tiny ${
         onRemove ? "pr-1" : "pr-2.5"
       }`}
     >
@@ -1189,32 +1188,33 @@ function AttachmentChip({ attachment, onRemove }) {
       <span className="min-w-0 flex-1 leading-tight">
         <span className="block truncate font-medium text-foreground">
           {attachment.url ? (
-            <HeroLink
+            // A stored artifact URL, not a console route, so this stays an anchor.
+            <a
               href={attachment.url}
               target="_blank"
               rel="noreferrer"
-              className="text-tiny text-foreground"
+              className="text-tiny text-foreground hover:underline"
             >
               {attachment.filename}
-            </HeroLink>
+            </a>
           ) : (
             attachment.filename
           )}
         </span>
         {detail && (
-          <span className="block truncate text-[10px] text-default-500">
+          <span className="block truncate text-micro text-default-500">
             {detail}
           </span>
         )}
       </span>
       {onRemove && (
         <Button
-          isIconOnly
-          size="sm"
-          variant="light"
-          className="h-6 w-6 min-w-6 shrink-0 text-default-500"
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          className="shrink-0 text-default-500"
           aria-label={`Remove ${attachment.filename}`}
-          onPress={() => onRemove(attachment.id)}
+          onClick={() => onRemove(attachment.id)}
         >
           <Icon name="close" className="h-3 w-3" />
         </Button>
@@ -1235,15 +1235,16 @@ function ChatListItem({ item, active, onRename, onPin, onRemove }) {
   const title = item.title || item.agentName || "Untitled chat";
   return (
     <li
-      className={`group relative rounded-medium ${
+      className={cn(
+        "group relative rounded-xl border border-transparent transition-colors duration-200",
         active
-          ? "bg-content1 shadow-[0_1px_3px_rgba(32,29,25,0.07)] ring-1 ring-inset ring-divider"
-          : "hover:bg-content1/70"
-      }`}
+          ? "border-primary/15 bg-primary/[0.06]"
+          : "hover:bg-primary/[0.04]",
+      )}
     >
-      <HeroLink
-        href={`/chat/${item.agentId}?chat=${item.id}`}
-        className="block rounded-medium py-2 pl-2.5 pr-9 text-foreground"
+      <Link
+        to={`/chat/${item.agentId}?chat=${item.id}`}
+        className="block rounded-xl py-3 pl-3 pr-10 text-foreground"
       >
         <span className="flex items-center gap-1.5">
           {item.pinned && (
@@ -1254,56 +1255,41 @@ function ChatListItem({ item, active, onRename, onPin, onRemove }) {
           </span>
         </span>
         <span className="mt-0.5 block truncate text-tiny text-default-500">
-          {item.agentName ? item.agentName + " · " : ""}
+          {item.agentName ? item.agentName + "· " : ""}
           {relative(item.updatedAt ?? item.createdAt)}
         </span>
-      </HeroLink>
-      <Dropdown placement="bottom-end">
-        <DropdownTrigger>
+      </Link>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
           <Button
-            isIconOnly
-            size="sm"
-            variant="light"
+            size="icon-xs"
+            variant="ghost"
             // Stays visible while its own menu is open, or the trigger vanishes
             // from under the pointer the moment the menu takes focus.
-            className="absolute right-1 top-1/2 h-7 w-7 min-w-7 -translate-y-1/2 opacity-0 transition-opacity aria-expanded:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+            className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 opacity-0 transition-opacity data-[state=open]:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
             aria-label={`Actions for ${title}`}
           >
             <Icon name="dots" className="h-3.5 w-3.5" />
           </Button>
-        </DropdownTrigger>
-        <DropdownMenu
-          aria-label={`Actions for ${title}`}
-          onAction={(key) => {
-            if (key === "rename") onRename(item);
-            if (key === "pin") onPin(item);
-            if (key === "delete") onRemove(item);
-          }}
-        >
-          <DropdownItem
-            key="rename"
-            startContent={<Icon name="edit" className="h-4 w-4" />}
-          >
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => onRename(item)}>
+            <Icon name="edit" className="h-4 w-4" />
             Rename
-          </DropdownItem>
-          <DropdownItem
-            key="pin"
-            startContent={
-              <Icon name={item.pinned ? "unpin" : "pin"} className="h-4 w-4" />
-            }
-          >
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onPin(item)}>
+            <Icon name={item.pinned ? "unpin" : "pin"} className="h-4 w-4" />
             {item.pinned ? "Unpin" : "Pin"}
-          </DropdownItem>
-          <DropdownItem
-            key="delete"
-            color="danger"
-            className="text-danger"
-            startContent={<Icon name="trash" className="h-4 w-4" />}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            onSelect={() => onRemove(item)}
           >
+            <Icon name="trash" className="h-4 w-4" />
             Delete
-          </DropdownItem>
-        </DropdownMenu>
-      </Dropdown>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </li>
   );
 }
@@ -1311,48 +1297,76 @@ function ChatListItem({ item, active, onRename, onPin, onRemove }) {
 function AgentPicker({ agents, onSelect }) {
   const runnable = agents.filter((agent) => agent.enabled);
   return (
-    <div className="m-auto flex max-w-[640px] flex-col items-center px-4 pb-9 pt-7 text-center">
-      <span className="mb-4 grid h-12 w-12 place-items-center rounded-large border border-[#c96343] bg-[#d97757] text-white shadow-[0_4px_14px_rgba(139,68,43,0.18)] dark:bg-[#c86f50]">
-        <Icon name="spark" className="h-5 w-5" />
-      </span>
-      <h2 className="text-xl font-medium tracking-[-0.02em]">
-        Choose an agent to begin
-      </h2>
-      <p className="mb-4 mt-1.5 max-w-[48ch] text-small text-default-500">
-        Chats keep prompts, answers, and run metadata together in MongoDB.
-      </p>
-      {runnable.length > 0 && (
-        <div className="grid w-full grid-cols-1 gap-2.5 text-left sm:grid-cols-2">
-          {runnable.slice(0, 6).map((agent) => (
-            <button
-              type="button"
-              key={agent.id}
-              onClick={() => onSelect(agent.id)}
-              className="flex items-center gap-3 rounded-large border border-divider bg-content1 px-3.5 py-3 text-left transition-all hover:border-[#c9c5bc] hover:bg-content2/50 hover:shadow-[0_2px_8px_rgba(36,32,27,0.05)] dark:hover:border-content4"
-            >
-              <AgentAvatar circle name={agent.name} size="sm" />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-small font-medium">
-                  {agent.name}
+    <div className="mx-auto my-auto flex w-full max-w-[840px] flex-col px-5 py-10 sm:px-8 sm:py-12">
+      <div className="mb-8 flex flex-col items-center text-center">
+        <span className="mb-5 grid size-16 place-items-center rounded-2xl border border-primary/10 bg-primary/[0.05]">
+          <BrandMark className="size-9" />
+        </span>
+        <h2 className="text-display font-semibold tracking-display text-foreground">
+          Who can help you today?
+        </h2>
+        <p className="mt-3 max-w-[48ch] text-medium leading-6 text-default-500">
+          Choose an agent and turn your next idea into a conversation.
+        </p>
+      </div>
+      {runnable.length > 0 ? (
+        <>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h3 className="text-small font-semibold text-foreground">Your agents</h3>
+            <span className="text-tiny text-default-500">{runnable.length} available</span>
+          </div>
+          <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2">
+            {runnable.map((agent) => (
+              <button
+                type="button"
+                key={agent.id}
+                onClick={() => onSelect(agent.id)}
+                aria-label={`Start chat with ${agent.name}`}
+                className="chat-option-card group flex h-full min-w-0 flex-col p-5 text-left"
+              >
+                <span className="flex w-full min-w-0 items-center gap-3">
+                  <AgentAvatar name={agent.name} size="lg" className="rounded-xl" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-words text-large font-semibold leading-6 text-foreground">{agent.name}</span>
+                    {(agent.model || agent.resolved?.modelProvider?.model) && (
+                      <span className="mt-0.5 block truncate text-tiny text-default-500">
+                        {agent.model || agent.resolved.modelProvider.model}
+                      </span>
+                    )}
+                  </span>
                 </span>
-                <span className="block truncate text-tiny text-default-500">
-                  {agent.description || "Open a new chat"}
+                <span className="mb-5 mt-4 line-clamp-2 min-h-[2.75rem] text-small leading-[1.375rem] text-default-500">
+                  {agent.description || "A dedicated assistant, ready for your questions and tasks."}
                 </span>
-              </span>
-              <Icon name="arrow" className="h-4 w-4 text-default-400" />
-            </button>
-          ))}
+                <span className="mt-auto flex w-full items-center justify-between gap-3 border-t border-divider/70 pt-4">
+                  <span className="inline-flex items-center gap-1.5 text-tiny text-default-500">
+                    <Icon name="tool" className="size-3.5" />
+                    {countLabel(agent.tools?.length, "tool") || "0 tools"}
+                  </span>
+                  <span className="inline-flex items-center gap-2 text-small font-medium text-primary">
+                    Start chat
+                    <Icon name="arrow" className="size-4 transition-transform duration-200 group-hover:translate-x-0.5" />
+                  </span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-divider bg-content2/50 p-8 text-center">
+          <h3 className="text-large font-semibold text-foreground">
+            {agents.length === 0 ? "Create your first agent" : "No agents are enabled"}
+          </h3>
+          <p className="mb-5 mt-2 text-small text-default-500">
+            {agents.length === 0 ? "Add an assistant to start your first conversation." : "Enable an agent in your workspace to start chatting."}
+          </p>
+          <Button asChild>
+            <Link to={agents.length === 0 ? "/agents/new" : "/agents"}>
+              {agents.length === 0 ? "Create agent" : "Manage agents"}
+              <Icon name="arrow" className="size-4" />
+            </Link>
+          </Button>
         </div>
-      )}
-      {agents.length === 0 && (
-        <Button
-          as={Link}
-          to="/agents/new"
-          radius="md"
-          className="bg-[#302e2b] text-white hover:bg-[#242220] dark:bg-[#ece8df] dark:text-[#242220]"
-        >
-          Create your first agent
-        </Button>
       )}
     </div>
   );
@@ -1360,50 +1374,49 @@ function AgentPicker({ agents, onSelect }) {
 
 function ChatWelcome({ agent, onSuggestion }) {
   const suggestions = [
-    "Introduce yourself and describe what you can help with.",
-    "Review the tools and integrations available to you.",
-    "Create a short plan for my next task.",
+    { title: "Explore possibilities", icon: "spark", description: "Discover what this agent can help you do.", prompt: "Introduce yourself and describe what you can help with." },
+    { title: "See available tools", icon: "tool", description: "Find the tools and integrations at your fingertips.", prompt: "Review the tools and integrations available to you." },
+    { title: "Make a plan", icon: "document", description: "Break your next task into clear, practical steps.", prompt: "Create a short plan for my next task." },
   ];
   const facts = [
-    agent.resolved?.modelProvider?.model,
+    agent.model || agent.resolved?.modelProvider?.model,
     countLabel(agent.tools?.length, "tool"),
     countLabel(agent.resolved?.mcpServers?.length, "MCP server"),
     countLabel(agent.resolved?.skills?.length, "skill"),
   ].filter(Boolean);
 
   return (
-    <div className="m-auto flex max-w-[640px] flex-col items-center px-2 pb-9 pt-7 text-center">
-      <AgentAvatar circle name={agent.name} size="lg" className="mb-3.5" />
-      <h2 className="text-xl font-medium tracking-[-0.02em]">
+    <div className="m-auto flex w-full max-w-[720px] flex-col items-center py-8 text-center">
+      <AgentAvatar name={agent.name} size="lg" className="mb-5 size-16 rounded-2xl text-title" />
+      <h2 className="text-title font-semibold tracking-display text-foreground">
         Chat with {agent.name}
       </h2>
-      <p className="mt-1.5 max-w-[48ch] text-small text-default-500">
-        {agent.description || "Start with a prompt below."}
+      <p className="mt-3 max-w-[48ch] text-small leading-6 text-default-500">
+        {agent.description || "Bring a question, an idea, or a task. Let's get started."}
       </p>
       {facts.length > 0 && (
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
           {facts.map((fact) => (
-            <Chip
-              key={fact}
-              size="sm"
-              variant="flat"
-              classNames={{ base: "h-6 rounded-full", content: "text-tiny" }}
-            >
+            <span key={fact} className="max-w-full truncate rounded-full border border-divider bg-content2 px-3 py-1 text-tiny font-medium text-default-600">
               {fact}
-            </Chip>
+            </span>
           ))}
         </div>
       )}
-      <div className="mt-5 grid w-full grid-cols-1 gap-2.5 text-left sm:grid-cols-3">
+      <div className="mt-8 grid w-full grid-cols-1 gap-3 text-left sm:grid-cols-3">
         {suggestions.map((suggestion) => (
           <button
             type="button"
-            key={suggestion}
-            onClick={() => onSuggestion(suggestion)}
-            className="flex items-start gap-2.5 rounded-large border border-divider bg-content1 px-3.5 py-3 text-left text-small leading-snug transition-all hover:border-[#c9c5bc] hover:bg-content2/50 hover:shadow-[0_2px_8px_rgba(36,32,27,0.05)] dark:hover:border-content4"
+            key={suggestion.title}
+            onClick={() => onSuggestion(suggestion.prompt)}
+            className="chat-option-card group flex min-w-0 flex-col items-start p-4 text-left"
           >
-            <span className="min-w-0 flex-1">{suggestion}</span>
-            <Icon name="arrow" className="mt-0.5 h-4 w-4 text-default-400" />
+            <span className="mb-4 grid size-9 place-items-center rounded-lg bg-primary/[0.07] text-primary">
+              <Icon name={suggestion.icon} className="size-4" />
+            </span>
+            <span className="text-small font-semibold text-foreground">{suggestion.title}</span>
+            <span className="mt-2 text-tiny leading-5 text-default-500">{suggestion.description}</span>
+            <Icon name="arrow" className="mt-4 size-4 text-primary transition-transform duration-200 group-hover:translate-x-0.5" />
           </button>
         ))}
       </div>
@@ -1430,7 +1443,7 @@ function Message({ message, agentName, onOpenDocument }) {
         (isError ? (
           <span
             aria-hidden="true"
-            className="grid h-[30px] w-[30px] place-items-center rounded-full bg-danger text-tiny font-bold text-white"
+            className="grid h-[30px] w-[30px] place-items-center rounded-full bg-danger text-tiny font-bold text-danger-foreground"
           >
             !
           </span>
@@ -1451,7 +1464,7 @@ function Message({ message, agentName, onOpenDocument }) {
             role === "user" ? "justify-end" : ""
           }`}
         >
-          <strong className="text-[13px] font-semibold">{author}</strong>
+          <strong className="text-small font-semibold">{author}</strong>
           {message.createdAt && (
             <span
               className="text-tiny text-default-400"
@@ -1463,13 +1476,15 @@ function Message({ message, agentName, onOpenDocument }) {
         </header>
 
         <div
-          className={`text-small ${
-            role === "user"
-              ? "rounded-[16px] rounded-tr-[5px] border border-divider bg-content2 px-4 py-2.5 shadow-[0_1px_2px_rgba(35,32,28,0.025)]"
-              : isError
-                ? "rounded-[14px] rounded-tl-[4px] border border-danger-200 bg-danger-50 px-4 py-2.5 text-danger dark:border-danger-500/25 dark:bg-danger-500/10"
-                : ""
-          }`}
+          className={cn(
+            "text-small",
+            role === "assistant" && "rounded-2xl rounded-tl-md border border-divider/80 bg-content1 px-4 py-4 shadow-sm sm:px-5",
+            role === "user" && "rounded-2xl rounded-tr-md border border-primary/10 bg-primary/[0.06] px-4 py-3.5 sm:px-5",
+            // Tinted from the single danger token rather than a 50/200 ramp, so
+            // one value drives the fill and the rule in both themes.
+            isError &&
+              "rounded-2xl border border-danger/25 bg-danger/[0.05] px-4 py-3.5 text-danger",
+          )}
         >
           {role !== "user" && message.reasoning && (
             <ThinkingBlock reasoning={message.reasoning} />
@@ -1524,15 +1539,15 @@ function Message({ message, agentName, onOpenDocument }) {
         </div>
 
         <footer
-          className={`mt-2 flex items-center gap-3.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 ${
+          className={`mt-2 flex items-center gap-3.5 opacity-100 transition-opacity sm:opacity-0 sm:group-focus-within:opacity-100 sm:group-hover:opacity-100 ${
             role === "user" ? "justify-end" : ""
           }`}
         >
           <CopyButton value={content} label="Copy message" />
           {message.runId && (
-            <HeroLink href={`/runs/${message.runId}`} size="sm">
+            <InlineLink to={`/runs/${message.runId}`} className="text-tiny">
               View run
-            </HeroLink>
+            </InlineLink>
           )}
         </footer>
       </div>
@@ -1885,7 +1900,7 @@ function LiveMessage({ live, agentName }) {
         circle
         name={agentName}
         size="xs"
-        className="h-[30px] w-[30px] animate-pulse"
+        className="h-[30px] w-[30px]"
       />
       <div className="min-w-0">
         <header className="mb-1.5">
@@ -1908,7 +1923,7 @@ function LiveMessage({ live, agentName }) {
 
         {live.warnings.map((warning, index) => (
           <p
-            className="mb-2 rounded-medium border border-warning-200 bg-warning-50 px-2.5 py-1.5 text-tiny text-warning-700 dark:border-warning-500/25 dark:bg-warning-500/10 dark:text-warning-400"
+            className="mb-2 border-l-2 border-l-warning bg-warning/[0.07] px-2.5 py-1.5 text-tiny text-warning-600 dark:text-warning-400"
             key={`${warning.code}:${index}`}
           >
             {warning.message}
@@ -1943,13 +1958,13 @@ function LiveMessage({ live, agentName }) {
 function DocumentCard({ artifact, onOpen }) {
   const label = artifactLabel(artifact);
   return (
-    <div className="mt-3 flex max-w-[560px] items-center gap-3 rounded-large border border-divider bg-content1 p-3 shadow-[0_2px_10px_rgba(34,31,27,0.05)] transition-colors hover:border-[#c9b4a7] dark:hover:border-[#6f4c3e]">
+    <div className="mt-3 flex max-w-[560px] items-center gap-3 rounded-xl border border-divider bg-content1 p-3 transition-colors hover:border-primary/40">
       <button
         type="button"
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
         onClick={onOpen}
       >
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-medium border border-[#dfcbbf] bg-[#f3e6dc] text-[#925138] dark:border-[#634438] dark:bg-[#442f27] dark:text-[#e49a7d]">
+        <span className="grid h-10 w-10 shrink-0 place-items-center border border-primary/20 bg-primary/[0.07] text-primary dark:bg-primary/[0.16]">
           <Icon name={artifactIcon(artifact)} className="h-5 w-5" />
         </span>
         <span className="min-w-0 flex-1">
@@ -1957,20 +1972,20 @@ function DocumentCard({ artifact, onOpen }) {
             {artifact.title || artifact.filename}
           </strong>
           <span className="mt-0.5 block truncate text-tiny text-default-500">
-            {label} · {formatBytes(artifact.size)} · Preview file
+            {label} · {formatBytes(artifact.size)}{" "}
+            · Preview file
           </span>
         </span>
       </button>
       <Button
-        as="a"
-        href={artifact.downloadUrl}
-        download={artifact.filename}
-        isIconOnly
-        size="sm"
-        variant="light"
+        asChild
+        size="icon-sm"
+        variant="ghost"
         aria-label={`Download ${artifact.filename}`}
       >
-        <Icon name="download" className="h-4 w-4" />
+        <a href={artifact.downloadUrl} download={artifact.filename}>
+          <Icon name="download" className="h-4 w-4" />
+        </a>
       </Button>
     </div>
   );
@@ -2028,32 +2043,36 @@ function DocumentWorkspace({ document, onClose }) {
     document.kind === "live" ? document.filename : artifact?.filename;
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-30 flex w-full flex-col border-l border-divider bg-content1 shadow-[-16px_0_40px_rgba(28,25,22,0.12)] sm:w-[min(680px,82vw)] xl:static xl:z-auto xl:w-auto xl:shadow-none">
+    <aside className="absolute inset-y-0 right-0 z-30 flex w-full flex-col border-l border-divider bg-content1 shadow-overlay sm:w-[min(680px,82vw)] xl:static xl:z-auto xl:w-auto xl:shadow-none">
       <header className="flex min-h-[64px] items-center gap-3 border-b border-divider px-4">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-medium border border-[#dfcbbf] bg-[#f3e6dc] text-[#925138] dark:border-[#634438] dark:bg-[#442f27] dark:text-[#e49a7d]">
+        <span className="grid h-9 w-9 shrink-0 place-items-center border border-primary/20 bg-primary/[0.07] text-primary dark:bg-primary/[0.16]">
           <Icon name={artifactIcon({ kind })} className="h-4 w-4" />
         </span>
         <span className="min-w-0 flex-1">
           <strong className="block truncate text-small font-semibold">
             {title || artifactLabel({ kind })}
           </strong>
-          <span className="block truncate text-[11px] text-default-500">
-            {filename || "document"} {" / "}
+          <span className="block truncate text-tiny text-default-500">
+            {filename || "document"} {"/ "}
             {document.kind === "live" ? "Writing live" : "Saved"}
           </span>
         </span>
-        <div className="flex items-center rounded-medium border border-divider bg-content2 p-0.5">
+        {/* Preview / Code is a segmented choice, so the buttons carry pressed
+            state and the selected one lifts onto the raised surface. */}
+        <div className="flex items-center border border-divider bg-content2 p-0.5">
           {modes.map(([value, label]) => (
             <Button
               key={value}
-              size="sm"
-              variant="light"
-              radius="sm"
-              className={`h-7 min-w-0 px-2.5 text-[11px] ${
-                mode === value ? "bg-content1 shadow-sm" : "text-default-500"
-              }`}
+              size="xs"
+              variant="ghost"
+              className={cn(
+                "h-7 px-2.5 text-tiny",
+                mode === value
+                  ? "bg-content1 text-foreground"
+                  : "text-default-500",
+              )}
               aria-pressed={mode === value}
-              onPress={() => setMode(value)}
+              onClick={() => setMode(value)}
             >
               {label}
             </Button>
@@ -2061,29 +2080,27 @@ function DocumentWorkspace({ document, onClose }) {
         </div>
         {artifact?.downloadUrl && (
           <Button
-            as="a"
-            href={artifact.downloadUrl}
-            download={artifact.filename}
-            isIconOnly
-            size="sm"
-            variant="light"
+            asChild
+            size="icon-sm"
+            variant="ghost"
             aria-label={`Download ${artifact.filename}`}
           >
-            <Icon name="download" className="h-4 w-4" />
+            <a href={artifact.downloadUrl} download={artifact.filename}>
+              <Icon name="download" className="h-4 w-4" />
+            </a>
           </Button>
         )}
         <Button
-          isIconOnly
-          size="sm"
-          variant="light"
+          size="icon-sm"
+          variant="ghost"
           aria-label="Close document workspace"
-          onPress={onClose}
+          onClick={onClose}
         >
           <Icon name="close" className="h-4 w-4" />
         </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[#fbfaf7] p-5 dark:bg-[#1c1b19] sm:p-7">
+      <div className="min-h-0 flex-1 overflow-y-auto bg-content2 p-5 sm:p-7">
         {loading ? (
           <DocumentWritingState label="Loading document" />
         ) : error ? (
@@ -2107,8 +2124,10 @@ function DocumentWritingState({ label }) {
       className="grid min-h-64 place-items-center text-center text-small text-default-500"
       role="status"
     >
-      <span className="flex flex-col items-center gap-3">
-        <ActivityIndicator />
+      <span className="flex flex-col items-center gap-4">
+        <span className="grid size-14 place-items-center rounded-2xl border border-primary/10 bg-primary/[0.05] text-primary">
+          <ActivityIndicator className="size-6" />
+        </span>
         {label}...
       </span>
     </div>
@@ -2118,8 +2137,8 @@ function DocumentWritingState({ label }) {
 function LiveDocumentCard({ artifact }) {
   const filename = artifact?.metadata?.filename ?? "document";
   return (
-    <div className="mb-2 flex max-w-[560px] items-center gap-3 rounded-large border border-[#dfcbbf] bg-[#fbf3ed] p-3 dark:border-[#634438] dark:bg-[#33251f]">
-      <span className="grid h-10 w-10 place-items-center rounded-medium bg-[#f0ddd0] text-[#925138] dark:bg-[#4b3329] dark:text-[#e49a7d]">
+    <div className="mb-2 flex max-w-[560px] items-center gap-3 border border-primary/25 bg-primary/[0.05] p-3 dark:bg-primary/[0.12]">
+      <span className="grid h-10 w-10 place-items-center bg-primary/[0.12] text-primary dark:bg-primary/25">
         <Icon name={artifactIcon(artifact)} className="h-5 w-5" />
       </span>
       <span className="min-w-0 flex-1">
@@ -2146,7 +2165,7 @@ function formatBytes(value) {
 function ThinkingBlock({ reasoning, live = false }) {
   return (
     <details
-      className="group/thinking mb-3 overflow-hidden rounded-medium border border-divider bg-content2/55"
+      className="group/thinking mb-3 overflow-hidden rounded-xl border border-divider bg-content2/55"
       defaultOpen={live}
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-tiny [&::-webkit-details-marker]:hidden">
@@ -2162,7 +2181,7 @@ function ThinkingBlock({ reasoning, live = false }) {
         />
       </summary>
       <div className="border-t border-divider px-3 py-3">
-        <p className="message-text max-h-[320px] whitespace-pre-wrap overflow-y-auto text-[12px] leading-5 text-default-500">
+        <p className="message-text max-h-[320px] whitespace-pre-wrap overflow-y-auto text-tiny leading-5 text-default-500">
           {reasoning}
         </p>
       </div>
@@ -2178,11 +2197,11 @@ function TokenUsageDetails({
 }) {
   const details = usageDetails.filter((entry) => hasTokenUsage(entry?.usage));
   return (
-    <details className="group/usage mt-3 overflow-hidden rounded-medium border border-divider bg-content2/45">
+    <details className="group/usage mt-3 overflow-hidden rounded-xl border border-divider bg-content2/45">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-tiny [&::-webkit-details-marker]:hidden">
         <Icon name="tokens" className="h-4 w-4 text-secondary" />
         <span className="font-semibold text-foreground">Usage</span>
-        <span className="rounded-full bg-secondary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-secondary">
+        <span className="border-l-2 border-l-primary bg-content2 px-2 py-0.5 font-mono text-micro font-semibold uppercase tracking-label text-primary">
           {formatTokenCount(tokenTotal(usage))}
         </span>
         <span className="hidden text-default-400 sm:inline">
@@ -2200,14 +2219,12 @@ function TokenUsageDetails({
         {details.length > 0 && (
           <section>
             <div className="mb-1.5 flex items-center justify-between gap-3">
-              <h4 className="text-[10px] font-semibold uppercase tracking-[0.09em] text-default-400">
-                Model requests
-              </h4>
-              <span className="text-[10px] text-default-400">
+              <h4 className="label">Model requests</h4>
+              <span className="text-micro text-default-400">
                 {details.length} {details.length === 1 ? "step" : "steps"}
               </span>
             </div>
-            <div className="overflow-hidden rounded-medium border border-divider bg-content1">
+            <div className="overflow-hidden rounded-xl border border-divider bg-content1">
               {details.map((detail, index) => (
                 <UsageStepRow
                   key={detail.turnId ?? index}
@@ -2219,9 +2236,9 @@ function TokenUsageDetails({
             </div>
           </section>
         )}
-        <p className="text-[10px] leading-4 text-default-400">
-          Provider-reported token usage. Cached and reasoning tokens are
-          subsets and are not added to the total again.
+        <p className="text-micro leading-4 text-default-400">
+          Provider-reported token usage. Cached and reasoning tokens are subsets
+          and are not added to the total again.
         </p>
       </div>
     </details>
@@ -2242,12 +2259,12 @@ function UsageMetricGrid({ usage }) {
       {metrics.map(([label, value]) => (
         <div
           key={label}
-          className="rounded-medium border border-divider bg-content1 px-2.5 py-2"
+          className="border border-divider bg-content1 px-2.5 py-2"
         >
-          <dt className="text-[10px] uppercase tracking-[0.08em] text-default-400">
+          <dt className="text-micro uppercase tracking-[0.08em] text-default-400">
             {label}
           </dt>
-          <dd className="mt-0.5 font-mono text-[12px] font-semibold text-foreground">
+          <dd className="mt-0.5 font-mono text-tiny font-semibold text-foreground">
             {Number(value ?? 0).toLocaleString()}
           </dd>
         </div>
@@ -2269,13 +2286,13 @@ function UsageStepRow({ detail, index, toolCalls }) {
   const label = uniqueTools.length ? uniqueTools.join(", ") : "Final response";
   return (
     <div className="flex items-center gap-3 border-b border-divider px-2.5 py-2 last:border-b-0">
-      <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-content2 font-mono text-[10px] font-semibold text-default-500">
+      <span className="grid h-6 w-6 shrink-0 place-items-center border border-divider bg-content2 font-mono text-micro font-semibold text-default-500">
         {detail.turn ?? index + 1}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[11px] text-default-500">
+      <span className="min-w-0 flex-1 truncate text-tiny text-default-500">
         {label}
       </span>
-      <span className="shrink-0 font-mono text-[11px] font-semibold text-foreground">
+      <span className="shrink-0 font-mono text-tiny font-semibold text-foreground">
         {formatTokenCount(tokenTotal(detail.usage))}
       </span>
     </div>
@@ -2302,7 +2319,7 @@ function ToolHistory({ toolCalls, usageDetails = [], live = false }) {
   );
   return (
     <details
-      className="group/tools mb-3 overflow-hidden rounded-medium border border-divider bg-content2/55"
+      className="group/tools mb-3 overflow-hidden rounded-xl border border-divider bg-content2/55"
       defaultOpen={live}
     >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-tiny [&::-webkit-details-marker]:hidden">
@@ -2365,12 +2382,12 @@ function ToolCard({ tool, usageDetails }) {
           {tool.name || "tool"}
         </code>
         {usageInfo && (
-          <span className="ml-auto shrink-0 rounded-full bg-secondary/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-secondary">
+          <span className="ml-auto shrink-0 border-l-2 border-l-primary bg-content2 px-2 py-0.5 font-mono text-micro font-semibold uppercase tracking-label text-primary">
             {formatTokenCount(tokenTotal(usageInfo.usage), "tok")}
           </span>
         )}
         <span
-          className={`${usageInfo ? "" : "ml-auto"} shrink-0 text-[11px] ${tone}`}
+          className={`${usageInfo ? "" : "ml-auto"} shrink-0 text-tiny ${tone}`}
         >
           {stateLabel || "Complete"}
         </span>
@@ -2383,10 +2400,8 @@ function ToolCard({ tool, usageDetails }) {
         {usageInfo && (
           <section>
             <div className="mb-1.5 flex items-center justify-between gap-3">
-              <h4 className="text-[10px] font-semibold uppercase tracking-[0.09em] text-default-400">
-                Model-step usage
-              </h4>
-              <span className="text-[10px] text-default-400">
+              <h4 className="label">Model-step usage</h4>
+              <span className="text-micro text-default-400">
                 {usageInfo.turn ? `Step ${usageInfo.turn}` : "Requesting step"}
                 {usageInfo.sharedAcross > 1
                   ? ` · shared by ${usageInfo.sharedAcross} calls`
@@ -2401,7 +2416,7 @@ function ToolCard({ tool, usageDetails }) {
           <ToolDetail label="Output" value={output.join("\n")} />
         )}
         {!tool.input && output.length === 0 && (
-          <p className="text-[11px] text-default-400">
+          <p className="text-tiny text-default-400">
             Waiting for tool details...
           </p>
         )}
@@ -2413,10 +2428,8 @@ function ToolCard({ tool, usageDetails }) {
 function ToolDetail({ label, value }) {
   return (
     <section>
-      <h4 className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.09em] text-default-400">
-        {label}
-      </h4>
-      <pre className="message-text max-h-[240px] overflow-auto whitespace-pre-wrap break-words rounded-medium border border-divider bg-content1 px-3 py-2 font-mono text-[11px] leading-5 text-default-600">
+      <h4 className="label mb-1.5">{label}</h4>
+      <pre className="message-text max-h-[240px] overflow-auto whitespace-pre-wrap break-words border border-divider bg-content1 px-3 py-2 font-mono text-tiny leading-5 text-default-600">
         {value}
       </pre>
     </section>
@@ -2430,7 +2443,7 @@ function PendingMessage({ agentName }) {
         circle
         name={agentName}
         size="xs"
-        className="h-[30px] w-[30px] animate-pulse"
+        className="h-[30px] w-[30px]"
       />
       <div className="min-w-0">
         <header className="mb-1.5">
@@ -2448,12 +2461,12 @@ function PendingMessage({ agentName }) {
 function TypingDots() {
   return (
     <span
-      className="ml-1.5 inline-flex gap-[3px] align-middle"
+      className="ml-2 inline-flex items-center gap-1.5 align-middle"
       aria-hidden="true"
     >
-      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400" />
-      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.15s]" />
-      <i className="h-1 w-1 animate-typing-hop rounded-full bg-default-400 [animation-delay:0.3s]" />
+      <i className="size-1 rounded-full animate-typing-hop bg-primary/70" />
+      <i className="size-1 rounded-full animate-typing-hop bg-primary/70 [animation-delay:0.15s]" />
+      <i className="size-1 rounded-full animate-typing-hop bg-primary/70 [animation-delay:0.3s]" />
     </span>
   );
 }
@@ -2461,8 +2474,8 @@ function TypingDots() {
 function CodeBlock({ value }) {
   const { language, code } = splitFence(value);
   return (
-    <div className="my-3 overflow-hidden rounded-medium border border-divider bg-content2 first:mt-0 last:mb-0">
-      <div className="flex items-center justify-between gap-2.5 border-b border-divider bg-content3/40 py-1.5 pl-3 pr-2 text-[10px] font-bold uppercase tracking-[0.08em] text-default-500">
+    <div className="my-3 overflow-hidden rounded-xl border border-divider bg-content2 first:mt-0 last:mb-0">
+      <div className="flex items-center justify-between gap-2.5 border-b border-divider bg-content3/40 py-1.5 pl-3 pr-2 text-micro font-bold uppercase tracking-[0.08em] text-default-500">
         <span>{language || "code"}</span>
         <CopyButton value={code} label="Copy code" />
       </div>
@@ -2506,19 +2519,20 @@ function countLabel(count, noun) {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
+/** `variant` is a Badge variant, so the session state maps straight onto the token. */
 function sessionPresentation(session) {
   if (session?.status === "running")
-    return { label: "Session running", color: "primary" };
+    return { label: "Session running", variant: "default" };
   if (session?.status === "error")
-    return { label: "Session issue", color: "danger" };
+    return { label: "Session issue", variant: "destructive" };
   if (session?.origin === "client_history")
-    return { label: "Context restored", color: "secondary" };
+    return { label: "Context restored", variant: "secondary" };
   if (session?.status === "active")
     return {
       label: session?.storage === "s3" ? "S3 session active" : "Session active",
-      color: "success",
+      variant: "success",
     };
-  return { label: "New session", color: "default" };
+  return { label: "New session", variant: "outline" };
 }
 
 function sessionDescription(session) {

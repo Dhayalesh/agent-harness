@@ -1,6 +1,6 @@
-# Agent Console
+# Enterprise Agents
 
-Agent Console is a React + HeroUI + Express control plane for agents hosted on Amazon
+Enterprise Agents is a React + HeroUI + Express control plane for agents hosted on Amazon
 Bedrock AgentCore Runtime. It manages the existing `trueai_agent_platform` records in MongoDB,
 resolves their referenced model provider, MCP servers, and skills, invokes the deployed
 runtime, and renders saved chats and runs in the browser.

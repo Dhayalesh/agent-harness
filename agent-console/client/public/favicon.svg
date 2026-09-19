@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" fill="#0057d2"/>
+  <!-- A precision reticle: four ticks addressing a solid centre. Square, like the rest of the system. -->
+  <rect x="14" y="14" width="4" height="4" fill="#ffffff"/>
+  <rect x="15" y="5" width="2" height="6" fill="#ffffff"/>
+  <rect x="15" y="21" width="2" height="6" fill="#ffffff"/>
+  <rect x="5" y="15" width="6" height="2" fill="#ffffff"/>
+  <rect x="21" y="15" width="6" height="2" fill="#ffffff"/>
+</svg>

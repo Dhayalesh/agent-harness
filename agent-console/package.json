@@ -1,8 +1,8 @@
 {
-  "name": "agent-console",
+  "name": "enterprise-agents",
   "version": "0.1.0",
   "private": true,
-  "description": "MongoDB-backed control plane that invokes the hosted agent harness through Amazon Bedrock AgentCore",
+  "description": "Enterprise Agents — MongoDB-backed control plane that invokes the hosted agent harness through Amazon Bedrock AgentCore",
   "type": "module",
   "engines": {
     "node": ">=22"

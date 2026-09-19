@@ -25,7 +25,11 @@ export function ContextIndicator({
       "span",
       { className: "whitespace-nowrap tabular-nums" },
       "Context ",
-      createElement("strong", { className: "font-medium text-foreground" }, `${percent}%`),
+      createElement(
+        "strong",
+        { className: "font-medium text-foreground" },
+        `${percent}%`,
+      ),
     ),
     onCompact
       ? createElement(
@@ -33,7 +37,7 @@ export function ContextIndicator({
           {
             type: "button",
             className:
-              "rounded-small px-1.5 py-0.5 font-medium text-secondary outline-none hover:bg-secondary-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-secondary-100/10",
+              "rounded-md px-1.5 py-0.5 font-medium text-primary outline-none transition-colors duration-200 hover:bg-primary/[0.06] disabled:cursor-not-allowed disabled:opacity-50",
             disabled: disabled || compacting,
             onClick: onCompact,
             "aria-busy": compacting || undefined,

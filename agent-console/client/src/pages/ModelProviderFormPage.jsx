@@ -1,27 +1,49 @@
-import {
-  Autocomplete,
-  AutocompleteItem,
-  Button,
-  Input,
-  Select,
-  SelectItem,
-} from "@heroui/react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../api.js";
 import {
+  ActivityIndicator,
   ErrorNote,
-  FormActions,
-  Loading,
-  PageHeader,
-  SectionCard,
+  Field,
   ToggleCard,
 } from "../components/Bits.jsx";
+import {
+  FormActionBar,
+  FormBody,
+  FormRow,
+  FormSection,
+} from "../components/FormLayout.jsx";
+import { Icon } from "../components/Icon.jsx";
 import {
   KeyValueEditor,
   rowsFromSecretMap,
   secretMapFromRows,
 } from "../components/MapEditor.jsx";
+import { PageShell } from "../components/PageShell.jsx";
+import { SkeletonPanels } from "../components/Skeleton.jsx";
+import { useToast } from "../components/Toast.jsx";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Input } from "@/components/ui/input";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const EMPTY = {
   name: "",
@@ -44,14 +66,23 @@ export function ModelProviderFormPage({ mode }) {
   const { id } = useParams();
   const navigate = useNavigate();
   const editing = mode === "edit";
+  const { toast } = useToast();
 
   const [form, setForm] = useState(editing ? null : { ...EMPTY, headers: [] });
+  // Snapshot of the loaded record, so the save bar can tell whether anything
+  // actually changed instead of always offering to save.
+  const [baseline, setBaseline] = useState(
+    editing ? null : { ...EMPTY, headers: [] },
+  );
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
   const [catalogue, setCatalogue] = useState([]);
   const [catalogueError, setCatalogueError] = useState(null);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [providers, setProviders] = useState([EMPTY.provider]);
+  // Presentation only: the fetched-model list is a popover, so it needs to be
+  // closed once a row is picked.
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
 
   useEffect(() => {
     void api
@@ -72,8 +103,8 @@ export function ModelProviderFormPage({ mode }) {
     if (!editing) return;
     void api
       .getModelProvider(id)
-      .then(({ modelProvider }) =>
-        setForm({
+      .then(({ modelProvider }) => {
+        const loaded = {
           ...EMPTY,
           ...modelProvider,
           provider: EMPTY.provider,
@@ -96,8 +127,10 @@ export function ModelProviderFormPage({ mode }) {
             modelProvider.headers,
             modelProvider.headerNames,
           ),
-        }),
-      )
+        };
+        setForm(loaded);
+        setBaseline(loaded);
+      })
       .catch(setError);
   }, [editing, id]);
 
@@ -108,12 +141,14 @@ export function ModelProviderFormPage({ mode }) {
     return map;
   }, [error]);
 
+  // A create form is dirty from the start; there is nothing saved to match.
+  const dirty = useMemo(
+    () => !editing || JSON.stringify(form) !== JSON.stringify(baseline),
+    [editing, form, baseline],
+  );
+
   if (form === null)
-    return error ? (
-      <ErrorNote error={error} />
-    ) : (
-      <Loading what="model provider" />
-    );
+    return error ? <ErrorNote error={error} /> : <SkeletonPanels count={3} />;
 
   const set = (key) => (value) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -124,21 +159,15 @@ export function ModelProviderFormPage({ mode }) {
       [key]: value === "" ? "" : Number(value),
     }));
 
-  const changeProvider = (keys) => {
-    const provider = [...keys][0] ?? EMPTY.provider;
+  // The select reports the chosen value itself, so there is no selection set to
+  // unpack here any more.
+  const changeProvider = (provider) => {
     setCatalogue([]);
     setCatalogueError(null);
-    setForm((current) => ({
-      ...current,
-      provider,
-    }));
+    setForm((current) => ({ ...current, provider }));
   };
 
-  const changeModel = (model) =>
-    setForm((current) => ({
-      ...current,
-      model,
-    }));
+  const changeModel = (model) => setForm((current) => ({ ...current, model }));
 
   const selectModel = (key) => {
     if (!key) return;
@@ -159,9 +188,11 @@ export function ModelProviderFormPage({ mode }) {
       });
       setCatalogue(found.models ?? []);
       const selected = found.models?.find((entry) => entry.id === form.model);
-      if (selected) {
-        setForm((current) => applyCatalogModel(current, selected));
-      }
+      if (selected) setForm((current) => applyCatalogModel(current, selected));
+      toast({
+        title: `${(found.models ?? []).length.toLocaleString()} models fetched`,
+        tone: "info",
+      });
     } catch (caught) {
       setCatalogueError(caught);
       setCatalogue([]);
@@ -199,282 +230,356 @@ export function ModelProviderFormPage({ mode }) {
 
     try {
       if (editing) await api.updateModelProvider(id, body);
-      else {
-        await api.createModelProvider({
-          ...body,
-          apiKey: form.apiKey.trim(),
-        });
-      }
+      else
+        await api.createModelProvider({ ...body, apiKey: form.apiKey.trim() });
+      toast({
+        title: editing ? "Provider updated" : "Provider created",
+        description: body.name,
+      });
       navigate("/model-providers");
     } catch (caught) {
       setError(caught);
+      toast({
+        title: "Could not save provider",
+        description: caught.message,
+        tone: "danger",
+      });
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <section>
-      <PageHeader
-        eyebrow="Model provider"
-        title={editing ? `Edit ${form.name}` : "New model provider"}
-        description="Configure the endpoint, credential, and limits the hosted runtime uses for model calls."
-        actions={
-          <Button as={Link} to="/model-providers" variant="light" radius="md">
-            Cancel
-          </Button>
-        }
-      />
-
+    <PageShell
+      breadcrumbs={[
+        { label: "Configuration" },
+        { label: "Model providers", to: "/model-providers" },
+        { label: editing ? form.name || "Edit" : "New provider" },
+      ]}
+      title={editing ? `Edit ${form.name}` : "New model provider"}
+      description="Configure the endpoint, credential, and limits the hosted runtime uses for model calls."
+    >
       <ErrorNote error={error} />
 
-      <form className="flex max-w-[860px] flex-col gap-4" onSubmit={submit}>
-        <SectionCard
-          title="Identity and model"
-          description="Which endpoint answers, and with which model."
-          bodyClassName="gap-4 px-5 py-4"
-        >
-          <Input
-            isRequired
-            label="Name"
-            labelPlacement="outside"
-            placeholder="openai-compatible"
-            variant="bordered"
-            maxLength={100}
-            value={form.name}
-            onValueChange={set("name")}
-            description="Human-readable provider name. Unique."
-            isInvalid={Boolean(fieldErrors.name)}
-            errorMessage={fieldErrors.name}
-          />
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Select
-              label="Provider"
-              labelPlacement="outside"
-              placeholder="OpenAI-compatible"
-              variant="bordered"
-              selectedKeys={[form.provider]}
-              onSelectionChange={changeProvider}
-              isInvalid={Boolean(fieldErrors.provider)}
-              errorMessage={fieldErrors.provider}
+      <FormBody>
+        <form onSubmit={submit}>
+          <FormSection
+            title="Identity and model"
+            description="Which endpoint answers, and with which model."
+          >
+            <Field
+              label="Name"
+              htmlFor="provider-name"
+              hint="Human-readable provider name. Unique."
+              error={fieldErrors.name}
             >
-              {providers.map((provider) => (
-                <SelectItem key={provider}>{provider}</SelectItem>
-              ))}
-            </Select>
-            {catalogue.length ? (
-              <Autocomplete
-                isRequired
-                allowsCustomValue
-                label="Model"
-                labelPlacement="outside"
-                placeholder="Search fetched models"
-                variant="bordered"
-                items={catalogue}
-                inputValue={form.model}
-                selectedKey={
-                  catalogue.some((entry) => entry.id === form.model)
-                    ? form.model
-                    : null
-                }
-                onInputChange={changeModel}
-                onSelectionChange={selectModel}
-                isInvalid={Boolean(fieldErrors.model)}
-                errorMessage={fieldErrors.model}
-              >
-                {(model) => (
-                  <AutocompleteItem key={model.id} textValue={`${model.name} ${model.id}`}>
-                    <div className="flex min-w-0 flex-col py-0.5">
-                      <span className="truncate text-small">{model.name}</span>
-                      <span className="truncate font-mono text-tiny text-default-400">
-                        {model.id}
-                      </span>
-                    </div>
-                  </AutocompleteItem>
-                )}
-              </Autocomplete>
-            ) : (
               <Input
-                isRequired
-                label="Model"
-                labelPlacement="outside"
-                placeholder="provider/model-id"
-                variant="bordered"
-                maxLength={300}
-                value={form.model}
-                onValueChange={changeModel}
-                isInvalid={Boolean(fieldErrors.model)}
-                errorMessage={fieldErrors.model}
+                id="provider-name"
+                required
+                placeholder="openai-compatible"
+                maxLength={100}
+                value={form.name}
+                onChange={(event) => set("name")(event.target.value)}
+                aria-invalid={Boolean(fieldErrors.name)}
               />
-            )}
-          </div>
-          <Input
-            type="url"
-            label="Base URL"
-            labelPlacement="outside"
-            placeholder="https://api.example.com/v1"
-            variant="bordered"
-            spellCheck={false}
-            isRequired
-            value={form.baseURL}
-            onValueChange={set("baseURL")}
-            description="Required for an OpenAI-compatible provider."
-            isInvalid={Boolean(fieldErrors.baseURL)}
-            errorMessage={fieldErrors.baseURL}
-          />
-          <div className="flex flex-col gap-2 rounded-medium border border-divider bg-content2/50 px-3 py-3 sm:flex-row sm:items-center">
-            <div className="min-w-0 flex-1">
-              <p className="text-small font-medium">Automatic model catalogue</p>
-              <p className="text-tiny text-default-500">
-                Fetch model IDs, token limits, and capabilities from the connected provider.
-              </p>
-            </div>
-            <Button
-              type="button"
-              color="secondary"
-              variant="flat"
-              radius="md"
-              isLoading={fetchingModels}
-              isDisabled={fetchingModels || (!editing && !form.apiKey.trim())}
-              onPress={fetchModels}
+            </Field>
+            <FormRow>
+              <Field
+                label="Provider"
+                htmlFor="provider-adapter"
+                error={fieldErrors.provider}
+              >
+                <Select value={form.provider} onValueChange={changeProvider}>
+                  <SelectTrigger
+                    id="provider-adapter"
+                    aria-invalid={Boolean(fieldErrors.provider)}
+                  >
+                    <SelectValue placeholder="OpenAI-compatible" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providers.map((provider) => (
+                      <SelectItem key={provider} value={provider}>
+                        {provider}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              {catalogue.length ? (
+                <Field
+                  label="Model"
+                  htmlFor="provider-model"
+                  error={fieldErrors.model}
+                >
+                  {/*
+                    The fetched catalogue is a searchable list beside the field
+                    rather than a menu attached to it, so a model id that is not
+                    in the catalogue can still be typed straight in.
+                  */}
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="provider-model"
+                      required
+                      placeholder="Search fetched models"
+                      value={form.model}
+                      onChange={(event) => changeModel(event.target.value)}
+                      aria-invalid={Boolean(fieldErrors.model)}
+                    />
+                    <Popover
+                      open={modelPickerOpen}
+                      onOpenChange={setModelPickerOpen}
+                    >
+                      <PopoverTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="icon"
+                          aria-label="Browse fetched models"
+                        >
+                          <Icon name="chevron" className="h-4 w-4" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-[320px] p-0">
+                        <Command>
+                          <CommandInput placeholder="Search fetched models" />
+                          <CommandList>
+                            <CommandEmpty>No matching model.</CommandEmpty>
+                            <CommandGroup>
+                              {catalogue.map((model) => (
+                                <CommandItem
+                                  key={model.id}
+                                  value={`${model.name} ${model.id}`}
+                                  onSelect={() => {
+                                    selectModel(model.id);
+                                    setModelPickerOpen(false);
+                                  }}
+                                >
+                                  <div className="flex min-w-0 flex-col py-0.5">
+                                    <span className="truncate text-small">
+                                      {model.name}
+                                    </span>
+                                    <span className="truncate font-mono text-tiny text-default-400">
+                                      {model.id}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                </Field>
+              ) : (
+                <Field
+                  label="Model"
+                  htmlFor="provider-model"
+                  error={fieldErrors.model}
+                >
+                  <Input
+                    id="provider-model"
+                    required
+                    placeholder="provider/model-id"
+                    maxLength={300}
+                    value={form.model}
+                    onChange={(event) => changeModel(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.model)}
+                  />
+                </Field>
+              )}
+            </FormRow>
+            <Field
+              label="Base URL"
+              htmlFor="provider-base-url"
+              hint="Required for an OpenAI-compatible provider."
+              error={fieldErrors.baseURL}
             >
-              {catalogue.length ? "Refresh models" : "Fetch models"}
-            </Button>
-          </div>
-          {catalogueError && <ErrorNote error={catalogueError} />}
-          {catalogue.length > 0 && (
-            <p className="text-tiny text-default-500">
-              {catalogue.length.toLocaleString()} models fetched
-            </p>
-          )}
-        </SectionCard>
+              <Input
+                id="provider-base-url"
+                type="url"
+                placeholder="https://api.example.com/v1"
+                spellCheck={false}
+                required
+                value={form.baseURL}
+                onChange={(event) => set("baseURL")(event.target.value)}
+                aria-invalid={Boolean(fieldErrors.baseURL)}
+              />
+            </Field>
 
-        <SectionCard
-          title="Authentication"
-          description="The credential is stored server-side and never returned to the browser."
-          bodyClassName="gap-4 px-5 py-4"
-        >
-          <Input
-            isReadOnly
-            label="Authentication"
-            labelPlacement="outside"
-            variant="bordered"
-            value="bearer"
-            description="The hosted runtime supports Authorization: Bearer for model providers."
+            <div className="flex flex-col gap-2.5 border border-divider bg-content2 px-3.5 py-3 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1">
+                <p className="text-small font-medium text-foreground">
+                  Automatic model catalogue
+                </p>
+                <p className="mt-0.5 text-tiny leading-5 text-default-500">
+                  Fetch model IDs, token limits, and capabilities from the
+                  connected provider.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-9 shrink-0 font-medium"
+                disabled={fetchingModels || (!editing && !form.apiKey.trim())}
+                onClick={fetchModels}
+              >
+                {fetchingModels && <ActivityIndicator size="sm" />}
+                {catalogue.length ? "Refresh models" : "Fetch models"}
+              </Button>
+            </div>
+            {catalogueError && <ErrorNote error={catalogueError} />}
+            {catalogue.length > 0 && (
+              <p className="metric text-tiny text-default-500">
+                {catalogue.length.toLocaleString()} models available
+              </p>
+            )}
+          </FormSection>
+
+          <FormSection
+            title="Authentication"
+            description="The credential is stored server-side and never returned to the browser."
+          >
+            <Field
+              label="Scheme"
+              htmlFor="provider-scheme"
+              hint="The hosted runtime supports Authorization: Bearer for model providers."
+            >
+              <Input id="provider-scheme" readOnly value="bearer" />
+            </Field>
+            <Field
+              label="API key"
+              htmlFor="provider-api-key"
+              hint={
+                editing
+                  ? "Blank leaves the stored key unchanged."
+                  : "Required. The saved value is never returned to the browser."
+              }
+              error={fieldErrors.apiKey}
+            >
+              <Input
+                id="provider-api-key"
+                type="password"
+                placeholder={editing ? "•••••••• (unchanged)" : "sk-…"}
+                autoComplete="new-password"
+                required={!editing || !form.hasApiKey}
+                value={form.apiKey}
+                onChange={(event) => set("apiKey")(event.target.value)}
+                aria-invalid={Boolean(fieldErrors.apiKey)}
+              />
+            </Field>
+            <KeyValueEditor
+              label="Additional headers"
+              hint="Optional static request headers. Authorization is supplied by the API key above."
+              addLabel="Add header"
+              keyPlaceholder="Header name"
+              rows={form.headers}
+              onChange={set("headers")}
+              error={fieldErrors.headers}
+              editing={editing}
+            />
+          </FormSection>
+
+          <FormSection
+            title="Capabilities"
+            description="What the console and runtime may assume about this model. Fetching the catalogue fills these in."
+          >
+            <FormRow>
+              <Field
+                label="Context window"
+                htmlFor="provider-context-window"
+                hint="Total model context in tokens."
+                error={fieldErrors["capabilities.contextWindow"]}
+              >
+                <Input
+                  id="provider-context-window"
+                  required
+                  type="number"
+                  min={1}
+                  max={10_000_000}
+                  placeholder="200000"
+                  value={String(form.contextWindow)}
+                  onChange={(event) =>
+                    setNumber("contextWindow")(event.target.value)
+                  }
+                  aria-invalid={Boolean(
+                    fieldErrors["capabilities.contextWindow"],
+                  )}
+                />
+              </Field>
+              <Field
+                label="Max output tokens"
+                htmlFor="provider-max-output-tokens"
+                hint="Must be smaller than the context window."
+                error={fieldErrors["capabilities.maxOutputTokens"]}
+              >
+                <Input
+                  id="provider-max-output-tokens"
+                  required
+                  type="number"
+                  min={1}
+                  max={10_000_000}
+                  placeholder="8192"
+                  value={String(form.maxOutputTokens)}
+                  onChange={(event) =>
+                    setNumber("maxOutputTokens")(event.target.value)
+                  }
+                  aria-invalid={Boolean(
+                    fieldErrors["capabilities.maxOutputTokens"],
+                  )}
+                />
+              </Field>
+            </FormRow>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <ToggleCard
+                label="Supports tools"
+                isSelected={form.supportsTools}
+                onValueChange={set("supportsTools")}
+              />
+              <ToggleCard
+                label="Supports streaming"
+                isSelected={form.supportsStreaming}
+                onValueChange={set("supportsStreaming")}
+              />
+              <ToggleCard
+                label="Supports reasoning"
+                isSelected={form.supportsReasoning}
+                onValueChange={set("supportsReasoning")}
+              />
+            </div>
+          </FormSection>
+
+          <FormSection
+            title="Availability"
+            description="Whether agents may select this provider, and whether it is offered first."
+          >
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <ToggleCard
+                label="Enabled"
+                hint="Available for agents to reference"
+                isSelected={form.enabled}
+                onValueChange={set("enabled")}
+              />
+              <ToggleCard
+                label="Default provider"
+                hint="Pre-selected on new agents"
+                isSelected={form.isDefault}
+                onValueChange={set("isDefault")}
+              />
+            </div>
+          </FormSection>
+
+          <FormActionBar
+            cancelHref="/model-providers"
+            saving={saving}
+            dirty={dirty}
+            isDisabled={saving}
+            label={editing ? "Save changes" : "Create provider"}
           />
-          <Input
-            type="password"
-            label="API key"
-            labelPlacement="outside"
-            placeholder={editing ? "•••••••• (unchanged)" : "sk-…"}
-            variant="bordered"
-            autoComplete="new-password"
-            isRequired={!editing || !form.hasApiKey}
-            value={form.apiKey}
-            onValueChange={set("apiKey")}
-            description={
-              editing
-                ? "Blank leaves the stored key unchanged."
-                : "Required. The saved value is never returned to the browser."
-            }
-            isInvalid={Boolean(fieldErrors.apiKey)}
-            errorMessage={fieldErrors.apiKey}
-          />
-          <KeyValueEditor
-            label="Additional headers"
-            hint="Optional static request headers. Authorization is supplied by the API key above."
-            addLabel="Add header"
-            keyPlaceholder="Header name"
-            rows={form.headers}
-            onChange={set("headers")}
-            error={fieldErrors.headers}
-            editing={editing}
-          />
-        </SectionCard>
-
-        <SectionCard
-          title="Capabilities"
-          description="What the console and runtime may assume about this model."
-          bodyClassName="gap-4 px-5 py-4"
-        >
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <Input
-              isRequired
-              type="number"
-              min={1}
-              max={10_000_000}
-              label="Context window"
-              labelPlacement="outside"
-              placeholder="200000"
-              variant="bordered"
-              value={String(form.contextWindow)}
-              onValueChange={setNumber("contextWindow")}
-              description="Total model context in tokens."
-              isInvalid={Boolean(fieldErrors["capabilities.contextWindow"])}
-              errorMessage={fieldErrors["capabilities.contextWindow"]}
-            />
-            <Input
-              isRequired
-              type="number"
-              min={1}
-              max={10_000_000}
-              label="Max output tokens"
-              labelPlacement="outside"
-              placeholder="8192"
-              variant="bordered"
-              value={String(form.maxOutputTokens)}
-              onValueChange={setNumber("maxOutputTokens")}
-              description="Must be smaller than the context window."
-              isInvalid={Boolean(fieldErrors["capabilities.maxOutputTokens"])}
-              errorMessage={fieldErrors["capabilities.maxOutputTokens"]}
-            />
-          </div>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <ToggleCard
-              label="Supports tools"
-              isSelected={form.supportsTools}
-              onValueChange={set("supportsTools")}
-            />
-            <ToggleCard
-              label="Supports streaming"
-              isSelected={form.supportsStreaming}
-              onValueChange={set("supportsStreaming")}
-            />
-            <ToggleCard
-              label="Supports reasoning"
-              isSelected={form.supportsReasoning}
-              onValueChange={set("supportsReasoning")}
-            />
-          </div>
-        </SectionCard>
-
-        <SectionCard
-          title="Availability"
-          description="Whether agents may select this provider."
-          bodyClassName="gap-3 px-5 py-4"
-        >
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <ToggleCard
-              label="Enabled"
-              isSelected={form.enabled}
-              onValueChange={set("enabled")}
-            />
-            <ToggleCard
-              label="Default provider"
-              isSelected={form.isDefault}
-              onValueChange={set("isDefault")}
-            />
-          </div>
-        </SectionCard>
-
-        <FormActions
-          cancelHref="/model-providers"
-          saving={saving}
-          isDisabled={saving}
-          label={editing ? "Save changes" : "Create provider"}
-        />
-      </form>
-    </section>
+        </form>
+      </FormBody>
+    </PageShell>
   );
 }
 
@@ -493,10 +598,7 @@ function applyCatalogModel(current, selected) {
     contextWindow,
     maxOutputTokens,
     supportsTools: selected.supportsTools ?? current.supportsTools,
-    supportsStreaming:
-      selected.supportsStreaming ?? current.supportsStreaming,
-    supportsReasoning:
-      selected.supportsReasoning ?? current.supportsReasoning,
+    supportsStreaming: selected.supportsStreaming ?? current.supportsStreaming,
+    supportsReasoning: selected.supportsReasoning ?? current.supportsReasoning,
   };
 }
-

@@ -1,7 +1,7 @@
-import { Button } from "@heroui/react";
 import { Link, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell.jsx";
 import { EmptyState } from "./components/Bits.jsx";
+import { Button } from "./components/ui/button.jsx";
 import { AgentDetailPage } from "./pages/AgentDetailPage.jsx";
 import { AgentFormPage } from "./pages/AgentFormPage.jsx";
 import { AgentsPage } from "./pages/AgentsPage.jsx";
@@ -86,8 +86,8 @@ function NotFound() {
       title="No such page"
       description="The address does not match any screen in this console."
       action={
-        <Button as={Link} to="/" color="primary" radius="md">
-          Back to dashboard
+        <Button asChild>
+          <Link to="/">Back to dashboard</Link>
         </Button>
       }
     />

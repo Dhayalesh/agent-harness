@@ -1,6 +1,7 @@
-import { Alert } from "@heroui/react";
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { Icon } from "./Icon.jsx";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 /**
  * Mongo and AgentCore fail in different ways and the fix differs, so the banner names
@@ -47,26 +48,23 @@ export function HealthBanner() {
 
   return (
     <div className="shrink-0 px-4 pt-4 sm:px-6 lg:px-8">
-      <Alert
-        color="warning"
-        variant="flat"
-        role="status"
-        title="Degraded"
-        classNames={{
-          base: "items-start border border-warning-200 dark:border-warning-500/25",
-          title: "text-small font-semibold",
-        }}
-      >
-        <ul className="mt-1 list-disc space-y-0.5 pl-4 text-tiny">
-          {problems.map((problem) => (
-            <li key={problem}>{problem}</li>
-          ))}
-        </ul>
-        <p className="mt-2 text-tiny text-default-500">
-          Agents can be listed and edited without AWS; running one needs either
-          AgentCore credentials and a runtime ARN, or LOCAL_HARNESS_URL pointed
-          at a harness running on this machine.
-        </p>
+      <Alert variant="warning" role="status">
+        <Icon name="alert" />
+        <div className="min-w-0 flex-1">
+          <AlertTitle>Degraded</AlertTitle>
+          <AlertDescription>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4">
+              {problems.map((problem) => (
+                <li key={problem}>{problem}</li>
+              ))}
+            </ul>
+            <p className="mt-2 text-default-500">
+              Agents can be listed and edited without AWS; running one needs
+              either AgentCore credentials and a runtime ARN, or
+              LOCAL_HARNESS_URL pointed at a harness running on this machine.
+            </p>
+          </AlertDescription>
+        </div>
       </Alert>
     </div>
   );

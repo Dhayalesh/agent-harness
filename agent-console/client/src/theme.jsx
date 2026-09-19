@@ -10,12 +10,14 @@ import {
 /**
  * Light/dark for the whole console.
  *
- * HeroUI reads the theme from a class on `<html>`, so this owns that class and
- * nothing else does. The stored choice wins over the OS setting because an
- * operator who picked a theme meant it for this app specifically.
+ * Tailwind is configured with `darkMode: "class"`, so the palette is selected by a
+ * class on `<html>`. This owns that class and nothing else does. The stored choice
+ * wins over the OS setting because an operator who picked a theme meant it for this
+ * app specifically.
  */
 
-const STORAGE_KEY = "agent-console:theme";
+// Duplicated in index.html's pre-paint script; change both together.
+const STORAGE_KEY = "enterprise-agents:theme";
 const ThemeContext = createContext({ theme: "light", setTheme: () => {} });
 
 function readInitialTheme() {

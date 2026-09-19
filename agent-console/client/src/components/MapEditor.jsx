@@ -1,6 +1,7 @@
-import { Button, Input } from "@heroui/react";
 import { Field } from "./Bits.jsx";
 import { Icon } from "./Icon.jsx";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 /**
  * Editors for the two shapes the API stores as opaque maps or lists: header and
@@ -51,7 +52,7 @@ export function KeyValueEditor({
           ? `${hint} Existing values are hidden; leave a displayed value blank to keep it, or remove its row to clear it.`
           : hint
       }
-      className="rounded-medium border border-divider bg-content2 p-3"
+      className="border border-divider bg-content2 p-3"
     >
       <div className="flex flex-col gap-2">
         {rows.map((row, index) => (
@@ -60,33 +61,28 @@ export function KeyValueEditor({
             key={index}
           >
             <Input
-              size="sm"
-              variant="bordered"
-              classNames={{ inputWrapper: "bg-content1" }}
+              className="h-8 bg-content1"
               aria-label={`${label} ${index + 1} name`}
               placeholder={keyPlaceholder}
               value={row.key}
-              onValueChange={(value) => setRow(index, "key", value)}
+              onChange={(event) => setRow(index, "key", event.target.value)}
             />
             <Input
-              size="sm"
-              variant="bordered"
-              classNames={{ inputWrapper: "bg-content1" }}
+              className="h-8 bg-content1"
               aria-label={`${label} ${index + 1} value`}
               placeholder={
                 editing && !row.value ? "stored value (unchanged)" : "Value"
               }
               value={row.value}
-              onValueChange={(value) => setRow(index, "value", value)}
+              onChange={(event) => setRow(index, "value", event.target.value)}
             />
             <Button
-              isIconOnly
-              size="sm"
-              variant="light"
-              color="danger"
-              className="justify-self-start sm:self-center"
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="justify-self-start text-default-500 hover:bg-danger/10 hover:text-danger sm:self-center"
               aria-label={`Remove ${label.toLowerCase()} ${index + 1}`}
-              onPress={() =>
+              onClick={() =>
                 onChange(rows.filter((_, position) => position !== index))
               }
             >
@@ -97,12 +93,13 @@ export function KeyValueEditor({
       </div>
       <div>
         <Button
+          type="button"
+          variant="secondary"
           size="sm"
-          variant="flat"
           className="mt-1"
-          startContent={<Icon name="plus" className="h-4 w-4" />}
-          onPress={() => onChange([...rows, { key: "", value: "" }])}
+          onClick={() => onChange([...rows, { key: "", value: "" }])}
         >
+          <Icon name="plus" className="h-4 w-4" />
           {addLabel}
         </Button>
       </div>
@@ -116,7 +113,7 @@ export function StringListEditor({ values, onChange, error }) {
       label="Arguments"
       error={error}
       hint="Each row is passed to the command as one argument, in order. For example, npx uses separate rows for -y, @scope/package, and --transport=stdio. Put an MCP endpoint URL under HTTP transport instead of in npx's package row."
-      className="rounded-medium border border-divider bg-content2 p-3"
+      className="border border-divider bg-content2 p-3"
     >
       <div className="flex flex-col gap-2">
         {values.map((value, index) => (
@@ -125,27 +122,24 @@ export function StringListEditor({ values, onChange, error }) {
             key={index}
           >
             <Input
-              size="sm"
-              variant="bordered"
-              classNames={{ inputWrapper: "bg-content1" }}
+              className="h-8 bg-content1"
               aria-label={`Argument ${index + 1}`}
               value={value}
-              onValueChange={(next) =>
+              onChange={(event) =>
                 onChange(
                   values.map((entry, position) =>
-                    position === index ? next : entry,
+                    position === index ? event.target.value : entry,
                   ),
                 )
               }
             />
             <Button
-              isIconOnly
-              size="sm"
-              variant="light"
-              color="danger"
-              className="self-center"
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="self-center text-default-500 hover:bg-danger/10 hover:text-danger"
               aria-label={`Remove argument ${index + 1}`}
-              onPress={() =>
+              onClick={() =>
                 onChange(values.filter((_, position) => position !== index))
               }
             >
@@ -156,12 +150,13 @@ export function StringListEditor({ values, onChange, error }) {
       </div>
       <div>
         <Button
+          type="button"
+          variant="secondary"
           size="sm"
-          variant="flat"
           className="mt-1"
-          startContent={<Icon name="plus" className="h-4 w-4" />}
-          onPress={() => onChange([...values, ""])}
+          onClick={() => onChange([...values, ""])}
         >
+          <Icon name="plus" className="h-4 w-4" />
           Add argument
         </Button>
       </div>

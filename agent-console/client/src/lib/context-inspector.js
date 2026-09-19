@@ -184,7 +184,9 @@ export function contextExplanation(context) {
   const counts = context?.state;
   if (!counts) return [];
   const rows = [
-    counts.goal ? { key: "goal", label: "Current task", value: "tracked" } : null,
+    counts.goal
+      ? { key: "goal", label: "Current task", value: "tracked" }
+      : null,
     row("constraints", "Constraints", counts.constraints),
     row("decisions", "Decisions", counts.decisions),
     row("pending", "Pending work", counts.pending),
@@ -240,8 +242,10 @@ function compactionReason(context) {
   if (context?.action === "reactive-compaction") {
     return "The model rejected the request as too long";
   }
-  if (context?.action === "recovery") return "Important detail was missing after compression";
-  if (context?.action === "tool-result-trimming") return "A single tool result was oversized";
+  if (context?.action === "recovery")
+    return "Important detail was missing after compression";
+  if (context?.action === "tool-result-trimming")
+    return "A single tool result was oversized";
   if (typeof context?.usedPercent === "number" && context?.peakPercent) {
     return `The context reached ${Math.round(context.peakPercent)}% of its budget`;
   }

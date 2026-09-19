@@ -1,216 +1,161 @@
 /**
- * One stroked icon set for the whole console.
+ * One icon set for the whole console, drawn from lucide-react — the set shadcn/ui
+ * is designed around, so a generated component and a hand-written page reach for
+ * the same glyphs at the same stroke weight.
  *
- * Inline rather than an icon package: the set is small, every glyph inherits
- * `currentColor` so it themes itself, and nothing is fetched at runtime.
+ * This is a registry, not a component library: it maps the console's vocabulary
+ * ("plug", "runs", "compact") onto lucide's, so call sites name the concept rather
+ * than the picture. That indirection is what lets `<Icon name="models" />` appear in
+ * a nav item, a dashboard tile and a tab strip and stay consistent if the glyph
+ * behind it is ever reconsidered.
  */
 
-const paths = {
-  dashboard: (
-    <>
-      <rect x="3" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" />
-    </>
-  ),
-  chat: (
-    <>
-      <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z" />
-      <path d="M8 9h8M8 13h5" />
-    </>
-  ),
-  agents: (
-    <>
-      <rect x="4" y="7" width="16" height="12" rx="3" />
-      <path d="M9 3h6M12 3v4M8 12h.01M16 12h.01M9 16h6" />
-    </>
-  ),
-  models: (
-    <>
-      <ellipse cx="12" cy="5" rx="8" ry="3" />
-      <path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" />
-    </>
-  ),
-  plug: <path d="M8 12h8M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-5 5v5" />,
-  skills: (
-    <>
-      <path d="m12 3 1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5Z" />
-      <path d="m19 15 .7 2.3L22 18l-2.3.7L19 21l-.7-2.3L16 18l2.3-.7Z" />
-    </>
-  ),
-  runs: (
-    <>
-      <path d="M3 12h4l2-6 4 12 2-6h6" />
-      <path d="M21 6v12" />
-    </>
-  ),
-  tokens: (
-    <>
-      <ellipse cx="12" cy="6" rx="7" ry="3" />
-      <path d="M5 6v5c0 1.7 3.1 3 7 3s7-1.3 7-3V6M5 11v5c0 1.7 3.1 3 7 3s7-1.3 7-3v-5" />
-    </>
-  ),
-  plus: <path d="M12 5v14M5 12h14" />,
-  search: (
-    <>
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.4-3.4" />
-    </>
-  ),
-  menu: <path d="M4 7h16M4 12h16M4 17h16" />,
-  close: <path d="m6 6 12 12M18 6 6 18" />,
-  send: <path d="M12 19V5M6 11l6-6 6 6" />,
-  down: <path d="M12 5v14M6 13l6 6 6-6" />,
-  chevron: <path d="m8 10 4 4 4-4" />,
-  arrow: <path d="M5 12h13M13 6l6 6-6 6" />,
-  check: <path d="m5 12.5 4.5 4.5L19 7" />,
-  tool: (
-    <path d="M14.7 6.3a4 4 0 0 1 5 5l-9 9a2.8 2.8 0 0 1-4-4l9-9Z M9.5 11.5 4 17a2.8 2.8 0 0 0 0 4" />
-  ),
-  copy: (
-    <>
-      <rect x="9" y="9" width="11" height="11" rx="2.5" />
-      <path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H16" />
-    </>
-  ),
-  trash: (
-    <>
-      <path d="M4 7h16M10 11v6M14 11v6" />
-      <path d="M6 7h12l-1 12a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2Z" />
-      <path d="M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2" />
-    </>
-  ),
-  edit: (
-    <>
-      <path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16Z" />
-      <path d="m14.5 6.5 3 3" />
-    </>
-  ),
-  settings: (
-    <>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 9 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 9a1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z" />
-    </>
-  ),
-  spark: (
-    <>
-      <path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z" />
-      <path d="m18 16 .8 2.2L21 19l-2.2.8L18 22l-.8-2.2L15 19l2.2-.8Z" />
-    </>
-  ),
-  sun: (
-    <>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </>
-  ),
-  moon: <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z" />,
-  shield: (
-    <>
-      <path d="M12 3l7 3v5.5c0 4.3-2.9 8-7 9.5-4.1-1.5-7-5.2-7-9.5V6Z" />
-      <path d="m9 12 2 2 4-4" />
-    </>
-  ),
-  alert: (
-    <>
-      <path d="M12 3 2.5 20h19Z" />
-      <path d="M12 10v4M12 17h.01" />
-    </>
-  ),
-  refresh: (
-    <>
-      <path d="M20 11a8 8 0 1 0-2 6" />
-      <path d="M20 5v6h-6" />
-    </>
-  ),
-  document: (
-    <>
-      <path d="M6 3h8l4 4v14H6Z" />
-      <path d="M14 3v5h5M9 12h6M9 16h6" />
-    </>
-  ),
-  code: <path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14" />,
-  table: (
-    <>
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <path d="M3 9h18M9 9v11M15 9v11" />
-    </>
-  ),
-  download: (
-    <>
-      <path d="M12 3v12M7 10l5 5 5-5" />
-      <path d="M5 21h14" />
-    </>
-  ),
-  dots: (
-    <>
-      <circle cx="12" cy="5" r="1" />
-      <circle cx="12" cy="12" r="1" />
-      <circle cx="12" cy="19" r="1" />
-    </>
-  ),
-  pin: (
-    <>
-      <path d="M12 15v6" />
-      <path d="M8.5 3.5h7l-1 5.5 3 3.5H6.5l3-3.5Z" />
-    </>
-  ),
-  unpin: (
-    <>
-      <path d="M12 15v6" />
-      <path d="M8.5 3.5h7l-1 5.5 3 3.5H6.5l3-3.5Z" />
-      <path d="m4 4 16 16" />
-    </>
-  ),
-  paperclip: (
-    <path d="M20 11.5l-8 8a5 5 0 0 1-7-7l8-8a3.4 3.4 0 0 1 4.8 4.8l-8 8a1.8 1.8 0 0 1-2.5-2.5l7-7" />
-  ),
-  image: (
-    <>
-      <rect x="3" y="4" width="18" height="16" rx="2.5" />
-      <circle cx="9" cy="10" r="1.6" />
-      <path d="m4 18 5-5 4 4 2.5-2.5L20 18" />
-    </>
-  ),
-  file: (
-    <>
-      <path d="M6 3h8l4 4v14H6Z" />
-      <path d="M14 3v5h5" />
-    </>
-  ),
+import {
+  Activity,
+  ArrowDown,
+  ArrowDownWideNarrow,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpDown,
+  ArrowUpNarrowWide,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CircleCheck,
+  CircleX,
+  Clock,
+  Code,
+  Coins,
+  Command as CommandGlyph,
+  Copy,
+  Database,
+  Download,
+  EllipsisVertical,
+  ExternalLink,
+  File,
+  FileText,
+  Filter,
+  Gauge,
+  Image,
+  Info,
+  LayoutDashboard,
+  LayoutGrid,
+  List,
+  Menu,
+  MessageSquare,
+  Moon,
+  PanelLeft,
+  Paperclip,
+  Pencil,
+  Pin,
+  PinOff,
+  Play,
+  Plug,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings,
+  ShieldCheck,
+  Shrink,
+  Sparkles,
+  Sun,
+  Table,
+  Trash2,
+  TriangleAlert,
+  User,
+  Wrench,
+  X,
+} from "lucide-react";
+
+const glyphs = {
+  /* --- Navigation --- */
+  dashboard: LayoutDashboard,
+  chat: MessageSquare,
+  agents: Bot,
+  models: Database,
+  plug: Plug,
+  skills: Sparkles,
+  runs: Activity,
+  tokens: Coins,
+
+  /* --- Actions --- */
+  plus: Plus,
+  search: Search,
+  menu: Menu,
+  close: X,
+  send: ArrowUp,
+  down: ArrowDown,
+  chevron: ChevronDown,
+  arrow: ArrowRight,
+  check: Check,
+  tool: Wrench,
+  copy: Copy,
+  trash: Trash2,
+  edit: Pencil,
+  settings: Settings,
+  refresh: RefreshCw,
+  download: Download,
+  play: Play,
+  pin: Pin,
+  unpin: PinOff,
+  paperclip: Paperclip,
+
+  /* --- Objects --- */
+  spark: Sparkles,
+  shield: ShieldCheck,
+  document: FileText,
+  code: Code,
+  table: Table,
+  image: Image,
+  file: File,
+  user: User,
+
+  /* --- State --- */
+  alert: TriangleAlert,
+  info: Info,
+  checkCircle: CircleCheck,
+  xCircle: CircleX,
+  clock: Clock,
   /** An arc with a needle: how full something is, rather than how much of it there is. */
-  gauge: (
-    <>
-      <path d="M4 18a8 8 0 1 1 16 0" />
-      <path d="m12 14 4-4" />
-      <circle cx="12" cy="18" r="1" />
-    </>
-  ),
+  gauge: Gauge,
   /** Arrows folding inward: the shape used for compaction. */
-  compact: (
-    <>
-      <path d="M4 8h6V2M20 8h-6V2M4 16h6v6M20 16h-6v6" />
-      <path d="M3 12h18" />
-    </>
-  ),
+  compact: Shrink,
+
+  /* --- Table, toolbar and shell --- */
+  /** Both arrows, for a sortable column that is not currently the sort key. */
+  sort: ArrowUpDown,
+  sortAsc: ArrowUpNarrowWide,
+  sortDesc: ArrowDownWideNarrow,
+  filter: Filter,
+  /** The ⌘ key, for the palette trigger. */
+  command: CommandGlyph,
+  dots: EllipsisVertical,
+  panelLeft: PanelLeft,
+  chevronRight: ChevronRight,
+  chevronLeft: ChevronLeft,
+  external: ExternalLink,
+  layoutList: List,
+  layoutGrid: LayoutGrid,
+
+  /* --- Theme --- */
+  sun: Sun,
+  moon: Moon,
 };
 
+/**
+ * The console's default stroke. lucide ships at 2; 1.8 sits better beside
+ * Aileron at these sizes and keeps a 14px glyph from going heavy.
+ */
 export function Icon({ name, className = "h-4 w-4", strokeWidth = 1.8 }) {
-  const glyph = paths[name];
-  if (!glyph) return null;
+  const Glyph = glyphs[name];
+  if (!Glyph) return null;
   return (
-    <svg
+    <Glyph
       className={`${className} shrink-0`}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
       strokeWidth={strokeWidth}
-      strokeLinecap="round"
-      strokeLinejoin="round"
       aria-hidden="true"
-    >
-      {glyph}
-    </svg>
+    />
   );
 }

@@ -1,155 +1,77 @@
-import { Button, Chip, Code } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useMemo } from "react";
 import { api } from "../api.js";
-import {
-  EmptyState,
-  ErrorNote,
-  Loading,
-  PageHeader,
-  SearchInput,
-  StatusPill,
-  useConfirm,
-  when,
-} from "../components/Bits.jsx";
-import { Icon } from "../components/Icon.jsx";
-import { ResourceRow } from "../components/ResourceRow.jsx";
+import { MonoValue, StatusPill, Tag } from "../components/Bits.jsx";
+import { ResourceListPage, updatedColumn } from "./ResourceListPage.jsx";
+
+const storageOf = (row) => (row.uri?.startsWith("s3://") ? "S3" : "HTTPS");
 
 export function SkillsPage() {
-  const [skills, setSkills] = useState(null);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState(null);
-  const [confirm, confirmDialog] = useConfirm();
+  const load = useCallback(
+    async (q) => (await api.listSkills({ q })).skills,
+    [],
+  );
+  const remove = useCallback((row) => api.deleteSkill(row.id), []);
+  const search = useCallback((row) => [row.name, row.uri], []);
 
-  const load = useCallback(async (q) => {
-    setError(null);
-    try {
-      const { skills: found } = await api.listSkills({ q });
-      setSkills(found);
-    } catch (caught) {
-      setError(caught);
-      setSkills([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => void load(query), query ? 250 : 0);
-    return () => clearTimeout(timer);
-  }, [query, load]);
-
-  const visibleSkills = useMemo(() => {
-    if (!skills || !query.trim()) return skills;
-    const needle = query.trim().toLowerCase();
-    return skills.filter((skill) =>
-      [skill.name, skill.uri]
-        .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(needle)),
-    );
-  }, [skills, query]);
-
-  const remove = async (skill) => {
-    const confirmed = await confirm({
-      title: "Delete skill",
-      body: `Delete skill "${skill.name}"? Agents that reference it must be updated first.`,
-      confirmLabel: "Delete skill",
-    });
-    if (!confirmed) return;
-
-    try {
-      await api.deleteSkill(skill.id);
-      await load(query);
-    } catch (caught) {
-      setError(caught);
-    }
-  };
+  const columns = useMemo(
+    () => [
+      {
+        key: "name",
+        header: "Skill",
+        primary: true,
+        sortable: true,
+        width: "30%",
+        value: (row) => row.name,
+      },
+      {
+        key: "storage",
+        header: "Storage",
+        sortable: true,
+        width: "104px",
+        value: storageOf,
+        render: (row) => <Tag tone="brand">{storageOf(row)}</Tag>,
+      },
+      {
+        key: "uri",
+        header: "Location",
+        width: "auto",
+        hideBelow: "md",
+        value: (row) => row.uri,
+        render: (row) => (
+          <MonoValue className="line-clamp-1">{row.uri || "—"}</MonoValue>
+        ),
+      },
+      {
+        key: "state",
+        header: "State",
+        width: "120px",
+        value: (row) => (row.enabled ? "enabled" : "disabled"),
+        render: (row) => (
+          <StatusPill status={row.enabled ? "enabled" : "disabled"} />
+        ),
+      },
+      updatedColumn(),
+    ],
+    [],
+  );
 
   return (
-    <section>
-      <PageHeader
-        eyebrow="Build"
-        title="Skills"
-        description="Reusable skill instructions authored here and saved as Markdown in S3."
-        actions={
-          <>
-            <SearchInput
-              value={query}
-              onValueChange={setQuery}
-              label="Search skills"
-              placeholder="Search skills"
-            />
-            <Button
-              as={Link}
-              to="/skills/new"
-              color="primary"
-              radius="md"
-              startContent={<Icon name="plus" className="h-4 w-4" />}
-            >
-              New skill
-            </Button>
-          </>
-        }
-      />
-
-      <ErrorNote error={error} />
-
-      {skills === null ? (
-        <Loading what="skills" />
-      ) : visibleSkills.length === 0 ? (
-        <EmptyState
-          icon="skills"
-          title={query ? "No skills match this search." : "No skills found."}
-          description={
-            query
-              ? "Try a different search."
-              : "Create reusable instructions as plain text or Markdown."
-          }
-          action={
-            !query && (
-              <Button as={Link} to="/skills/new" color="primary" radius="md">
-                Create one
-              </Button>
-            )
-          }
-        />
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {visibleSkills.map((skill) => (
-            <li key={skill.id}>
-              <ResourceRow
-                title={skill.name}
-                editHref={`/skills/${skill.id}/edit`}
-                deleteLabel={`Delete ${skill.name}`}
-                onDelete={() => remove(skill)}
-                badges={
-                  <>
-                    <Chip
-                      size="sm"
-                      variant="flat"
-                      color="primary"
-                      classNames={{
-                        base: "h-5 rounded-full",
-                        content:
-                          "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
-                      }}
-                    >
-                      {skill.uri?.startsWith("s3://") ? "S3" : "HTTPS"}
-                    </Chip>
-                    <StatusPill status={skill.enabled ? "enabled" : "disabled"} />
-                  </>
-                }
-                summary={
-                  <Code size="sm" className="max-w-full truncate text-tiny">
-                    {skill.uri}
-                  </Code>
-                }
-                meta={[{ label: "Updated", value: when(skill.updatedAt) }]}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {confirmDialog}
-    </section>
+    <ResourceListPage
+      breadcrumbs={[{ label: "Configuration" }, { label: "Skills" }]}
+      title="Skills"
+      description="Reusable skill instructions authored here and saved as Markdown in S3."
+      newHref="/skills/new"
+      newLabel="New skill"
+      singular="skill"
+      plural="skills"
+      emptyIcon="skills"
+      emptyDescription="Create reusable instructions as plain text or Markdown."
+      searchPlaceholder="Search name or location"
+      editHref={(row) => `/skills/${row.id}/edit`}
+      columns={columns}
+      load={load}
+      remove={remove}
+      search={search}
+    />
   );
 }

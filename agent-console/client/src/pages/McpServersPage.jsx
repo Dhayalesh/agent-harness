@@ -1,194 +1,134 @@
-import { Button, Chip, Code } from "@heroui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useMemo } from "react";
 import { api } from "../api.js";
-import {
-  EmptyState,
-  ErrorNote,
-  Loading,
-  PageHeader,
-  SearchInput,
-  StatusPill,
-  useConfirm,
-  when,
-} from "../components/Bits.jsx";
-import { Icon } from "../components/Icon.jsx";
-import { ResourceRow } from "../components/ResourceRow.jsx";
+import { MonoValue, StatusPill, Tag } from "../components/Bits.jsx";
+import { CellStack } from "../components/DataTable.jsx";
+import { ResourceListPage, updatedColumn } from "./ResourceListPage.jsx";
+
+const CAPABILITY_NAMES = ["tools", "resources", "prompts", "elicitation"];
 
 const capabilityNames = (capabilities = {}) =>
-  ["tools", "resources", "prompts", "elicitation"]
-    .filter((name) => capabilities[name])
-    .join(", ");
+  CAPABILITY_NAMES.filter((name) => capabilities[name]);
+
+/** stdio servers are identified by their command line, HTTP servers by their URL. */
+const endpointOf = (row) =>
+  row.transport === "stdio"
+    ? [row.command, ...(row.args ?? [])].filter(Boolean).join(" ")
+    : row.url;
 
 export function McpServersPage() {
-  const [mcpServers, setMcpServers] = useState(null);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState(null);
-  const [confirm, confirmDialog] = useConfirm();
+  const load = useCallback(
+    async (q) => (await api.listMcpServers({ q })).mcpServers,
+    [],
+  );
+  const remove = useCallback((row) => api.deleteMcpServer(row.id), []);
+  const search = useCallback(
+    (row) => [row.name, row.transport, row.command, row.url],
+    [],
+  );
 
-  const load = useCallback(async (q) => {
-    setError(null);
-    try {
-      const { mcpServers: found } = await api.listMcpServers({ q });
-      setMcpServers(found);
-    } catch (caught) {
-      setError(caught);
-      setMcpServers([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => void load(query), query ? 250 : 0);
-    return () => clearTimeout(timer);
-  }, [query, load]);
-
-  const visibleMcpServers = useMemo(() => {
-    if (!mcpServers || !query.trim()) return mcpServers;
-    const needle = query.trim().toLowerCase();
-    return mcpServers.filter((mcpServer) =>
-      [mcpServer.name, mcpServer.transport, mcpServer.command, mcpServer.url]
-        .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(needle)),
-    );
-  }, [mcpServers, query]);
-
-  const remove = async (mcpServer) => {
-    const confirmed = await confirm({
-      title: "Delete MCP server",
-      body: `Delete MCP server "${mcpServer.name}"? Agents that reference it must be updated first.`,
-      confirmLabel: "Delete server",
-    });
-    if (!confirmed) return;
-
-    try {
-      await api.deleteMcpServer(mcpServer.id);
-      await load(query);
-    } catch (caught) {
-      setError(caught);
-    }
-  };
+  const columns = useMemo(
+    () => [
+      {
+        key: "name",
+        header: "Server",
+        primary: true,
+        sortable: true,
+        width: "24%",
+        value: (row) => row.name,
+        render: (row) => (
+          <CellStack
+            title={row.name}
+            subtitle={`${row.auth?.kind ?? "no"} auth${
+              row.hasApiKey ? "· credential set" : ""
+            }`}
+          />
+        ),
+      },
+      {
+        key: "transport",
+        header: "Transport",
+        sortable: true,
+        width: "112px",
+        value: (row) => row.transport,
+        render: (row) => <Tag tone="brand">{row.transport}</Tag>,
+      },
+      {
+        key: "endpoint",
+        header: "Endpoint",
+        width: "28%",
+        hideBelow: "lg",
+        value: endpointOf,
+        render: (row) => (
+          <MonoValue className="line-clamp-1">
+            {endpointOf(row) || "—"}
+          </MonoValue>
+        ),
+      },
+      {
+        key: "capabilities",
+        header: "Capabilities",
+        width: "168px",
+        hideBelow: "xl",
+        value: (row) => capabilityNames(row.capabilities).join(","),
+        render: (row) => {
+          const names = capabilityNames(row.capabilities);
+          if (names.length === 0)
+            return <span className="text-default-400">none</span>;
+          return (
+            <span className="flex flex-wrap gap-1">
+              {names.map((name) => (
+                <Tag key={name}>{name}</Tag>
+              ))}
+            </span>
+          );
+        },
+      },
+      {
+        key: "timeouts",
+        header: "Timeouts",
+        numeric: true,
+        width: "128px",
+        hideBelow: "xl",
+        value: (row) => row.capabilities?.requestTimeoutMs,
+        render: (row) =>
+          `${row.capabilities?.connectTimeoutMs ?? "—"} / ${
+            row.capabilities?.requestTimeoutMs ?? "—"
+          }ms`,
+      },
+      {
+        key: "state",
+        header: "State",
+        width: "156px",
+        value: (row) => (row.enabled ? "enabled" : "disabled"),
+        render: (row) => (
+          <span className="flex flex-wrap items-center gap-1">
+            <StatusPill status={row.enabled ? "enabled" : "disabled"} />
+            {row.autoConnect && <StatusPill status="auto" />}
+          </span>
+        ),
+      },
+      updatedColumn(),
+    ],
+    [],
+  );
 
   return (
-    <section>
-      <PageHeader
-        eyebrow="Build"
-        title="MCP servers"
-        description="Tool, resource, and prompt servers the runtime can connect to for an agent run."
-        actions={
-          <>
-            <SearchInput
-              value={query}
-              onValueChange={setQuery}
-              label="Search MCP servers"
-              placeholder="Search MCP servers"
-            />
-            <Button
-              as={Link}
-              to="/mcp-servers/new"
-              color="primary"
-              radius="md"
-              startContent={<Icon name="plus" className="h-4 w-4" />}
-            >
-              New MCP server
-            </Button>
-          </>
-        }
-      />
-
-      <ErrorNote error={error} />
-
-      {mcpServers === null ? (
-        <Loading what="MCP servers" />
-      ) : visibleMcpServers.length === 0 ? (
-        <EmptyState
-          icon="plug"
-          title={
-            query ? "No MCP servers match this search." : "No MCP servers found."
-          }
-          description={
-            query
-              ? "Try a different search."
-              : "Add a stdio process or HTTP endpoint the runtime can connect to."
-          }
-          action={
-            !query && (
-              <Button
-                as={Link}
-                to="/mcp-servers/new"
-                color="primary"
-                radius="md"
-              >
-                Create one
-              </Button>
-            )
-          }
-        />
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {visibleMcpServers.map((mcpServer) => (
-            <li key={mcpServer.id}>
-              <ResourceRow
-                title={mcpServer.name}
-                editHref={`/mcp-servers/${mcpServer.id}/edit`}
-                deleteLabel={`Delete ${mcpServer.name}`}
-                onDelete={() => remove(mcpServer)}
-                badges={
-                  <>
-                    <Chip
-                      size="sm"
-                      variant="flat"
-                      color="primary"
-                      classNames={{
-                        base: "h-5 rounded-full",
-                        content:
-                          "px-1.5 text-[10px] font-semibold uppercase tracking-wider",
-                      }}
-                    >
-                      {mcpServer.transport}
-                    </Chip>
-                    <StatusPill
-                      status={mcpServer.enabled ? "enabled" : "disabled"}
-                    />
-                    {mcpServer.autoConnect && <StatusPill status="auto" />}
-                  </>
-                }
-                summary={
-                  mcpServer.transport === "stdio" ? (
-                    <Code size="sm" className="text-tiny">
-                      {[mcpServer.command, ...(mcpServer.args ?? [])]
-                        .filter(Boolean)
-                        .join(" ")}
-                    </Code>
-                  ) : (
-                    mcpServer.url
-                  )
-                }
-                meta={[
-                  {
-                    label: "Capabilities",
-                    value: capabilityNames(mcpServer.capabilities) || "none",
-                  },
-                  {
-                    label: "Authentication",
-                    value: `${mcpServer.auth?.kind ?? "none"}${
-                      mcpServer.hasApiKey ? ", credential configured" : ""
-                    }`,
-                  },
-                  {
-                    label: "Timeouts",
-                    value: `${
-                      mcpServer.capabilities?.connectTimeoutMs ?? "-"
-                    }ms / ${mcpServer.capabilities?.requestTimeoutMs ?? "-"}ms`,
-                  },
-                  { label: "Updated", value: when(mcpServer.updatedAt) },
-                ]}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {confirmDialog}
-    </section>
+    <ResourceListPage
+      breadcrumbs={[{ label: "Configuration" }, { label: "MCP servers" }]}
+      title="MCP servers"
+      description="Tool, resource, and prompt servers the runtime can connect to for an agent run."
+      newHref="/mcp-servers/new"
+      newLabel="New MCP server"
+      singular="MCP server"
+      plural="servers"
+      emptyIcon="plug"
+      emptyDescription="Add a stdio process or HTTP endpoint the runtime can connect to."
+      searchPlaceholder="Search name, transport or endpoint"
+      editHref={(row) => `/mcp-servers/${row.id}/edit`}
+      columns={columns}
+      load={load}
+      remove={remove}
+      search={search}
+    />
   );
 }

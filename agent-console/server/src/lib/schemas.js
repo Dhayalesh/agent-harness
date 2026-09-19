@@ -391,11 +391,11 @@ const refineMcpServer = (value, context) => {
   if (value.auth.kind === "header" && !value.auth.headerName) {
     issue(context, ["auth", "headerName"], "header auth requires headerName");
   }
-  if (value.auth.kind !== "none" && !value.apiKey) {
+  if (["bearer", "header"].includes(value.auth.kind) && !value.apiKey) {
     issue(context, ["apiKey"], value.auth.kind + " auth requires apiKey");
   }
   if (value.auth.kind === "none" && value.apiKey) {
-    issue(context, ["apiKey"], "apiKey must be omitted for auth.kind none");
+    issue(context, ["apiKey"], "apiKey must be omitted for " + value.auth.kind + " auth");
   }
   for (const name of Object.keys(value.headers ?? {})) {
     const lower = name.toLowerCase();

@@ -17,6 +17,13 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    resolve: {
+      // shadcn/ui addresses everything from the `@/` root, so `@/components/ui/button`
+      // resolves the same way in a generated component as in application code.
+      alias: {
+        "@": fileURLToPath(new URL("./src", import.meta.url)),
+      },
+    },
     server: {
       port: 5173,
       // Keep the browser on one origin and follow the API address configured in

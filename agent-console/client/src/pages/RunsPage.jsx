@@ -1,29 +1,26 @@
-import {
-  Card,
-  Link as HeroLink,
-  Select,
-  SelectItem,
-  Table,
-  TableBody,
-  TableCell,
-  TableColumn,
-  TableHeader,
-  TableRow,
-  Tooltip,
-} from "@heroui/react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import {
+  EmptyState,
   ErrorNote,
-  Loading,
-  PageHeader,
   StatusPill,
   duration,
+  relative,
   tokens,
   when,
 } from "../components/Bits.jsx";
+import { CellStack, DataTable } from "../components/DataTable.jsx";
+import { PageShell } from "../components/PageShell.jsx";
+import {
+  Toolbar,
+  ToolbarButton,
+  ToolbarSearch,
+  ToolbarSelect,
+  ToolbarSpacer,
+} from "../components/Toolbar.jsx";
+import { Tooltip } from "@/components/ui/tooltip";
 
-// "all" rather than "" because an empty string is not a usable collection key.
+// "all"rather than ""because an empty string is not a usable collection key.
 const statusOptions = [
   { key: "all", label: "All statuses" },
   { key: "success", label: "Success" },
@@ -34,9 +31,12 @@ const statusOptions = [
 export function RunsPage() {
   const [runs, setRuns] = useState(null);
   const [status, setStatus] = useState("all");
+  const [query, setQuery] = useState("");
   const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
+    setRefreshing(true);
     try {
       const { runs: found } = await api.listRuns({
         status: status === "all" ? undefined : status,
@@ -46,6 +46,8 @@ export function RunsPage() {
     } catch (caught) {
       setError(caught);
       setRuns([]);
+    } finally {
+      setRefreshing(false);
     }
   }, [status]);
 
@@ -53,94 +55,166 @@ export function RunsPage() {
     void load();
   }, [load]);
 
-  return (
-    <section>
-      <PageHeader
-        eyebrow="Observe"
-        title="Runs"
-        description="Every AgentCore invocation this console sent. The runtime keeps none of this — the row is written here."
-        actions={
-          <Select
-            aria-label="Filter by status"
-            size="sm"
-            radius="md"
-            variant="bordered"
-            className="w-[190px]"
-            classNames={{ trigger: "h-9 bg-content1" }}
-            selectedKeys={[status]}
-            onSelectionChange={(keys) => setStatus([...keys][0] ?? "all")}
-          >
-            {statusOptions.map((option) => (
-              <SelectItem key={option.key}>{option.label}</SelectItem>
-            ))}
-          </Select>
-        }
-      />
+  // Status is a server-side filter; the free-text search is local, so narrowing a
+  // loaded page costs nothing and works against servers that ignore `q` on runs.
+  const visible = useMemo(() => {
+    if (!runs || !query.trim()) return runs;
+    const needle = query.trim().toLowerCase();
+    return runs.filter((run) =>
+      [run.agentName, run.prompt]
+        .filter(Boolean)
+        .some((value) => value.toLowerCase().includes(needle)),
+    );
+  }, [runs, query]);
 
+  const columns = useMemo(
+    () => [
+      {
+        key: "agent",
+        header: "Agent / prompt",
+        primary: true,
+        sortable: true,
+        value: (run) => run.agentName,
+        width: "34%",
+        render: (run) => (
+          <Tooltip
+            content={run.prompt}
+            side="top"
+            align="start"
+            delayDuration={400}
+          >
+            <CellStack title={run.agentName} subtitle={run.prompt} />
+          </Tooltip>
+        ),
+      },
+      {
+        key: "status",
+        header: "Status",
+        sortable: true,
+        width: "110px",
+        value: (run) => run.status,
+        render: (run) => <StatusPill status={run.status} />,
+      },
+      {
+        key: "turns",
+        header: "Turns",
+        sortable: true,
+        numeric: true,
+        width: "80px",
+        hideBelow: "sm",
+        value: (run) => run.turns,
+      },
+      {
+        key: "tokens",
+        header: "Tokens",
+        sortable: true,
+        numeric: true,
+        width: "110px",
+        hideBelow: "sm",
+        value: (run) =>
+          run.usage?.totalTokens ??
+          (run.usage?.inputTokens ?? 0) + (run.usage?.outputTokens ?? 0),
+        render: (run) => tokens(run.usage),
+      },
+      {
+        key: "duration",
+        header: "Duration",
+        sortable: true,
+        numeric: true,
+        width: "104px",
+        hideBelow: "md",
+        value: (run) => run.durationMs,
+        render: (run) => duration(run.durationMs),
+      },
+      {
+        key: "createdAt",
+        header: "When",
+        sortable: true,
+        sortType: "date",
+        align: "right",
+        width: "116px",
+        value: (run) => run.createdAt,
+        render: (run) => (
+          <Tooltip content={when(run.createdAt)} delayDuration={300}>
+            <span className="whitespace-nowrap text-default-500">
+              {relative(run.createdAt)}
+            </span>
+          </Tooltip>
+        ),
+      },
+    ],
+    [],
+  );
+
+  return (
+    <PageShell
+      breadcrumbs={[{ label: "Operations" }, { label: "Runs" }]}
+      title="Runs"
+      description="Every AgentCore invocation this console sent. The runtime keeps none of this — the row is written here."
+      actions={
+        <ToolbarButton
+          icon="refresh"
+          busy={refreshing}
+          disabled={refreshing}
+          onClick={() => void load()}
+          className="h-9"
+        >
+          Refresh
+        </ToolbarButton>
+      }
+    >
       <ErrorNote error={error} />
 
-      {runs === null ? (
-        <Loading what="runs" />
-      ) : (
-        <Card shadow="none" className="border border-divider bg-content1 p-2">
-          <Table
-            removeWrapper
-            aria-label="Runs"
-            classNames={{
-              th: "bg-transparent text-[10px] uppercase tracking-wider text-default-500",
-              td: "text-small",
-            }}
-          >
-            <TableHeader>
-              <TableColumn>When</TableColumn>
-              <TableColumn>Agent</TableColumn>
-              <TableColumn>Prompt</TableColumn>
-              <TableColumn>Status</TableColumn>
-              <TableColumn>Turns</TableColumn>
-              <TableColumn>Tokens</TableColumn>
-              <TableColumn>Duration</TableColumn>
-              <TableColumn hideHeader>Open</TableColumn>
-            </TableHeader>
-            <TableBody emptyContent="No runs recorded.">
-              {runs.map((run) => (
-                <TableRow key={run.id}>
-                  <TableCell className="whitespace-nowrap text-default-500">
-                    {when(run.createdAt)}
-                  </TableCell>
-                  <TableCell className="font-medium">{run.agentName}</TableCell>
-                  <TableCell className="max-w-[320px]">
-                    <Tooltip
-                      content={run.prompt}
-                      placement="top-start"
-                      delay={400}
-                      classNames={{ content: "max-w-sm" }}
-                    >
-                      <span className="block truncate text-default-500">
-                        {run.prompt}
-                      </span>
-                    </Tooltip>
-                  </TableCell>
-                  <TableCell>
-                    <StatusPill status={run.status} />
-                  </TableCell>
-                  <TableCell className="text-default-500">{run.turns}</TableCell>
-                  <TableCell className="whitespace-nowrap text-default-500">
-                    {tokens(run.usage)}
-                  </TableCell>
-                  <TableCell className="whitespace-nowrap text-default-500">
-                    {duration(run.durationMs)}
-                  </TableCell>
-                  <TableCell>
-                    <HeroLink href={`/runs/${run.id}`} size="sm">
-                      Open
-                    </HeroLink>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
-      )}
-    </section>
+      <Toolbar>
+        <ToolbarSearch
+          value={query}
+          onValueChange={setQuery}
+          label="Search runs by agent or prompt"
+          placeholder="Search agent or prompt"
+        />
+        <ToolbarSelect
+          value={status}
+          onChange={setStatus}
+          options={statusOptions}
+          label="Filter by status"
+        />
+        <ToolbarSpacer />
+      </Toolbar>
+
+      <DataTable
+        caption="Runs"
+        columns={columns}
+        rows={visible}
+        loading={runs === null}
+        skeletonRows={8}
+        to={(run) => `/runs/${run.id}`}
+        defaultSort={{ key: "createdAt", dir: "desc" }}
+        total={runs?.length}
+        totalLabel="runs"
+        actions={(run) => [
+          {
+            key: "open",
+            label: "Open run",
+            icon: "external",
+            to: `/runs/${run.id}`,
+          },
+        ]}
+        empty={
+          <EmptyState
+            icon="runs"
+            title={
+              query || status !== "all"
+                ? "No runs match these filters"
+                : "No runs recorded"
+            }
+            description={
+              query || status !== "all"
+                ? "Clear the search or choose a different status."
+                : "Start a chat with an agent and its invocations will appear here."
+            }
+          />
+        }
+      />
+    </PageShell>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ErrorNote } from "../Bits.jsx";
+import { ActivityIndicator, ErrorNote } from "../Bits.jsx";
 import { MarkdownDocument } from "../MarkdownDocument.jsx";
 import { decodeArtifact } from "./artifact-utils.js";
 
@@ -40,7 +40,9 @@ export function ArtifactPreview({ kind, mode, bytes, draft }) {
       <SourceView
         source={source}
         empty={
-          kind === "json" ? "Waiting for JSON content..." : "Waiting for source..."
+          kind === "json"
+            ? "Waiting for JSON content..."
+            : "Waiting for source..."
         }
       />
     );
@@ -68,7 +70,7 @@ export function ArtifactPreview({ kind, mode, bytes, draft }) {
 
 function SourceView({ source, empty = "Waiting for content..." }) {
   return (
-    <pre className="artifact-source min-h-full whitespace-pre-wrap break-words rounded-large border border-divider bg-content1 p-4 font-mono text-[12px] leading-6 text-foreground shadow-sm">
+    <pre className="artifact-source min-h-full whitespace-pre-wrap break-words rounded-large border border-divider bg-content1 p-4 font-mono text-tiny leading-6 text-foreground shadow-sm">
       {source || empty}
     </pre>
   );
@@ -252,9 +254,7 @@ function NdjsonPreview({ source }) {
     return [
       columns,
       ...records.map((record) =>
-        columns.map((key) =>
-          key in record ? scalarText(record[key]) : "",
-        ),
+        columns.map((key) => (key in record ? scalarText(record[key]) : "")),
       ),
     ];
   }, [source]);
@@ -365,10 +365,15 @@ function parseCsv(source) {
 function EmptyPreview({ label }) {
   return (
     <div
-      className="grid min-h-64 place-items-center text-small text-default-500"
+      className="grid min-h-64 place-items-center px-4 text-center text-small text-default-500"
       role="status"
     >
-      {label}...
+      <span className="flex flex-col items-center gap-4">
+        <span className="grid size-14 place-items-center rounded-2xl border border-primary/10 bg-primary/[0.05] text-primary">
+          <ActivityIndicator className="size-6" />
+        </span>
+        {label}...
+      </span>
     </div>
   );
 }

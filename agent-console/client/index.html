@@ -4,13 +4,28 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>Agent Console</title>
+    <meta name="theme-color" content="#0057d2" />
+    <meta
+      name="description"
+      content="Enterprise Agents — configure, run, and observe AI agents from one control plane."
+    />
+    <title>Enterprise Agents</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!--
+      Aileron carries the entire interface — body copy, micro-labels, numerals and
+      code are all one face. It is self-hosted and imported from src/main.jsx, so
+      there is no font request to a third party here and nothing to preconnect to.
+      Add weights there, not with a <link>.
+    -->
+
     <script>
       // Paint the stored theme before React mounts, otherwise a dark-theme
-      // operator sees one white frame on every reload.
+      // operator sees one white frame on every reload. The storage key is
+      // duplicated from src/theme.jsx and the two must be changed together.
       (function () {
         try {
-          var stored = localStorage.getItem("agent-console:theme");
+          var stored = localStorage.getItem("enterprise-agents:theme");
           var dark =
             stored === "dark" ||
             (!stored &&

@@ -187,9 +187,10 @@ export async function resolveAgentForInvocation(id) {
     if (!server.enabled) throw badRequest("MCP server " + server.name + " is disabled.");
     const configurationIssue = mcpConfigurationIssue(server);
     if (configurationIssue) throw badRequest(configurationIssue.message);
+    const value = validateDocument(mcpServerRecordSchema, server, "MCP server");
     mcpServers.push({
       document: server,
-      value: validateDocument(mcpServerRecordSchema, server, "MCP server"),
+      value,
     });
   }
 
