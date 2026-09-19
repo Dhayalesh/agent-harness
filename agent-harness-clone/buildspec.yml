@@ -17,7 +17,7 @@ env:
     # Application/runtime variables remain in CodeBuild Project Settings.
     AWS_REGION: "us-east-1"
     ECR_REPOSITORY: "old_agentcore"
-    AGENTCORE_RUNTIME_ID: "old_agentcore-1C6bQyAPip"
+    AGENTCORE_RUNTIME_ID: "hosted_agent_hi0u0-SPPOINHSrn"
 
 phases:
 
