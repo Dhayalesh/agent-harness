@@ -461,6 +461,7 @@ const skillContent = z
 
 const skillRequestShape = {
   name: skillName,
+  routingDescription: z.string().trim().max(400).optional(),
   content: skillContent,
   enabled: z.boolean().default(true),
 };
@@ -487,6 +488,7 @@ export const skillUpdateSchema = z
 export const skillRecordSchema = z
   .object({
     ...skillRecordShape,
+    routingDescription: z.string().trim().max(400).optional(),
     createdAt: isoTimestamp,
     updatedAt: isoTimestamp,
     createdBy: identifier,

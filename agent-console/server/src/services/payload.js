@@ -1,4 +1,6 @@
 import { resolveAgentForInvocation } from "./platform.js";
+import { routeSkills } from "./skill-routing.js";
+import { config } from "../config.js";
 
 export async function buildPayload({
   agentId,
@@ -10,8 +12,16 @@ export async function buildPayload({
   sessionHistory = [],
   compactContext = false,
   operation = "turn",
+  signal,
 }) {
-  const resolved = await resolveAgentForInvocation(agentId);
+  const resolved = await resolveAgentForInvocation(agentId, {
+    skipDisabledSkills: config.skillRouting.mode !== "off",
+  });
+  const routed = await routeSkills({
+    skills: resolved.skills, prompt, sessionHistory, attachments, operation, signal,
+  });
+  resolved.skills = routed.skills;
+  resolved.skillRouting = routed.decision;
   const agent = resolved.agent.value;
   const provider = resolved.modelProvider.value;
 
@@ -108,7 +118,7 @@ export async function buildPayload({
     },
   };
   if (sessionId) payload.sessionId = sessionId;
-  return { payload, resolved };
+  return { payload, resolved, skillRouting: routed.decision };
 }
 
 export function redactPayload(value) {

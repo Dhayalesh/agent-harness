@@ -115,6 +115,7 @@ export async function streamStoredAgent({
     includeEvents,
     sessionHistory,
     compactContext,
+    signal,
   });
   const runtime = resolveRuntime(resolved.agent.value);
   const run = await startRun({
@@ -207,6 +208,7 @@ function startRun({ resolved, runtime, runtimeSessionId, prompt, chatId }) {
     agentName: resolved.agent.value.name,
     modelProviderId: resolved.modelProvider.document._id.toString(),
     modelProviderName: resolved.modelProvider.value.name,
+    skillRouting: resolved.skillRouting,
     provider: resolved.modelProvider.value.provider,
     model:
       resolved.agent.value.model ?? resolved.modelProvider.value.model,

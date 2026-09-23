@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 const skillSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
+    routingDescription: { type: String, trim: true, maxlength: 400 },
     uri: { type: String, required: true },
     enabled: { type: Boolean, required: true, default: true, index: true },
     createdAt: { type: String, required: true },

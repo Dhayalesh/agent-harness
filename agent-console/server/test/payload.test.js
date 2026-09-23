@@ -4,6 +4,8 @@ import { Agent } from "../src/models/agent.js";
 import { ModelProvider } from "../src/models/model-provider.js";
 import { Skill } from "../src/models/skill.js";
 import { buildPayload, redactPayload } from "../src/services/payload.js";
+import { config } from "../src/config.js";
+import { skillDecisionBackend } from "../src/services/skill-routing.js";
 
 const timestamp = "2026-08-10T09:30:00.000Z";
 
@@ -153,6 +155,26 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
     payload.permissionRules.some((rule) => rule.tool === "web_search"),
     false,
   );
+
+  const originalRouting = config.skillRouting;
+  context.after(() => { config.skillRouting = originalRouting; });
+  config.skillRouting = { mode: "laya", threshold: 0.75, maxSelections: 5, fallback: "error" };
+  for (const skill of skills.values()) skill.routingDescription = "Review source code";
+  context.mock.method(skillDecisionBackend, "score", async ({ options }) => options.map(({ id }) => ({
+    id, score: id === reviewSkillId ? 0.99 : 0.1,
+  })));
+  const routed = await buildPayload({ agentId, prompt: "Review this patch" });
+  assert.deepEqual(routed.payload.skills, [payload.skills[0]]);
+  assert.equal(routed.resolved.skillRouting.status, "selected");
+  assert.equal("routingDescription" in routed.payload.skills[0], false);
+  assert.deepEqual(routed.payload.agent.tools, payload.agent.tools);
+  const compact = await buildPayload({ agentId, prompt: "", operation: "compact" });
+  assert.deepEqual(compact.payload.skills, []);
+  assert.equal(compact.resolved.skillRouting.status, "skipped");
+  skills.get(reviewSkillId).enabled = false;
+  const noMatch = await buildPayload({ agentId, prompt: "Hello" });
+  assert.deepEqual(noMatch.payload.skills, []);
+  assert.equal(noMatch.payload.permissionRules.some((rule) => rule.tool === "skill"), false);
 });
 
 test("recursively redacts credentials, headers, and environment values", () => {

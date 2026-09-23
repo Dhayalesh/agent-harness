@@ -164,6 +164,7 @@ agentsRouter.post("/:id/preview", asyncHandler(async (request, response) => {
       credentialReady: Boolean(resolved.modelProvider.value.apiKey),
     },
     payload: redactPayload(payload),
+    skillRouting: resolved.skillRouting,
   });
 }));
 

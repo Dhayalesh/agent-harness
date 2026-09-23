@@ -1,5 +1,8 @@
 # Enterprise Agents
 
+For optional per-turn skill selection with local Laya weights, configuration,
+verification, and the AgentCore rollout boundary, see [Skill routing](./SKILL_ROUTING.md).
+
 Enterprise Agents is a React + HeroUI + Express control plane for agents hosted on Amazon
 Bedrock AgentCore Runtime. It manages the existing `trueai_agent_platform` records in MongoDB,
 resolves their referenced model provider, MCP servers, and skills, invokes the deployed

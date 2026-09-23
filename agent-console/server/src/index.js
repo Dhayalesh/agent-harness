@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { config } from "./config.js";
 import { connectDatabase, disconnectDatabase } from "./db.js";
+import { skillDecisionBackend } from "./services/skill-routing.js";
 
 async function main() {
   const database = await connectDatabase();
@@ -61,7 +62,8 @@ async function main() {
   const shutdown = (signal) => {
     process.stdout.write(`\nagent-console: ${signal}, shutting down\n`);
     server.close(() => {
-      void disconnectDatabase().finally(() => process.exit(0));
+      void Promise.allSettled([disconnectDatabase(), skillDecisionBackend.close()])
+        .finally(() => process.exit(0));
     });
     // A run in flight holds the connection for up to AGENTCORE_TIMEOUT_MS; do not wait.
     setTimeout(() => process.exit(0), 5000).unref();

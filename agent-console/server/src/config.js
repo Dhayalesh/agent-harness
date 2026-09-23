@@ -6,6 +6,8 @@
  * Runtime it invokes.
  */
 
+import { decisionConfig } from "./services/decisions/config.js";
+
 const trimmed = (name, fallback = "") => (process.env[name] ?? fallback).trim();
 
 const integer = (name, fallback) => {
@@ -47,6 +49,7 @@ if (runtimeArn && !parsedArn) {
 }
 
 export const config = {
+  skillRouting: decisionConfig(),
   host: trimmed("HOST", "127.0.0.1"),
   port: integer("PORT", 4000),
   mongoUri: trimmed("MONGODB_URI", "mongodb://127.0.0.1:27017/agent_console"),

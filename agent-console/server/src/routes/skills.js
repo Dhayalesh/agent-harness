@@ -57,6 +57,7 @@ skillsRouter.post("/", asyncHandler(async (request, response) => {
   try {
     skill = await createRecord(Skill, {
       name: input.name,
+      routingDescription: input.routingDescription,
       uri,
       enabled: input.enabled,
       createdBy: config.createdBy,

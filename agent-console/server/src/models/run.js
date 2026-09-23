@@ -62,6 +62,7 @@ const runSchema = new mongoose.Schema(
     agentName: { type: String, required: true },
     modelProviderId: String,
     modelProviderName: String,
+    skillRouting: { type: mongoose.Schema.Types.Mixed },
     provider: String,
     model: String,
     chatId: { type: String, index: true },

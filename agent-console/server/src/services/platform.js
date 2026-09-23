@@ -161,7 +161,7 @@ export async function resolveAgentSummaries(
   );
 }
 
-export async function resolveAgentForInvocation(id) {
+export async function resolveAgentForInvocation(id, { skipDisabledSkills = false } = {}) {
   const agent = await loadAgent(id, { requireEnabled: true });
   const storedAgent = validateDocument(agentRecordSchema, agent, "Agent");
   const provider = await loadModelProvider(storedAgent.modelProviderId, {
@@ -197,6 +197,7 @@ export async function resolveAgentForInvocation(id) {
   const skills = [];
   for (const entry of storedAgent.skills) {
     const skill = await loadSkill(entry.skillId);
+    if (skipDisabledSkills && !skill.enabled) continue;
     if (!skill.enabled) throw badRequest("Skill " + skill.name + " is disabled.");
     const value = validateDocument(skillRecordSchema, skill, "Skill");
     parseS3Uri(value.uri, "skill " + value.name);
