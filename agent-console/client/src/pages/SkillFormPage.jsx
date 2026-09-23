@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 
 const EMPTY = {
   name: "",
+  routingDescription: "",
   content: "",
   enabled: true,
 };
@@ -67,6 +68,7 @@ export function SkillFormPage({ mode }) {
 
     const body = {
       name: form.name.trim(),
+      routingDescription: form.routingDescription.trim(),
       content: form.content,
       enabled: form.enabled,
     };
@@ -124,6 +126,21 @@ export function SkillFormPage({ mode }) {
                 value={form.name}
                 onChange={(event) => set("name")(event.target.value)}
                 aria-invalid={Boolean(fieldErrors.name)}
+              />
+            </Field>
+            <Field
+              label="When to use this skill"
+              htmlFor="skill-routing-description"
+              hint="Required when automatic skill selection is enabled. Describe the tasks this skill handles."
+              error={fieldErrors.routingDescription}
+            >
+              <Textarea
+                id="skill-routing-description"
+                maxLength={400}
+                value={form.routingDescription}
+                onChange={(event) =>
+                  set("routingDescription")(event.target.value)
+                }
               />
             </Field>
             <ToggleCard
