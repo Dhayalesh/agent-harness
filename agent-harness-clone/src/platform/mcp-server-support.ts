@@ -10,15 +10,14 @@ import type { McpServerAuth, McpServerWire } from './mcp-server-definitions.js';
  * validated against this table and rejected when it names something the runtime
  * would ignore.
  *
- * When a further transport lands, this file is the only thing that changes.
+ * Support is checked again when the registry resolves a stored record.
  */
 export const MCP_RUNTIME_SUPPORT = {
   /**
-   * `sse` has no client. `McpConnection` exposes `connectStdio` and
-   * `connectHttp` only (`src/mcp/client.ts`), and `SSEClientTransport` is never
-   * imported, so a stored `sse` record could not be connected.
+   * `sse` has no client. Edge uses the existing MCP Client through its own
+   * WebSocket transport; SSE remains unsupported.
    */
-  transports: ['stdio', 'http'] as const,
+  transports: ['stdio', 'http', 'edge'] as const,
   /**
    * All three auth kinds are expressible, because an HTTP transport carries
    * whatever headers the registry builds: `bearer` sets `Authorization`,

@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
+import { EdgeClientTransport } from './edge-transport.js';
 import type { Tool } from '../tools/tool.js';
 
 export type McpResource = {
@@ -174,6 +175,42 @@ export class McpConnection {
         durationMs: Date.now() - started,
         error: describeError(error),
       });
+      await transport.close().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  static async connectEdge(
+    serverName: string,
+    url: URL,
+    mcpId: string,
+    email: string,
+    options: McpConnectionOptions = {},
+  ): Promise<McpConnection> {
+    const client = createClient(serverName, options);
+    const transport = new EdgeClientTransport(
+      url,
+      mcpId,
+      email,
+      serverName,
+      options.connectTimeoutMs ?? 55_000,
+      options.logSink,
+      options.logContext,
+    );
+    try {
+      await client.connect(
+        transport,
+        timeoutOptions(Math.min(options.connectTimeoutMs ?? 55_000, 55_000)),
+      );
+      return new McpConnection(
+        serverName,
+        client,
+        transport,
+        Math.min(options.requestTimeoutMs ?? 55_000, 55_000),
+        options.logSink,
+        options.logContext,
+      );
+    } catch (error) {
       await transport.close().catch(() => undefined);
       throw error;
     }

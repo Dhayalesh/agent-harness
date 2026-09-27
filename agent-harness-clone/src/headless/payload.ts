@@ -88,7 +88,8 @@ export const headlessModelProviderSchema = z
 export const headlessMcpServerSchema = z
   .object({
     name: identifier,
-    transport: z.enum(['stdio', 'http', 'sse']),
+    transport: z.enum(['stdio', 'http', 'sse', 'edge']),
+    mcpId: identifier.optional(),
     command: z.string().min(1).max(1000).optional(),
     args: z.array(z.string().max(4096)).max(100).optional(),
     env: z.record(z.string(), z.string()).optional(),

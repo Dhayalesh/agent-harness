@@ -78,7 +78,8 @@ export const mcpServerWireSchema = z
  */
 const mcpServerShape = {
   name: identifier,
-  transport: z.enum(['stdio', 'http', 'sse']),
+  transport: z.enum(['stdio', 'http', 'sse', 'edge']),
+  mcpId: identifier.optional(),
   command: z.string().min(1).max(1000).optional(),
   args: z.array(z.string().max(4096)).max(100).optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -102,7 +103,8 @@ const mcpServerShape = {
 };
 
 type CrossFieldShape = {
-  transport: 'stdio' | 'http' | 'sse';
+  transport: 'stdio' | 'http' | 'sse' | 'edge';
+  mcpId?: string | undefined;
   command?: string | undefined;
   args?: string[] | undefined;
   env?: Record<string, string> | undefined;
@@ -119,6 +121,35 @@ type CrossFieldShape = {
  * ignored.
  */
 function refineCrossFields(value: CrossFieldShape, context: z.RefinementCtx): void {
+  if (value.transport === 'edge') {
+    if (!value.mcpId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['mcpId'],
+        message: 'edge MCP server requires mcpId',
+      });
+    }
+    if (value.url && !value.url.startsWith('wss://')) {
+      context.addIssue({
+        code: 'custom',
+        path: ['url'],
+        message: 'edge MCP server requires a wss URL',
+      });
+    }
+    if (value.auth.kind !== 'none' || value.apiKey || value.headers) {
+      context.addIssue({
+        code: 'custom',
+        path: ['auth'],
+        message: 'edge MCP server uses runtime EDGE_USER_EMAIL, not record credentials or headers',
+      });
+    }
+  } else if (value.mcpId !== undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['mcpId'],
+      message: 'mcpId is only used by edge MCP servers',
+    });
+  }
   if (value.transport === 'stdio') {
     if (!value.command) {
       context.addIssue({

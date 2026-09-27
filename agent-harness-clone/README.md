@@ -83,6 +83,22 @@ subset of `agent.tools` and overrides the list in that skill's front matter. The
 payload never carries the `SKILL.md` body or an AWS credential. Omitting `agent.tools`
 offers every tool the host built.
 
+For the Edge SAP ADT MCP server, set `EDGE_USER_EMAIL=user@company.com` in the
+trusted Harness runtime environment. Add this entry to `mcpServers`:
+
+```json
+{
+  "name": "sap-adt",
+  "transport": "edge",
+  "url": "wss://edge-server-conector.duckdns.org/harness/ws",
+  "mcpId": "sap-adt"
+}
+```
+
+The email is read from the Harness process environment when the connection opens.
+It is not accepted from the invocation payload. The Edge adapter caps MCP requests
+at 55 seconds because the relay expires pending requests after 60 seconds.
+
 Every object is strict: an unrecognised key is a rejected payload, not a silently
 ignored one, because a misspelled `systemPrompt` that runs anyway is worse than one
 that fails. The full annotated contract is

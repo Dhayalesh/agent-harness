@@ -17,6 +17,8 @@ export interface McpServerLookup {
 }
 
 export type PlatformMcpServerRegistryOptions = {
+  /** Trusted runtime configuration; defaults to process.env. */
+  environment?: NodeJS.ProcessEnv;
   /** Defaults to `console.warn`. */
   logger?: (message: string) => void;
   logSink?: LogSink;
@@ -116,6 +118,19 @@ export class PlatformMcpServerRegistry {
     }
     const url = new URL(record.url);
     assertUsableUrl(url);
+    if (record.transport === 'edge') {
+      const email = (this.options.environment ?? process.env).EDGE_USER_EMAIL?.trim();
+      if (!email) {
+        throw new AgentHarnessError(
+          'EDGE_USER_EMAIL is required for Edge MCP',
+          'EDGE_USER_EMAIL_MISSING',
+        );
+      }
+      if (!record.mcpId) {
+        throw new AgentHarnessError('Edge MCP server requires mcpId', 'MCP_SERVER_ID_MISSING');
+      }
+      return McpConnection.connectEdge(record.name, url, record.mcpId, email, options);
+    }
     return McpConnection.connectHttp(record.name, url, httpTransportOptions(record), options);
   }
 
