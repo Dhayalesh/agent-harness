@@ -335,7 +335,8 @@ const mcpWireSchema = z
 
 const mcpServerShape = {
   name: identifier,
-  transport: z.enum(["stdio", "http"]),
+  transport: z.enum(["stdio", "http", "edge"]),
+  mcpId: identifier.optional(),
   command: z.string().trim().min(1).max(1_000).optional(),
   args: z.array(z.string().max(4_096)).max(100).optional(),
   env: stringMap.optional(),
@@ -356,7 +357,28 @@ const reservedMcpHeaders = new Set([
 ]);
 
 const refineMcpServer = (value, context) => {
-  if (value.url) validatePublicEndpoint(value.url, ["url"], context);
+  if (value.url) {
+    if (value.transport === "edge")
+      validateEdgeEndpoint(value.url, ["url"], context);
+    else validatePublicEndpoint(value.url, ["url"], context);
+  }
+  if (value.transport === "edge") {
+    if (!value.url) issue(context, ["url"], "edge transport requires url");
+    if (!value.mcpId)
+      issue(context, ["mcpId"], "edge transport requires mcpId");
+    for (const field of ["command", "args", "env", "headers", "wire"]) {
+      if (value[field] !== undefined) {
+        issue(context, [field], field + " must be omitted for edge transport");
+      }
+    }
+    if (value.auth.kind !== "none") {
+      issue(context, ["auth", "kind"], "edge transport requires auth.kind none");
+    }
+    if (value.apiKey)
+      issue(context, ["apiKey"], "edge transport forbids apiKey");
+  } else if (value.mcpId !== undefined) {
+    issue(context, ["mcpId"], "mcpId belongs to edge transport");
+  }
   if (value.transport === "stdio") {
     if (!value.command)
       issue(context, ["command"], "stdio transport requires command");
@@ -377,7 +399,7 @@ const refineMcpServer = (value, context) => {
         "sessionId belongs to HTTP transport",
       );
     }
-  } else {
+  } else if (value.transport === "http") {
     if (!value.url) issue(context, ["url"], "http transport requires url");
     for (const field of ["command", "args", "env"]) {
       if (value[field] !== undefined) {
@@ -423,6 +445,7 @@ export const mcpServerUpdateSchema = z
   .object(mcpServerShape)
   .partial()
   .extend({
+    mcpId: z.union([identifier, z.null()]).optional(),
     command: z
       .union([z.string().trim().min(1).max(1_000), z.null()])
       .optional(),
@@ -823,6 +846,29 @@ function validatePublicEndpoint(value, path, context) {
       context,
       path,
       "Endpoint URLs cannot contain query parameters or fragments; use auth or headers for credentials",
+    );
+  }
+}
+
+function validateEdgeEndpoint(value, path, context) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    issue(context, path, "Expected a valid WebSocket URL");
+    return;
+  }
+  if (url.protocol !== "wss:") {
+    issue(context, path, "Edge endpoint URLs must use WSS");
+  }
+  if (url.username || url.password) {
+    issue(context, path, "Edge endpoint URLs cannot contain credentials");
+  }
+  if (url.search || url.hash) {
+    issue(
+      context,
+      path,
+      "Edge endpoint URLs cannot contain query parameters or fragments",
     );
   }
 }

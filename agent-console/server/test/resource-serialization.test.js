@@ -88,6 +88,27 @@ test("serializes MCP servers without credential, environment, or header values",
   }
 });
 
+test("preserves Edge MCP fields in model and list responses", () => {
+  const server = new McpServer({
+    _id: "507f1f77bcf86cd799439022",
+    name: "sap-adt", transport: "edge",
+    url: "wss://edge-server-conector.duckdns.org/harness/ws",
+    mcpId: "sap-adt", auth: { kind: "none" },
+    capabilities: {
+      tools: true, resources: false, prompts: false, elicitation: false,
+      connectTimeoutMs: 30_000, requestTimeoutMs: 55_000,
+    },
+    enabled: true, createdAt: timestamp, updatedAt: timestamp, createdBy: "agent-console",
+  });
+  const stored = McpServer.hydrate(server.toObject({ transform: false }));
+  assert.equal(stored.mcpId, "sap-adt");
+  const listed = safeMcpServer(stored);
+  assert.equal(listed.transport, "edge");
+  assert.equal(listed.url, "wss://edge-server-conector.duckdns.org/harness/ws");
+  assert.equal(listed.mcpId, "sap-adt");
+  assert.equal("email" in listed, false);
+});
+
 test("flags a Node stdio URL as an invalid MCP entry module", () => {
   const invalid = new McpServer({
     name: "quality",

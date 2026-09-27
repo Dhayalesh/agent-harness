@@ -58,6 +58,7 @@ export async function buildPayload({
       pick(value, [
         "name",
         "transport",
+        "mcpId",
         "command",
         "args",
         "env",

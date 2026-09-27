@@ -25,6 +25,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
+const EDGE_URL = "wss://edge-server-conector.duckdns.org/harness/ws";
+
 const EMPTY = {
   name: "",
   transport: "http",
@@ -33,6 +35,9 @@ const EMPTY = {
   args: [],
   env: [],
   url: "",
+  httpUrl: "",
+  edgeUrl: EDGE_URL,
+  mcpId: "sap-adt",
   authKind: "bearer",
   headerName: "",
   apiKey: "",
@@ -79,8 +84,15 @@ export function McpServerFormPage({ mode }) {
           args: mcpServer.args ?? [],
           env: rowsFromSecretMap(mcpServer.env, mcpServer.envKeys),
           url: mcpServer.url ?? "",
+          httpUrl:
+            mcpServer.transport === "http" ? (mcpServer.url ?? "") : "",
+          edgeUrl:
+            mcpServer.transport === "edge"
+              ? (mcpServer.url ?? EDGE_URL)
+              : EDGE_URL,
+          mcpId: mcpServer.mcpId ?? EMPTY.mcpId,
           authKind:
-            mcpServer.transport === "stdio"
+            mcpServer.transport !== "http"
               ? "none"
               : (mcpServer.auth?.kind ?? "bearer"),
           headerName: mcpServer.auth?.headerName ?? "",
@@ -129,17 +141,23 @@ export function McpServerFormPage({ mode }) {
   const changeTransport = (transport) => {
     setForm((current) => {
       const firstArgument = current.args[0]?.trim() ?? "";
-      const url =
-        transport === "http" &&
-        !current.url &&
-        /^https?:\/\//i.test(firstArgument)
-          ? firstArgument
-          : current.url;
-      return {
+      const urls = {
         ...current,
+        ...(current.transport === "http" ? { httpUrl: current.url } : {}),
+        ...(current.transport === "edge" ? { edgeUrl: current.url } : {}),
+      };
+      let url = current.url;
+      if (transport === "edge") url = urls.edgeUrl || EDGE_URL;
+      if (transport === "http") {
+        url =
+          urls.httpUrl ||
+          (/^https?:\/\//i.test(firstArgument) ? firstArgument : "");
+      }
+      return {
+        ...urls,
         transport,
         url,
-        authKind: transport === "stdio" ? "none" : "bearer",
+        authKind: transport === "http" ? "bearer" : "none",
       };
     });
   };
@@ -177,6 +195,22 @@ export function McpServerFormPage({ mode }) {
       });
       if (editing) {
         Object.assign(body, { url: null, apiKey: null, headers: null });
+        if (form.originalTransport === "edge") body.mcpId = null;
+      }
+    } else if (form.transport === "edge") {
+      Object.assign(body, {
+        url: form.url.trim(),
+        mcpId: form.mcpId.trim(),
+        auth: { kind: "none" },
+      });
+      if (editing) {
+        Object.assign(body, {
+          command: null,
+          args: null,
+          env: null,
+          apiKey: null,
+          headers: null,
+        });
       }
     } else {
       Object.assign(body, {
@@ -191,6 +225,7 @@ export function McpServerFormPage({ mode }) {
       });
       if (editing) {
         Object.assign(body, { command: null, args: null, env: null });
+        if (form.originalTransport === "edge") body.mcpId = null;
       }
       if (form.authKind === "none") {
         if (editing) body.apiKey = null;
@@ -237,7 +272,7 @@ export function McpServerFormPage({ mode }) {
         { label: editing ? form.name || "Edit" : "New MCP server" },
       ]}
       title={editing ? `Edit ${form.name}` : "New MCP server"}
-      description="Configure a stdio process or HTTP endpoint the hosted runtime can connect to."
+      description="Configure a stdio process, HTTP endpoint, or Edge server the hosted runtime can connect to."
     >
       <ErrorNote error={error} />
 
@@ -245,7 +280,7 @@ export function McpServerFormPage({ mode }) {
         <form onSubmit={submit}>
           <FormSection
             title="Identity and transport"
-            description="How the runtime reaches this server: a local stdio process, or an HTTP endpoint."
+            description="How the runtime reaches this server: a local stdio process, HTTP endpoint, or Edge server."
           >
             <Field
               label="Name"
@@ -282,6 +317,9 @@ export function McpServerFormPage({ mode }) {
                   </SelectItem>
                   <SelectItem key="http" value="http">
                     http
+                  </SelectItem>
+                  <SelectItem key="edge" value="edge">
+                    edge
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -325,6 +363,43 @@ export function McpServerFormPage({ mode }) {
                   stdio uses no HTTP authentication. Pass process credentials
                   through environment variables.
                 </p>
+              </>
+            ) : form.transport === "edge" ? (
+              <>
+                <Field
+                  label="Edge Server URL"
+                  htmlFor="mcp-url"
+                  hint="The Edge Server WebSocket endpoint."
+                  error={fieldErrors.url}
+                >
+                  <Input
+                    id="mcp-url"
+                    required
+                    type="url"
+                    pattern="wss://.+"
+                    placeholder={EDGE_URL}
+                    spellCheck={false}
+                    value={form.url}
+                    onChange={(event) => set("url")(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.url)}
+                  />
+                </Field>
+                <Field
+                  label="MCP ID"
+                  htmlFor="mcp-id"
+                  error={fieldErrors.mcpId}
+                >
+                  <Input
+                    id="mcp-id"
+                    required
+                    maxLength={100}
+                    pattern="[A-Za-z0-9][A-Za-z0-9_.-]*"
+                    placeholder="sap-adt"
+                    value={form.mcpId}
+                    onChange={(event) => set("mcpId")(event.target.value)}
+                    aria-invalid={Boolean(fieldErrors.mcpId)}
+                  />
+                </Field>
               </>
             ) : (
               <>

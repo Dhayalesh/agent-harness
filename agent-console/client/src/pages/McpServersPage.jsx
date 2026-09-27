@@ -9,7 +9,7 @@ const CAPABILITY_NAMES = ["tools", "resources", "prompts", "elicitation"];
 const capabilityNames = (capabilities = {}) =>
   CAPABILITY_NAMES.filter((name) => capabilities[name]);
 
-/** stdio servers are identified by their command line, HTTP servers by their URL. */
+/** stdio servers use their command line; HTTP and Edge servers use their URL. */
 const endpointOf = (row) =>
   row.transport === "stdio"
     ? [row.command, ...(row.args ?? [])].filter(Boolean).join(" ")
@@ -122,7 +122,7 @@ export function McpServersPage() {
       singular="MCP server"
       plural="servers"
       emptyIcon="plug"
-      emptyDescription="Add a stdio process or HTTP endpoint the runtime can connect to."
+      emptyDescription="Add a stdio process, HTTP endpoint, or Edge server the runtime can connect to."
       searchPlaceholder="Search name, transport or endpoint"
       editHref={(row) => `/mcp-servers/${row.id}/edit`}
       columns={columns}

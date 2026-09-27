@@ -78,7 +78,7 @@ export function safeModelProvider(document) {
 
 export function safeMcpServer(document) {
   const value = plain(document);
-  const endpoint = safeEndpoint(value.url);
+  const endpoint = safeEndpoint(value.url, value.transport === "edge");
   return {
     ...without(value, ["apiKey", "env", "headers", "url"]),
     ...(endpoint.value !== undefined ? { url: endpoint.value } : {}),
@@ -500,13 +500,17 @@ function mergeSecretMap(existing = {}, incoming) {
 /** Existing records predate the console validation, so list/detail responses
  * defensively remove URL userinfo and query values even when a legacy record is
  * malformed. The invocation validator will refuse that record until corrected. */
-function safeEndpoint(value) {
+function safeEndpoint(value, allowEdge = false) {
   if (value === undefined || value === null || value === "") {
     return { value, redacted: false };
   }
   try {
     const url = new URL(String(value));
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
+    if (
+      allowEdge
+        ? url.protocol !== "wss:"
+        : !["http:", "https:"].includes(url.protocol)
+    ) {
       return { value: undefined, redacted: true };
     }
     const redacted = Boolean(url.username || url.password || url.search || url.hash);

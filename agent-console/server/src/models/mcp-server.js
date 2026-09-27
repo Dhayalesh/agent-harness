@@ -4,6 +4,7 @@ const mcpServerSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     transport: { type: String, required: true },
+    mcpId: String,
     command: String,
     // Keep an omitted args field truly absent. Mongoose otherwise materializes []
     // on every document, which makes an HTTP record fail the harness invariant

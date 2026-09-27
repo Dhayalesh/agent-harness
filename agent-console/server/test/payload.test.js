@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Agent } from "../src/models/agent.js";
 import { ModelProvider } from "../src/models/model-provider.js";
+import { McpServer } from "../src/models/mcp-server.js";
 import { Skill } from "../src/models/skill.js";
 import { buildPayload, redactPayload } from "../src/services/payload.js";
 
@@ -153,6 +154,54 @@ test("builds URI-only skill descriptors without loading S3 content", async (cont
     payload.permissionRules.some((rule) => rule.tool === "web_search"),
     false,
   );
+});
+
+test("builds the Edge MCP invocation payload from an agent's selected server", async (context) => {
+  const agentId = "507f1f77bcf86cd799439031";
+  const providerId = "507f1f77bcf86cd799439032";
+  const serverId = "507f1f77bcf86cd799439033";
+  const agent = new Agent({
+    _id: agentId, name: "edge-agent", systemPrompt: "Use SAP tools.",
+    modelProviderId: providerId, tools: [], skills: [], mcpServerIds: [serverId],
+    limits: { maxTurns: 12 }, enabled: true,
+    createdAt: timestamp, updatedAt: timestamp, createdBy: "agent-console",
+  });
+  const provider = new ModelProvider({
+    _id: providerId, name: "Test Provider", provider: "openai-compatible",
+    model: "test-model", baseURL: "https://models.example.test/v1",
+    apiKey: "provider-secret", auth: { kind: "bearer" },
+    capabilities: {
+      contextWindow: 32_000, maxOutputTokens: 4_000,
+      supportsTools: true, supportsStreaming: true, supportsReasoning: false,
+    },
+    enabled: true, createdAt: timestamp, updatedAt: timestamp, createdBy: "agent-console",
+  });
+  const server = new McpServer({
+    _id: serverId, name: "sap-adt", transport: "edge",
+    url: "wss://edge-server-conector.duckdns.org/harness/ws", mcpId: "sap-adt",
+    auth: { kind: "none" },
+    capabilities: {
+      tools: true, resources: false, prompts: false, elicitation: false,
+      connectTimeoutMs: 30_000, requestTimeoutMs: 55_000,
+    },
+    enabled: true, createdAt: timestamp, updatedAt: timestamp, createdBy: "agent-console",
+  });
+  context.mock.method(Agent, "findById", async () => agent);
+  context.mock.method(ModelProvider, "findById", () => selectableQuery(provider));
+  context.mock.method(McpServer, "findById", () => selectableQuery(server));
+  const { payload, resolved } = await buildPayload({ agentId, prompt: "List SAP tools." });
+  assert.equal(resolved.mcpServers[0].value.mcpId, "sap-adt");
+  assert.deepEqual(payload.mcpServers, [{
+    name: "sap-adt", transport: "edge",
+    url: "wss://edge-server-conector.duckdns.org/harness/ws", mcpId: "sap-adt",
+    auth: { kind: "none" },
+    capabilities: {
+      tools: true, resources: false, prompts: false, elicitation: false,
+      connectTimeoutMs: 30_000, requestTimeoutMs: 55_000,
+    },
+  }]);
+  assert.equal("email" in payload.mcpServers[0], false);
+  assert.deepEqual(payload.permissionRules, [{ tool: "mcp__*", decision: "allow" }]);
 });
 
 test("recursively redacts credentials, headers, and environment values", () => {
