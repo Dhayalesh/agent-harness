@@ -1,0 +1,6 @@
+.build-sapgui/
+.gocache/
+.test-tmp/
+.smoke/
+dist/
+internal/runtime/sapgui_mcp_windows.exe
