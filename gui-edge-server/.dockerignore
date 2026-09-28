@@ -1,0 +1,12 @@
+# Only module metadata and production Go source enter the build context.
+# This excludes Git data, local configuration, credentials, certificates,
+# binaries, caches, logs, coverage, editor files, and test artifacts.
+*
+!go.mod
+!go.sum
+!cmd/
+!cmd/gui-edge-server/
+!cmd/gui-edge-server/*.go
+!server/
+!server/*.go
+**/*_test.go
