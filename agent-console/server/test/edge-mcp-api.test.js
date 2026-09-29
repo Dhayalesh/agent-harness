@@ -106,4 +106,42 @@ test("creates, lists, reads, and updates Edge MCP servers through the existing A
   assert.equal(edgeRecord.transport, "edge");
   assert.equal(edgeRecord.mcpId, "sap-adt");
   assert.equal(edgeRecord.hasApiKey, false);
+
+  const guiEdge = {
+    ...edge,
+    name: "sapgui",
+    url: "wss://gui-edge-server.duckdns.org/ws",
+    mcpId: "sapgui",
+  };
+  const guiCreated = await fetch(base, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(guiEdge),
+  });
+  assert.equal(guiCreated.status, 201);
+  const gui = (await guiCreated.json()).mcpServer;
+  assert.deepEqual(
+    (({ name, transport, url, mcpId }) => ({ name, transport, url, mcpId }))(gui),
+    { name: "sapgui", transport: "edge", url: guiEdge.url, mcpId: "sapgui" },
+  );
+  assert.equal("email" in gui, false);
+
+  const guiList = await fetch(base);
+  assert.equal(guiList.status, 200);
+  assert.equal((await guiList.json()).mcpServers[0].mcpId, "sapgui");
+
+  const guiDisabled = await fetch(`${base}/${gui.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: false, url: "ws://localhost:8080/ws" }),
+  });
+  assert.equal(guiDisabled.status, 200);
+  const disabled = (await guiDisabled.json()).mcpServer;
+  assert.equal(disabled.enabled, false);
+  assert.equal(disabled.url, "ws://localhost:8080/ws");
+
+  const guiEnabled = await fetch(`${base}/${gui.id}`, {
+    method: "PATCH", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled: true, url: guiEdge.url }),
+  });
+  assert.equal(guiEnabled.status, 200);
+  assert.equal((await guiEnabled.json()).mcpServer.enabled, true);
 });

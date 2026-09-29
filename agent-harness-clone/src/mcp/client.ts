@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
-import { EdgeClientTransport } from './edge-transport.js';
+import { EdgeClientTransport, edgeRelayTimeoutMs } from './edge-transport.js';
 import type { Tool } from '../tools/tool.js';
 
 export type McpResource = {
@@ -73,6 +73,7 @@ export class McpConnection {
     private readonly requestTimeoutMs?: number,
     private readonly logSink?: LogSink,
     private readonly logContext: LogContext = {},
+    private readonly redactRequestValues = false,
   ) {}
 
   static async connectStdio(
@@ -187,28 +188,30 @@ export class McpConnection {
     email: string,
     options: McpConnectionOptions = {},
   ): Promise<McpConnection> {
+    const relayTimeoutMs = edgeRelayTimeoutMs(url);
     const client = createClient(serverName, options);
     const transport = new EdgeClientTransport(
       url,
       mcpId,
       email,
       serverName,
-      options.connectTimeoutMs ?? 55_000,
+      options.connectTimeoutMs ?? relayTimeoutMs,
       options.logSink,
       options.logContext,
     );
     try {
       await client.connect(
         transport,
-        timeoutOptions(Math.min(options.connectTimeoutMs ?? 55_000, 55_000)),
+        timeoutOptions(Math.min(options.connectTimeoutMs ?? relayTimeoutMs, relayTimeoutMs)),
       );
       return new McpConnection(
         serverName,
         client,
         transport,
-        Math.min(options.requestTimeoutMs ?? 55_000, 55_000),
+        Math.min(options.requestTimeoutMs ?? relayTimeoutMs, relayTimeoutMs),
         options.logSink,
         options.logContext,
+        true,
       );
     } catch (error) {
       await transport.close().catch(() => undefined);
@@ -265,6 +268,7 @@ export class McpConnection {
             server: this.serverName,
             remoteTool: remote.name,
             isError: result.isError === true,
+            ...(this.redactRequestValues ? { contentBlocks: result.content } : {}),
             structuredContent: result.structuredContent,
             _meta: result._meta,
           },
@@ -416,7 +420,7 @@ export class McpConnection {
       event: 'mcp.request.input',
       serverName: this.serverName,
       operation,
-      request,
+      ...(this.redactRequestValues ? { requestSummary: summarizeMcpValue(request) } : { request }),
       ...fields,
       mcpRequestId,
     });
@@ -444,8 +448,9 @@ export class McpConnection {
         event: 'mcp.request.output',
         serverName: this.serverName,
         operation,
-        request,
-        response,
+        ...(this.redactRequestValues
+          ? { responseSummary: summarizeMcpValue(response) }
+          : { request, response }),
         remoteError,
         durationMs: Date.now() - started,
         ...fields,
@@ -460,7 +465,11 @@ export class McpConnection {
         operation,
         outcome: 'failure',
         durationMs: Date.now() - started,
-        error: describeError(error),
+        error: this.redactRequestValues
+          ? error instanceof Error
+            ? error.name
+            : typeof error
+          : describeError(error),
         ...fields,
         mcpRequestId,
       });
@@ -469,8 +478,14 @@ export class McpConnection {
         event: 'mcp.request.failure_details',
         serverName: this.serverName,
         operation,
-        request,
-        error: describeError(error),
+        ...(this.redactRequestValues
+          ? { requestSummary: summarizeMcpValue(request) }
+          : { request }),
+        error: this.redactRequestValues
+          ? error instanceof Error
+            ? error.name
+            : typeof error
+          : describeError(error),
         ...fields,
         mcpRequestId,
       });

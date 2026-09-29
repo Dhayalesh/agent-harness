@@ -508,7 +508,7 @@ function safeEndpoint(value, allowEdge = false) {
     const url = new URL(String(value));
     if (
       allowEdge
-        ? url.protocol !== "wss:"
+        ? !["ws:", "wss:"].includes(url.protocol)
         : !["http:", "https:"].includes(url.protocol)
     ) {
       return { value: undefined, redacted: true };

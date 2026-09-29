@@ -59,9 +59,16 @@ export function McpServersPage() {
         hideBelow: "lg",
         value: endpointOf,
         render: (row) => (
-          <MonoValue className="line-clamp-1">
-            {endpointOf(row) || "—"}
-          </MonoValue>
+          <>
+            <MonoValue className="line-clamp-1">
+              {endpointOf(row) || "—"}
+            </MonoValue>
+            {row.transport === "edge" && (
+              <span className="mt-1 block truncate text-tiny text-default-500">
+                MCP ID: {row.mcpId}
+              </span>
+            )}
+          </>
         ),
       },
       {

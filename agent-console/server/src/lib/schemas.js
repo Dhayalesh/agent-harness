@@ -858,8 +858,8 @@ function validateEdgeEndpoint(value, path, context) {
     issue(context, path, "Expected a valid WebSocket URL");
     return;
   }
-  if (url.protocol !== "wss:") {
-    issue(context, path, "Edge endpoint URLs must use WSS");
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    issue(context, path, "Edge endpoint URLs must use WS or WSS");
   }
   if (url.username || url.password) {
     issue(context, path, "Edge endpoint URLs cannot contain credentials");

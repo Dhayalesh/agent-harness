@@ -5,6 +5,7 @@ import { AgentHarnessError } from '../core/errors.js';
 import type { RunProgressReporter } from '../core/events.js';
 import type { McpConnectionOptions, McpElicitationHandler } from '../mcp/client.js';
 import { McpConnection } from '../mcp/client.js';
+import { usesGuiEdgeProtocol } from '../mcp/edge-transport.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 import type { McpServerRecord } from './mcp-server-definitions.js';
 import { assertMcpRuntimeSupport } from './mcp-server-support.js';
@@ -119,10 +120,16 @@ export class PlatformMcpServerRegistry {
     const url = new URL(record.url);
     assertUsableUrl(url);
     if (record.transport === 'edge') {
-      const email = (this.options.environment ?? process.env).EDGE_USER_EMAIL?.trim();
+      const environment = this.options.environment ?? process.env;
+      const guiRelay = usesGuiEdgeProtocol(url);
+      const email = guiRelay
+        ? environment.GUI_EDGE_USER_EMAIL?.trim() || environment.EDGE_USER_EMAIL?.trim()
+        : environment.EDGE_USER_EMAIL?.trim();
       if (!email) {
         throw new AgentHarnessError(
-          'EDGE_USER_EMAIL is required for Edge MCP',
+          guiRelay
+            ? 'GUI_EDGE_USER_EMAIL or EDGE_USER_EMAIL is required for GUI Edge MCP'
+            : 'EDGE_USER_EMAIL is required for Edge MCP',
           'EDGE_USER_EMAIL_MISSING',
         );
       }

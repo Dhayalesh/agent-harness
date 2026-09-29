@@ -376,7 +376,7 @@ export function McpServerFormPage({ mode }) {
                     id="mcp-url"
                     required
                     type="url"
-                    pattern="wss://.+"
+                    pattern="wss?://.+"
                     placeholder={EDGE_URL}
                     spellCheck={false}
                     value={form.url}

@@ -99,6 +99,27 @@ The email is read from the Harness process environment when the connection opens
 It is not accepted from the invocation payload. The Edge adapter caps MCP requests
 at 55 seconds because the relay expires pending requests after 60 seconds.
 
+The separate SAP GUI Edge POC reads `GUI_EDGE_USER_EMAIL` from the trusted Harness
+runtime environment, falling back to `EDGE_USER_EMAIL` when no GUI override is set.
+That value must match the email configured on the Windows `edge-gui.exe` connector.
+The production ADT relay continues to use `EDGE_USER_EMAIL`.
+The Agent Console stores only the MCP definition:
+
+```json
+{
+  "name": "sapgui",
+  "transport": "edge",
+  "url": "wss://gui-edge-server.duckdns.org/ws",
+  "mcpId": "sapgui"
+}
+```
+
+The `/ws` relay uses the GUI server's `mcp.request` and `mcp.response` envelopes,
+with the trusted email as a top-level routing field. Other Edge URLs retain the
+existing ADT envelope. GUI requests are capped at 115 seconds because that relay
+expires pending requests after 120 seconds. Tool names come from `tools/list`;
+raw MCP content blocks, including images, remain in tool-result metadata.
+
 Every object is strict: an unrecognised key is a rejected payload, not a silently
 ignored one, because a misspelled `systemPrompt` that runs anyway is worse than one
 that fails. The full annotated contract is

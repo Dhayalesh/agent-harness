@@ -3,16 +3,26 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { emitLog, type LogContext, type LogSink } from '../services/observability.js';
 
-/** Mirrors edge-server/internal/protocol/message.go: email belongs in Route, not Message. */
 type EdgeResponse = {
   version: 1;
   requestId: string;
 } & (
-  | { type: 'harness.mcp.response'; payload: { message: JSONRPCMessage } }
+  | { type: 'harness.mcp.response' | 'mcp.response'; payload: { message: JSONRPCMessage } }
   | { type: 'harness.mcp.error'; payload: { error: string } }
+  | { type: 'edge.error'; payload: { code: string } }
 );
 
-const RELAY_TIMEOUT_MS = 55_000; // Edge Server expires pending requests after 60 seconds.
+const ADT_RELAY_TIMEOUT_MS = 55_000; // The ADT relay expires requests after 60 seconds.
+const GUI_RELAY_TIMEOUT_MS = 115_000; // The GUI relay expires requests after 120 seconds.
+
+/** The deployed GUI relay uses /ws; all other routes keep the existing ADT wire format. */
+export function usesGuiEdgeProtocol(url: URL): boolean {
+  return url.pathname === '/ws';
+}
+
+export function edgeRelayTimeoutMs(url: URL): number {
+  return usesGuiEdgeProtocol(url) ? GUI_RELAY_TIMEOUT_MS : ADT_RELAY_TIMEOUT_MS;
+}
 
 export class EdgeClientTransport implements Transport {
   onclose?: () => void;
@@ -22,16 +32,23 @@ export class EdgeClientTransport implements Transport {
   private socket?: WebSocket;
   private closed = false;
   private readonly pending = new Map<string, { rpcId: string | number; timer: NodeJS.Timeout }>();
+  private readonly notifications = new Map<string, NodeJS.Timeout>();
+  private readonly ignoredReplies = new Map<string, NodeJS.Timeout>();
+  private readonly guiRelay: boolean;
+  private readonly relayTimeoutMs: number;
 
   constructor(
     private readonly url: URL,
     private readonly mcpId: string,
     private readonly email: string,
     private readonly serverName: string,
-    private readonly connectTimeoutMs = RELAY_TIMEOUT_MS,
+    private readonly connectTimeoutMs = ADT_RELAY_TIMEOUT_MS,
     private readonly logSink?: LogSink,
     private readonly logContext: LogContext = {},
-  ) {}
+  ) {
+    this.guiRelay = usesGuiEdgeProtocol(url);
+    this.relayTimeoutMs = edgeRelayTimeoutMs(url);
+  }
 
   async start(): Promise<void> {
     if (this.socket) throw new Error('Edge transport already started');
@@ -47,7 +64,7 @@ export class EdgeClientTransport implements Transport {
           reject(new Error('Edge WebSocket connection timed out'));
           void this.close();
         },
-        Math.min(this.connectTimeoutMs, RELAY_TIMEOUT_MS),
+        Math.min(this.connectTimeoutMs, this.relayTimeoutMs),
       );
       socket.addEventListener(
         'open',
@@ -81,31 +98,59 @@ export class EdgeClientTransport implements Transport {
     if (this.closed || this.socket?.readyState !== WebSocket.OPEN) {
       throw new Error('Edge WebSocket is not open');
     }
-    // The connector treats this notification as a no-op and returns JSON null.
-    // MCP notifications have no JSON-RPC id, so relaying it would create an
-    // Edge requestId with no valid MCP response to pass back to the SDK.
-    if (
-      'method' in message &&
-      message.method === 'notifications/initialized' &&
-      !('id' in message)
-    ) {
+    // Both relays lack MCP cancellation. The SDK has already rejected the local
+    // request, so release its pending slot and ignore a late relay response.
+    if ('method' in message && message.method === 'notifications/cancelled' && !('id' in message)) {
+      const params = 'params' in message ? message.params : undefined;
+      const cancelledId =
+        params && typeof params === 'object' && 'requestId' in params
+          ? params.requestId
+          : undefined;
+      for (const [requestId, pending] of this.pending) {
+        if (pending.rpcId !== cancelledId) continue;
+        clearTimeout(pending.timer);
+        this.pending.delete(requestId);
+        const timer = setTimeout(() => this.ignoredReplies.delete(requestId), this.relayTimeoutMs);
+        this.ignoredReplies.set(requestId, timer);
+      }
       return;
     }
-    if (!('id' in message) || (typeof message.id !== 'string' && typeof message.id !== 'number')) {
+    const initializedNotification =
+      'method' in message && message.method === 'notifications/initialized' && !('id' in message);
+    // The ADT connector treats this notification as a no-op. The GUI relay
+    // forwards it to the Windows MCP process and sends no response.
+    if (initializedNotification && !this.guiRelay) {
+      return;
+    }
+    const rpcId = 'id' in message ? message.id : undefined;
+    if (!initializedNotification && typeof rpcId !== 'string' && typeof rpcId !== 'number') {
       throw new Error('Edge transport only supports MCP requests with a JSON-RPC id');
     }
     const requestId = randomUUID();
-    const timer = setTimeout(
-      () => this.fail(new Error('Edge MCP request timed out')),
-      RELAY_TIMEOUT_MS,
-    );
-    this.pending.set(requestId, { rpcId: message.id, timer });
-    const envelope = {
-      version: 1,
-      type: 'harness.mcp.request',
-      requestId,
-      payload: { email: this.email, mcpId: this.mcpId, message },
-    };
+    if (initializedNotification) {
+      const timer = setTimeout(() => this.notifications.delete(requestId), this.relayTimeoutMs);
+      this.notifications.set(requestId, timer);
+    } else if (typeof rpcId === 'string' || typeof rpcId === 'number') {
+      const timer = setTimeout(
+        () => this.fail(new Error('Edge MCP request timed out')),
+        this.relayTimeoutMs,
+      );
+      this.pending.set(requestId, { rpcId, timer });
+    }
+    const envelope = this.guiRelay
+      ? {
+          version: 1,
+          type: 'mcp.request',
+          requestId,
+          email: this.email,
+          payload: { mcpId: this.mcpId, message },
+        }
+      : {
+          version: 1,
+          type: 'harness.mcp.request',
+          requestId,
+          payload: { email: this.email, mcpId: this.mcpId, message },
+        };
     this.log('edge.mcp.request', {
       edgeRequestId: requestId,
       method: 'method' in message ? message.method : undefined,
@@ -113,8 +158,10 @@ export class EdgeClientTransport implements Transport {
     try {
       this.socket.send(JSON.stringify(envelope));
     } catch (error) {
-      clearTimeout(timer);
+      const timer = this.pending.get(requestId)?.timer ?? this.notifications.get(requestId);
+      if (timer) clearTimeout(timer);
       this.pending.delete(requestId);
+      this.notifications.delete(requestId);
       throw error;
     }
   }
@@ -132,20 +179,38 @@ export class EdgeClientTransport implements Transport {
     try {
       if (typeof data !== 'string') throw new Error('Edge response is not a text frame');
       const response: unknown = JSON.parse(data);
-      if (!isEdgeResponse(response)) throw new Error('Malformed Edge response');
+      if (!isEdgeResponse(response, this.guiRelay)) throw new Error('Malformed Edge response');
+      const ignoredTimer = this.ignoredReplies.get(response.requestId);
+      if (ignoredTimer) {
+        clearTimeout(ignoredTimer);
+        this.ignoredReplies.delete(response.requestId);
+        return;
+      }
+      const notificationTimer = this.notifications.get(response.requestId);
+      if (notificationTimer) {
+        clearTimeout(notificationTimer);
+        this.notifications.delete(response.requestId);
+        throw new Error(
+          response.type === 'edge.error'
+            ? `GUI Edge notification rejected: ${response.payload.code}`
+            : 'Unexpected GUI Edge notification response',
+        );
+      }
       const pending = this.pending.get(response.requestId);
       if (!pending) throw new Error('Unknown Edge requestId');
       clearTimeout(pending.timer);
       this.pending.delete(response.requestId);
-      if (response.type === 'harness.mcp.error') {
+      if (response.type === 'harness.mcp.error' || response.type === 'edge.error') {
+        const error =
+          response.type === 'edge.error' ? response.payload.code : response.payload.error;
         this.log('edge.mcp.error', {
           edgeRequestId: response.requestId,
-          error: response.payload.error,
+          error,
         });
         this.onmessage?.({
           jsonrpc: '2.0',
           id: pending.rpcId,
-          error: { code: -32000, message: response.payload.error },
+          error: { code: -32000, message: error },
         });
         return;
       }
@@ -179,6 +244,10 @@ export class EdgeClientTransport implements Transport {
     this.closed = true;
     for (const pending of this.pending.values()) clearTimeout(pending.timer);
     this.pending.clear();
+    for (const timer of this.notifications.values()) clearTimeout(timer);
+    this.notifications.clear();
+    for (const timer of this.ignoredReplies.values()) clearTimeout(timer);
+    this.ignoredReplies.clear();
     this.log('edge.mcp.closed', error ? { error: error.message } : {});
     this.onclose?.();
   }
@@ -194,13 +263,18 @@ export class EdgeClientTransport implements Transport {
   }
 }
 
-function isEdgeResponse(value: unknown): value is EdgeResponse {
+function isEdgeResponse(value: unknown, guiRelay: boolean): value is EdgeResponse {
   if (!value || typeof value !== 'object') return false;
   const response = value as Record<string, unknown>;
   if (response.version !== 1 || typeof response.requestId !== 'string' || !response.requestId)
     return false;
   if (!response.payload || typeof response.payload !== 'object') return false;
   const payload = response.payload as Record<string, unknown>;
+  if (guiRelay) {
+    return response.type === 'mcp.response'
+      ? 'message' in payload
+      : response.type === 'edge.error' && typeof payload.code === 'string';
+  }
   return response.type === 'harness.mcp.response'
     ? 'message' in payload
     : response.type === 'harness.mcp.error' && typeof payload.error === 'string';

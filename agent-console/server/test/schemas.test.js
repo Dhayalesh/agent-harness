@@ -291,7 +291,7 @@ test("accepts historical stdio and HTTP MCP server shapes", () => {
   );
 });
 
-test("accepts Edge MCP records and validates the WSS endpoint and MCP ID", () => {
+test("accepts Edge MCP records and validates WebSocket endpoints and MCP IDs", () => {
   const edge = {
     name: "sap-adt",
     transport: "edge",
@@ -302,15 +302,25 @@ test("accepts Edge MCP records and validates the WSS endpoint and MCP ID", () =>
     enabled: true,
   };
   assert.equal(mcpServerCreateSchema.safeParse(edge).success, true);
+  assert.equal(mcpServerCreateSchema.safeParse({
+    ...edge,
+    name: "sapgui",
+    url: "wss://gui-edge-server.duckdns.org/ws",
+    mcpId: "sapgui",
+  }).success, true);
+  assert.equal(mcpServerCreateSchema.safeParse({
+    ...edge, url: "ws://localhost:8080/harness/ws",
+  }).success, true);
   assert.equal(mcpServerRecordSchema.safeParse({
     ...edge, createdAt: timestamp, updatedAt: timestamp, createdBy: "agent-console",
   }).success, true);
   assert.equal(mcpServerUpdateSchema.safeParse({ mcpId: "sap-adt" }).success, true);
   assert.equal(mcpServerUpdateSchema.safeParse({ mcpId: null }).success, true);
   for (const invalid of [
-    { mcpId: undefined }, { mcpId: "bad id" }, { url: "" },
+    { name: "" }, { mcpId: "" }, { mcpId: undefined },
+    { mcpId: "bad id" }, { url: "" },
     { url: "https://edge.example.test/harness/ws" },
-    { url: "ws://localhost:8080/harness/ws" },
+    { url: "wss://" },
     { url: "wss://user:secret@edge.example.test/harness/ws" },
     { command: "node" }, { headers: { "X-Test": "value" } },
     { apiKey: "browser-secret" }, { auth: { kind: "bearer" } },
