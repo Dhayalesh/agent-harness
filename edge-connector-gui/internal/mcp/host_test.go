@@ -5,12 +5,20 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/trueai/edge-connector-gui/internal/config"
 )
 
 func TestRealUpstreamDesktopMCP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
-	host := New(t.TempDir(), nil)
+	root := t.TempDir()
+	if err := config.SaveSAP(root, config.SAPSystem{ConnectionName: "Test SAP Logon",
+		Host: "https://sap.example.test", Client: "100", User: "TESTUSER", Language: "EN"}); err != nil {
+		t.Fatal(err)
+	}
+	host := New(root, nil)
+	host.ConfigureSAP("TESTUSER", testCredentialStore{user: "TESTUSER", secret: []byte("test-password")})
 	defer host.Close()
 	if err := host.Start(ctx); err != nil {
 		t.Fatal(err)

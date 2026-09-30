@@ -14,21 +14,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/trueai/edge-connector-gui/internal/config"
 	"github.com/trueai/edge-connector-gui/internal/runtime"
 )
 
 const maxLine = 16 << 20
 
 type Host struct {
-	root      string
-	logger    *slog.Logger
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	responses chan json.RawMessage
-	done      chan struct{}
-	nextID    uint64
-	init      json.RawMessage
+	root        string
+	logger      *slog.Logger
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	responses   chan json.RawMessage
+	done        chan struct{}
+	nextID      uint64
+	init        json.RawMessage
+	sapUser     string
+	credentials config.CredentialStore
 }
 
 func New(root string, logger *slog.Logger) *Host {
@@ -38,14 +41,42 @@ func New(root string, logger *slog.Logger) *Host {
 	return &Host{root: root, logger: logger}
 }
 
-func desktopEnv() []string {
+func (h *Host) ConfigureSAP(user string, credentials config.CredentialStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sapUser, h.credentials = user, credentials
+}
+
+func (h *Host) desktopEnv() ([]string, error) {
 	var env []string
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(strings.ToUpper(entry), "BACKEND_TYPE=") {
-			env = append(env, entry)
+		upper := strings.ToUpper(entry)
+		if strings.HasPrefix(upper, "BACKEND_TYPE=") {
+			continue
 		}
+		if h.credentials != nil && (strings.HasPrefix(upper, "SAP_CONFIG_FILE=") ||
+			strings.HasPrefix(upper, config.SAPPasswordEnv+"=")) {
+			continue
+		}
+		env = append(env, entry)
 	}
-	return append(env, "BACKEND_TYPE=desktop")
+	env = append(env, "BACKEND_TYPE=desktop")
+	if h.credentials == nil {
+		return env, nil
+	}
+	username, secret, err := h.credentials.GetCredential(config.CredentialTarget(h.root))
+	if err != nil || username != h.sapUser || len(secret) == 0 {
+		for i := range secret {
+			secret[i] = 0
+		}
+		return nil, errors.New("SAP credentials unavailable; run edge-gui.exe --setup")
+	}
+	env = append(env, "SAP_CONFIG_FILE="+config.SAPConfigPath(h.root),
+		config.SAPPasswordEnv+"="+string(secret))
+	for i := range secret {
+		secret[i] = 0
+	}
+	return env, nil
 }
 
 func (h *Host) startLocked(ctx context.Context) error {
@@ -62,7 +93,10 @@ func (h *Host) startLocked(ctx context.Context) error {
 		return err
 	}
 	cmd := exec.Command(path)
-	cmd.Env = desktopEnv()
+	cmd.Env, err = h.desktopEnv()
+	if err != nil {
+		return err
+	}
 	cmd.Stderr = io.Discard // Upstream errors can contain sensitive SAP details.
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -75,6 +109,7 @@ func (h *Host) startLocked(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	cmd.Env = nil // The child has its own environment; do not retain the secret on Cmd.
 	h.cmd, h.stdin = cmd, stdin
 	responses := make(chan json.RawMessage, 2)
 	done := make(chan struct{})

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/mail"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -68,7 +69,7 @@ func write(path string, c Config) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-func Load(root string) (Config, error) {
+func LoadForSetup(root string) (Config, error) {
 	if root == "" {
 		var err error
 		root, err = Root()
@@ -88,11 +89,11 @@ func Load(root string) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
-		cfg := Config{ServerURL: "ws://localhost:8765/ws", DeviceID: id, MCPID: MCPID, HeartbeatSeconds: 30, Root: root}
+		cfg := Config{ServerURL: "wss://gui-edge-server.duckdns.org/ws", DeviceID: id, MCPID: MCPID, HeartbeatSeconds: 30, Root: root}
 		if err := write(path, cfg); err != nil {
 			return Config{}, err
 		}
-		return Config{}, fmt.Errorf("created %s: %w", path, ErrSetupRequired)
+		return cfg, nil
 	}
 	if err != nil {
 		return Config{}, err
@@ -111,17 +112,50 @@ func Load(root string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	return cfg, nil
+}
+
+func Save(cfg Config) error {
+	if cfg.Root == "" {
+		return errors.New("config root is required")
+	}
+	return write(filepath.Join(cfg.Root, "config.json"), cfg)
+}
+
+func ValidEmail(value string) bool {
+	if value == "" || len(value) > 254 || strings.TrimSpace(value) != value {
+		return false
+	}
+	address, err := mail.ParseAddress(value)
+	return err == nil && address.Address == value
+}
+
+func Validate(cfg Config) error {
 	u, err := url.Parse(cfg.ServerURL)
-	if err != nil || u.Host == "" || u.Path != "/ws" || u.User != nil || u.Fragment != "" ||
+	if err != nil || u.Host == "" || u.Path != "/ws" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		(u.Scheme != "ws" && u.Scheme != "wss") {
-		return Config{}, errors.New("serverUrl must be ws://localhost:<port>/ws or wss://<host>/ws")
+		return errors.New("serverUrl must be ws://localhost:<port>/ws or wss://<host>/ws")
 	}
 	if u.Scheme == "ws" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" && u.Hostname() != "::1" {
-		return Config{}, errors.New("unencrypted ws is allowed only on localhost")
+		return errors.New("unencrypted ws is allowed only on localhost")
 	}
-	if !strings.Contains(cfg.Email, "@") || len(cfg.Email) > 254 || len(cfg.DeviceID) > 128 ||
+	if !ValidEmail(cfg.Email) || cfg.DeviceID == "" || len(cfg.DeviceID) > 128 ||
 		cfg.MCPID != MCPID || cfg.HeartbeatSeconds < 5 || cfg.HeartbeatSeconds > 300 {
-		return Config{}, errors.New("config requires email, deviceId, mcpId=sapgui and heartbeatSeconds between 5 and 300")
+		return errors.New("config requires email, deviceId, mcpId=sapgui and heartbeatSeconds between 5 and 300")
+	}
+	return nil
+}
+
+func Load(root string) (Config, error) {
+	cfg, err := LoadForSetup(root)
+	if err != nil {
+		return Config{}, err
+	}
+	if cfg.Email == "" {
+		return Config{}, fmt.Errorf("created %s: %w", filepath.Join(cfg.Root, "config.json"), ErrSetupRequired)
+	}
+	if err := Validate(cfg); err != nil {
+		return Config{}, err
 	}
 	return cfg, nil
 }

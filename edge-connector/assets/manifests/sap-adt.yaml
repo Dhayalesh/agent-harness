@@ -1,0 +1,18 @@
+id: sap-adt
+name: SAP ABAP ADT MCP
+version: 1.0.0
+transport: stdio
+executable: sap-adt-host
+systemType: onprem
+arguments:
+  - "--transport=stdio"
+startupTimeout: 30s
+requestTimeout: 60s
+restartPolicy:
+  maxRestarts: 5
+  crashWindow: 60s
+  initialBackoff: 1s
+  maxBackoff: 30s
+allowedTools:
+  - "*"
+

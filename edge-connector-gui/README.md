@@ -13,7 +13,7 @@ cd edge-connector-gui
 
 The script builds upstream using its own `sapgui_mcp_windows.spec`, embeds the resulting executable in the Go binary, and writes `dist\edge-gui.exe` plus the upstream MIT license. If the upstream build environment is prepared elsewhere, pass `-UpstreamPython C:\path\to\python.exe`. For Go-only edits after the upstream asset has been built, use `.\build.ps1 -SkipUpstreamBuild`.
 
-The upstream executable in `internal\runtime` is a generated, ignored build asset. The installed user needs only the distributed Go `edge-gui.exe`; Python, uv and a separately started MCP server are not needed at run time. The upstream SAP configuration remains separate at `%USERPROFILE%\.config\sap-mcp\systems.json` and is never copied into Edge config.
+The upstream executable in `internal\runtime` is a generated, ignored build asset. The installed user needs only the distributed Go `edge-gui.exe`; Python, uv and a separately started MCP server are not needed at run time. GUI Edge writes its own SAP system definition at `%LOCALAPPDATA%\TrueAI\EdgeGUI\systems.json` and passes its path to the embedded MCP process.
 
 ## Configure and run
 
@@ -21,12 +21,16 @@ The upstream executable in `internal\runtime` is a generated, ignored build asse
 .\dist\edge-gui.exe
 ```
 
-First run creates `%LOCALAPPDATA%\TrueAI\EdgeGUI\config.json`, `logs`, `state` and `runtime`. Set the email and rerun:
+First run creates `%LOCALAPPDATA%\TrueAI\EdgeGUI\config.json`, `logs`, `state` and `runtime`. The console then asks for the registered email, SAP Logon connection name (or connection string), SAP system URL, three-digit client, username, language and password. The connection name must match the entry in SAP Logon. The upstream SAP configuration schema also requires the URL, even though desktop scripting opens the SAP Logon entry. Password input is masked. The password is stored in the current Windows user's Credential Manager; `systems.json` contains only an environment-variable reference, and the password is supplied to the embedded MCP process at launch. No SAP credentials are sent to GUI Edge Server.
+
+Subsequent runs load the saved settings and show live startup, registration, heartbeat and reconnect logs in the console and `%LOCALAPPDATA%\TrueAI\EdgeGUI\logs\edge-gui.log`. Use `edge-gui.exe --setup` to re-enter email and SAP settings or `edge-gui.exe --change-account` to change only the registered email. Run only one instance for the same email and MCP ID.
+
+The Edge connection file contains only transport identity and timing settings:
 
 ```json
 {
-  "serverUrl": "ws://localhost:8765/ws",
-  "email": "gui-poc@company.com",
+  "serverUrl": "wss://gui-edge-server.duckdns.org/ws",
+  "email": "user@example.com",
   "deviceId": "generated-and-persisted",
   "mcpId": "sapgui",
   "heartbeatSeconds": 30
@@ -40,7 +44,7 @@ Remote servers require `wss://`. `EDGE_GUI_HOME` overrides the configuration roo
 - Windows with SAP GUI for Windows installed.
 - SAP GUI Scripting enabled in SAP GUI options and on the SAP system (`sapgui/user_scripting = TRUE`).
 - A test SAP session for live read operations. The upstream can manage multiple sessions through its own session registry and `session` tool parameters.
-- If login is needed, configure the upstream `systems.json` and SAP Logon entry. Do not put SAP passwords in Edge config. The upstream supports `${env:VAR}` placeholders for credentials.
+- The SAP Logon entry named during setup must exist on the Windows desktop. Do not put SAP passwords in Edge config or Agent Console.
 
 Missing SAP GUI, disabled scripting or an unavailable session returns an upstream MCP tool error; the Go connector remains connected. It forwards MCP content, including images and structured data, as JSON without converting it to text.
 
