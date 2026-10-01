@@ -1,10 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { AgentAbortError, AgentHarnessError, errorMessage } from './errors.js';
 import type { AgentEvent, EventPayload } from './events.js';
 import type { AgentInput, AgentMessage, ToolCallBlock, ToolResultBlock } from './messages.js';
 import { textMessage, userMessage } from './messages.js';
 import {
   contextPolicyFromPercent,
+  DEFAULT_CONTEXT_POLICY,
+  deriveContextBudget,
   estimateMessagesTokens,
   type ContextManager,
   type ModelContextCapabilities,
@@ -62,6 +66,38 @@ export type AgentLimits = {
    * self-limiting by construction.
    */
   compactionThresholdPercent?: number;
+  /**
+   * Spend the last turn of the budget on a text-only wrap-up instead of stopping
+   * dead: tools are withdrawn and the model is told to summarise what was done, what
+   * is left, and what to do next. CodeGenie's `max-steps.txt` behaviour. Default on.
+   */
+  finalSummaryOnTurnLimit?: boolean;
+};
+
+/**
+ * Behaviour the loop applies between model turns: the points where CodeGenie's
+ * session loop decides something rather than simply continuing.
+ */
+export type AgentLoopPolicy = {
+  /**
+   * The same tool with the same input this many times in a row is treated as a
+   * loop: the call is not executed again and the model is told to change approach.
+   * CodeGenie's `DOOM_LOOP_THRESHOLD` is 3. `0` disables the check.
+   */
+  doomLoopThreshold?: number;
+  /**
+   * Consecutive failing tool results after which the model is told to stop
+   * retrying the same thing and reassess. `0` disables.
+   */
+  failureStreakThreshold?: number;
+  /**
+   * Tool output over this many characters is written to a file in the workspace
+   * and replaced by a head/tail preview with instructions for retrieving the rest
+   * (grep, read_file with offset/limit, or delegating to an explore agent).
+   * CodeGenie's truncation (`tool/truncate.ts`). Applied before the artifact-store
+   * fallback, and only when the session has a working directory it can write.
+   */
+  spillToolOutputChars?: number;
 };
 
 export type AgentSessionConfig = {
@@ -122,6 +158,18 @@ export type AgentSessionConfig = {
    * reconnect say "I had up to N" and mean it.
    */
   initialSequence?: number;
+  loopPolicy?: AgentLoopPolicy;
+  /**
+   * Correct the context layer's token estimate with the provider's reported input
+   * tokens. CodeGenie decides overflow from real usage (`session/overflow.ts`)
+   * because character-based estimates drift by 15-30% on code and non-English
+   * text. Default on; the correction only ever tightens the budget.
+   */
+  calibrateFromUsage?: boolean;
+  /** Routes a permission answer this session does not own to a child session. */
+  delegatePermission?: (requestId: string, decision: 'allow' | 'deny') => boolean;
+  /** Label for plan events; a subagent sets its task id. Defaults to `main`. */
+  planOwner?: string;
   idFactory?: () => string;
   clock?: () => Date;
 };
@@ -143,7 +191,28 @@ type PermissionWaiter = {
 
 type SettledExecution = { ok: true; output: ToolExecutionResult } | { ok: false; error: unknown };
 
-const DEFAULT_LIMITS: AgentLimits = { maxTurns: 24, maxOutputTokens: 8_192 };
+const DEFAULT_LIMITS: AgentLimits = {
+  maxTurns: 24,
+  maxOutputTokens: 8_192,
+  finalSummaryOnTurnLimit: true,
+};
+
+const DEFAULT_LOOP_POLICY: Required<AgentLoopPolicy> = {
+  doomLoopThreshold: 3,
+  failureStreakThreshold: 3,
+  spillToolOutputChars: 30_000,
+};
+
+/** Sent as the last turn's instruction when the turn budget runs out. */
+const TURN_LIMIT_PROMPT = `MAXIMUM STEPS REACHED
+
+The maximum number of steps allowed for this task has been reached. Tools are disabled for this response. Respond with text only.
+
+Your response must include:
+- A statement that the step limit was reached
+- A summary of what has been accomplished so far
+- A list of any remaining work that was not completed
+- Recommendations for what should be done next`;
 
 export function createAgentSession(config: AgentSessionConfig): AgentSession {
   return new AgentSessionImpl(config);
@@ -199,6 +268,13 @@ class AgentSessionImpl implements AgentSession {
   private closed = false;
   private sequence = 0;
   private preparedContext: PreparedContextCheckpoint | undefined;
+  private readonly loopPolicy: Required<AgentLoopPolicy>;
+  /**
+   * Provider-reported input tokens divided by the estimate for the same request,
+   * from the most recent turn that reported usage. Above 1 means the estimator
+   * under-counts for this conversation; the next turn's budget is narrowed to match.
+   */
+  private usageCalibration = 1;
 
   constructor(private readonly config: AgentSessionConfig) {
     this.idFactory = config.idFactory ?? randomUUID;
@@ -208,6 +284,7 @@ class AgentSessionImpl implements AgentSession {
       config.tools instanceof ToolRegistry ? config.tools : new ToolRegistry(config.tools ?? []);
     this.permissions = config.permissionHandler ?? new DefaultPermissionHandler();
     this.limits = { ...DEFAULT_LIMITS, ...config.limits };
+    this.loopPolicy = { ...DEFAULT_LOOP_POLICY, ...config.loopPolicy };
     // Built from the limits rather than left at its defaults, so a session given a
     // `compactionThresholdPercent` and no explicit manager still shrinks where the
     // record asked it to. An explicit `contextManager` is left entirely alone; a
@@ -308,9 +385,31 @@ class AgentSessionImpl implements AgentSession {
       // Spent on the first turn that asks for it, so a requested compaction happens
       // once rather than on every turn of the run.
       let pendingForcedCompaction = this.config.compactContext === true;
-      for (let turn = 1; turn <= this.limits.maxTurns; turn += 1) {
+      // Recent tool calls, by signature, for the doom-loop check; and the current
+      // run of failing results, for the repeated-failure nudge.
+      const recentSignatures: string[] = [];
+      let failureStreak = 0;
+      // The final-summary turn is one past the budget, so a limit of N still gets
+      // N working turns. A limit of 1 has no room for work *and* a wrap-up, and a
+      // caller asking for exactly one turn meant one model call.
+      const finalSummary =
+        this.limits.finalSummaryOnTurnLimit !== false && this.limits.maxTurns > 1;
+      const lastTurn = this.limits.maxTurns + (finalSummary ? 1 : 0);
+      for (let turn = 1; turn <= lastTurn; turn += 1) {
         this.throwIfAborted();
         const turnId = this.idFactory();
+        const wrapUp = finalSummary && turn === lastTurn;
+        if (wrapUp) {
+          yield this.event({
+            type: 'agent.intervention',
+            turnId,
+            kind: 'turn_limit',
+            message: `Turn limit (${this.limits.maxTurns}) reached; asking for a final summary`,
+            data: { maxTurns: this.limits.maxTurns },
+          });
+          this.history.push(textMessage(this.idFactory(), 'user', TURN_LIMIT_PROMPT, this.now()));
+          await this.persist();
+        }
         yield this.event({ type: 'turn.started', turnId, turn });
 
         const textParts: string[] = [];
@@ -328,16 +427,20 @@ class AgentSessionImpl implements AgentSession {
             this.contextMessages(),
             turnId,
             turn,
-            reactiveMaxInputTokens,
+            reactiveMaxInputTokens ?? this.calibratedMaxInputTokens(systemPrompt),
             forceCompaction,
             currentRequest.id,
             systemPrompt,
           );
           for (const event of events) yield this.event(event);
+          const estimatedInput =
+            prepared.estimatedTokens + (prepared.budget?.systemPromptTokens ?? 0);
           modelRequestId = randomUUID();
           const modelRequest = {
             messages: prepared.messages,
-            tools: this.registry.descriptors(),
+            // Withdrawn on the wrap-up turn, so the instruction to answer in text
+            // is a constraint the model cannot break rather than one it may ignore.
+            tools: wrapUp ? [] : this.registry.descriptors(),
             signal: this.activeController.signal,
             modelRequestId,
             sessionId: this.id,
@@ -425,6 +528,9 @@ class AgentSessionImpl implements AgentSession {
                 });
                 break;
               case 'tool_call': {
+                // A model that calls a tool it was not offered on the wrap-up turn
+                // is not given one; its text is still the answer.
+                if (wrapUp) break;
                 const call: ToolCallBlock = {
                   type: 'tool_call',
                   id: modelEvent.id,
@@ -437,6 +543,7 @@ class AgentSessionImpl implements AgentSession {
               }
               case 'usage':
                 yield this.event({ type: 'usage.updated', turnId, usage: modelEvent.usage });
+                this.calibrate(modelEvent.usage.inputTokens, estimatedInput);
                 {
                   const budget = this.budget.add(modelEvent.usage);
                   if (budget.exceeded) {
@@ -596,19 +703,59 @@ class AgentSessionImpl implements AgentSession {
             usage: this.budget.snapshot(),
           });
           yield this.event({ type: 'turn.completed', turnId, turn, reason: stopReason });
+          if (wrapUp) {
+            yield this.event({
+              type: 'warning',
+              code: 'MAX_TURNS_REACHED',
+              message: `Maximum turn count (${this.limits.maxTurns}) reached`,
+            });
+          }
           yield this.event({
             type: 'session.completed',
-            reason: stopReason,
+            reason: wrapUp ? 'max_turns' : stopReason,
             historyMessageCount: this.history.length,
           });
           return;
         }
 
         const results: ToolResultBlock[] = [];
+        // Doom-loop guard: CodeGenie asks the user before a third identical call;
+        // a headless run has no one to ask, so the call is refused with an
+        // explanation and the model has to change course. The refusal is a normal
+        // tool result, so the transcript stays well-formed.
+        const guarded = new Map<string, ToolResultBlock>();
+        for (const call of toolCalls) {
+          const signature = `${call.name}:${stableStringify(call.input)}`;
+          recentSignatures.push(signature);
+          if (recentSignatures.length > 16) recentSignatures.shift();
+          const threshold = this.loopPolicy.doomLoopThreshold;
+          if (threshold <= 0 || recentSignatures.length < threshold) continue;
+          const tail = recentSignatures.slice(-threshold);
+          if (!tail.every((entry) => entry === signature)) continue;
+          const message =
+            `${call.name} was called ${threshold} times in a row with identical input. ` +
+            'It was not run again, because repeating it will produce the same result. ' +
+            'Change approach: use different input, a different tool, or explain what is blocking you.';
+          guarded.set(call.id, this.toolError(call.id, message));
+          yield this.event({
+            type: 'agent.intervention',
+            turnId,
+            kind: 'doom_loop',
+            message: `Stopped a repeated ${call.name} call`,
+            data: { toolName: call.name, repeats: threshold },
+          });
+        }
         for (let index = 0; index < toolCalls.length;) {
           this.throwIfAborted();
           const call = toolCalls[index];
           if (!call) break;
+          const refusal = guarded.get(call.id);
+          if (refusal) {
+            yield this.event({ type: 'tool.completed', turnId, result: refusal });
+            results.push(refusal);
+            index += 1;
+            continue;
+          }
           const tool = this.registry.get(call.name);
           if (!tool?.concurrencySafe) {
             const resultGenerator = this.executeTool(call, turnId);
@@ -629,7 +776,12 @@ class AgentSessionImpl implements AgentSession {
           const batch: ToolCallBlock[] = [];
           while (index < toolCalls.length) {
             const candidate = toolCalls[index];
-            if (!candidate || !this.registry.get(candidate.name)?.concurrencySafe) break;
+            if (
+              !candidate ||
+              guarded.has(candidate.id) ||
+              !this.registry.get(candidate.name)?.concurrencySafe
+            )
+              break;
             batch.push(candidate);
             index += 1;
           }
@@ -644,11 +796,36 @@ class AgentSessionImpl implements AgentSession {
           }
         }
 
+        // Reassessment between turns. A run of failures is the moment a model most
+        // often keeps pushing the same approach; the note rides on the tool results
+        // (not as a separate user turn) so the next request is still one exchange.
+        const nudges: string[] = [];
+        for (const result of results) failureStreak = result.isError ? failureStreak + 1 : 0;
+        const streakLimit = this.loopPolicy.failureStreakThreshold;
+        if (streakLimit > 0 && failureStreak >= streakLimit) {
+          nudges.push(
+            `<system-reminder>The last ${failureStreak} tool calls failed. Stop and reassess before retrying: read the errors, check your assumptions (paths, inputs, environment), and try a different approach or explain what is blocking you.</system-reminder>`,
+          );
+          yield this.event({
+            type: 'agent.intervention',
+            turnId,
+            kind: 'repeated_failure',
+            message: `${failureStreak} consecutive tool failures; asking the agent to reassess`,
+            data: { failures: failureStreak },
+          });
+          failureStreak = 0;
+        }
+        if (finalSummary && turn === this.limits.maxTurns - 1) {
+          nudges.push(
+            '<system-reminder>You have one working step left before the step limit. Use it to finish or reach a clean stopping point.</system-reminder>',
+          );
+        }
+
         this.history.push({
           id: this.idFactory(),
           role: 'user',
           createdAt: this.now(),
-          content: results,
+          content: [...results, ...nudges.map((text) => ({ type: 'text' as const, text }))],
         });
         await this.persist();
         yield this.event({ type: 'turn.completed', turnId, turn, reason: 'tool_use' });
@@ -782,7 +959,9 @@ class AgentSessionImpl implements AgentSession {
 
   respondToPermission(requestId: string, decision: 'allow' | 'deny'): boolean {
     const waiter = this.pendingPermissions.get(requestId);
-    if (!waiter) return false;
+    // A request this session never issued may belong to one of its subagents,
+    // whose `permission.requested` was surfaced on this stream.
+    if (!waiter) return this.config.delegatePermission?.(requestId, decision) ?? false;
     this.pendingPermissions.delete(requestId);
     waiter.resolve(decision);
     return true;
@@ -985,6 +1164,11 @@ class AgentSessionImpl implements AgentSession {
           }),
         );
       },
+      emit: (payload) => {
+        // A child asking permission becomes this session's own pending request,
+        // answered through `respondToPermission` like any other.
+        progress.push(this.event(payload));
+      },
     };
 
     try {
@@ -1003,7 +1187,21 @@ class AgentSessionImpl implements AgentSession {
       const output = settled.output;
       let content = output.content;
       let artifactMetadata: Record<string, unknown> = {};
-      if (content.length > this.maxInlineToolResultChars && this.artifactStore) {
+      const spilled = await this.spillToolOutput(call, content);
+      let outputMetadata = output.metadata;
+      if (spilled) {
+        content = spilled.content;
+        artifactMetadata = { spilledTo: spilled.path, originalChars: output.content.length };
+        // Shell tools also echo the raw stream into metadata (`stdout`). That copy
+        // is persisted in history and measured by the context layer, so leaving it
+        // would carry the very output the spill just moved to disk. Shorten any
+        // large string field the same way; the file holds the full text.
+        outputMetadata = shrinkLargeStrings(
+          output.metadata,
+          this.loopPolicy.spillToolOutputChars,
+          spilled.path,
+        );
+      } else if (content.length > this.maxInlineToolResultChars && this.artifactStore) {
         const artifact = await this.artifactStore.put(content, {
           contentType: 'text/plain',
           metadata: {
@@ -1022,9 +1220,9 @@ class AgentSessionImpl implements AgentSession {
         toolCallId: call.id,
         content,
         isError: output.isError ?? false,
-        ...(output.metadata === undefined && Object.keys(artifactMetadata).length === 0
+        ...(outputMetadata === undefined && Object.keys(artifactMetadata).length === 0
           ? {}
-          : { metadata: { ...output.metadata, ...artifactMetadata } }),
+          : { metadata: { ...outputMetadata, ...artifactMetadata } }),
       };
       this.log({
         ...(result.isError ? { level: 'error' as const } : {}),
@@ -1054,6 +1252,15 @@ class AgentSessionImpl implements AgentSession {
         durationMs: Date.now() - toolStarted,
       });
       yield this.event({ type: 'tool.completed', turnId, result });
+      const plan = planFromResult(tool.name, result);
+      if (plan) {
+        yield this.event({
+          type: 'plan.updated',
+          turnId,
+          owner: this.config.planOwner ?? 'main',
+          ...plan,
+        });
+      }
       const presentedArtifact = responseArtifact(result.metadata?.artifact);
       if (presentedArtifact) {
         yield this.event({
@@ -1130,6 +1337,82 @@ class AgentSessionImpl implements AgentSession {
       }
     }
     return results;
+  }
+
+  /**
+   * Record how far the estimate was from what the provider actually counted.
+   *
+   * Only an under-estimate is kept (ratio above 1): the correction exists to stop a
+   * turn the estimator thought would fit from being rejected, and an estimator that
+   * over-counts is already safe. Capped so one odd reading cannot halve the budget.
+   */
+  private calibrate(reportedInputTokens: number, estimatedInputTokens: number): void {
+    if (this.config.calibrateFromUsage === false) return;
+    if (!(reportedInputTokens > 0) || !(estimatedInputTokens > 1_000)) return;
+    const ratio = reportedInputTokens / estimatedInputTokens;
+    this.usageCalibration = Math.min(1.6, Math.max(1, ratio));
+  }
+
+  /**
+   * The input ceiling for the next turn once the calibration is applied, or
+   * undefined when no correction is needed. Expressed in the estimator's units, so
+   * the context layer's own arithmetic is unchanged: it simply has less room.
+   */
+  private calibratedMaxInputTokens(systemPrompt: string): number | undefined {
+    if (this.usageCalibration <= 1.05 || !this.modelCapabilities) return undefined;
+    const budget = deriveContextBudget({
+      capabilities: this.modelCapabilities,
+      policy: { safetyMarginTokens: DEFAULT_CONTEXT_POLICY.safetyMarginTokens },
+      ...(this.limits.maxOutputTokens === undefined
+        ? {}
+        : { configuredMaxOutputTokens: this.limits.maxOutputTokens }),
+      systemPrompt,
+    });
+    return Math.max(1_000, Math.floor(budget.effectiveInputBudget / this.usageCalibration));
+  }
+
+  /**
+   * Write an oversized tool output to the workspace and return a preview pointing
+   * at it, as CodeGenie's truncation does. The model keeps the head and the tail —
+   * where a command's summary or error usually is — and a path it can grep or read
+   * by range, instead of either the whole output or an opaque artifact id.
+   */
+  private async spillToolOutput(
+    call: ToolCallBlock,
+    content: string,
+  ): Promise<{ content: string; path: string } | undefined> {
+    const limit = this.loopPolicy.spillToolOutputChars;
+    if (limit <= 0 || content.length <= limit || !this.config.workingDirectory) return undefined;
+    const relative = path.join(
+      '.agent',
+      'tool-output',
+      `${sanitizeFileName(call.name)}-${sanitizeFileName(call.id)}.txt`,
+    );
+    try {
+      const absolute = path.join(this.workingDirectory, relative);
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, content, 'utf8');
+    } catch {
+      return undefined;
+    }
+    const portable = relative.split(path.sep).join('/');
+    const share = Math.floor(limit * 0.4);
+    const lines = content.split('\n').length;
+    const delegate = this.registry.get('task')
+      ? ' For a broad analysis, delegate it to an explore agent with the task tool instead of reading it yourself, to save context.'
+      : '';
+    return {
+      path: portable,
+      content: [
+        content.slice(0, share),
+        '',
+        `[... ${(content.length - share * 2).toLocaleString()} characters omitted (${lines.toLocaleString()} lines in total) ...]`,
+        '',
+        content.slice(-share),
+        '',
+        `The tool call succeeded but its output was too large to include in full. The complete output is saved at ${portable}. Use grep on that file to search it, or read_file with offset and limit to view specific sections.${delegate}`,
+      ].join('\n'),
+    };
   }
 
   private toolError(toolCallId: string, content: string): ToolResultBlock {
@@ -1622,4 +1905,65 @@ function describeError(error: unknown): { name: string; message: string; stack?:
     message: error.message,
     ...(error.stack === undefined ? {} : { stack: error.stack }),
   };
+}
+
+/** Key-order-independent JSON, so `{a,b}` and `{b,a}` count as the same call. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(',')}}`;
+}
+
+function sanitizeFileName(value: string): string {
+  return value.replace(/[^A-Za-z0-9_.-]/g, '_').slice(0, 80) || 'output';
+}
+
+/**
+ * The plan a `todo_write` call left behind, read from the metadata the tool
+ * returns. Keyed on the metadata shape rather than only the name, so a host that
+ * registers its own todo tool with the same contract is reported the same way.
+ */
+function planFromResult(
+  toolName: string,
+  result: ToolResultBlock,
+):
+  | { todos: { content: string; status: string; activeForm: string }[]; cleared: boolean }
+  | undefined {
+  if (result.isError || toolName !== 'todo_write') return undefined;
+  const todos = result.metadata?.todos;
+  if (!Array.isArray(todos)) return undefined;
+  return {
+    todos: todos
+      .filter((todo): todo is Record<string, unknown> => Boolean(todo) && typeof todo === 'object')
+      .map((todo) => ({
+        content: String(todo.content ?? ''),
+        status: String(todo.status ?? 'pending'),
+        activeForm: String(todo.activeForm ?? todo.content ?? ''),
+      })),
+    cleared: result.metadata?.cleared === true,
+  };
+}
+
+/** Top-level string fields over `limit` are cut to a pointer at the spill file. */
+function shrinkLargeStrings(
+  metadata: Record<string, unknown> | undefined,
+  limit: number,
+  spilledTo: string,
+): Record<string, unknown> | undefined {
+  if (metadata === undefined) return undefined;
+  const preview = Math.max(200, Math.floor(limit / 20));
+  return Object.fromEntries(
+    Object.entries(metadata).map(([key, value]) =>
+      typeof value === 'string' && value.length > limit
+        ? [
+            key,
+            `${value.slice(0, preview)}\n[... ${value.length} characters; full text in ${spilledTo} ...]`,
+          ]
+        : [key, value],
+    ),
+  );
 }

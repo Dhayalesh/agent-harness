@@ -82,6 +82,7 @@ export const agentLimitsSchema = z
      * already been rejected by the model.
      */
     compactionThresholdPercent: z.number().int().min(1).max(99).optional(),
+    finalSummaryOnTurnLimit: z.boolean().optional(),
   })
   .strict();
 

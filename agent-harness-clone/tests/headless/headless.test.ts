@@ -1556,3 +1556,137 @@ test('compact is the only operation that permits an empty invocation', () => {
     /Provide a prompt/,
   );
 });
+
+test('a payload with orchestration delegates to parallel subagents over the real wire format', async (t) => {
+  // Routed by system prompt rather than scripted by order: the two children run
+  // concurrently, so which of them reaches the endpoint first is not fixed.
+  const requests: Array<Record<string, unknown>> = [];
+  let parentTurn = 0;
+  const server: Server = createServer((request, response) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk as Buffer));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+        messages: Array<{ role: string; content: unknown }>;
+      };
+      requests.push(body);
+      const system = String(body.messages.find((m) => m.role === 'system')?.content ?? '');
+      const firstUser = String(body.messages.find((m) => m.role === 'user')?.content ?? '');
+      let reply: string;
+      if (system.includes('You are a subagent')) {
+        reply = textChunk(`finding for ${firstUser}`);
+      } else if (parentTurn++ === 0) {
+        reply =
+          frame({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'ta',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: 'Area A',
+                          prompt: 'area-a',
+                          subagent_type: 'explore',
+                        }),
+                      },
+                    },
+                    {
+                      index: 1,
+                      id: 'tb',
+                      function: {
+                        name: 'task',
+                        arguments: JSON.stringify({
+                          description: 'Area B',
+                          prompt: 'area-b',
+                          subagent_type: 'explore',
+                        }),
+                      },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          }) + frame({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] });
+      } else {
+        reply = textChunk('Combined both findings.');
+      }
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end(`${reply}data: [DONE]\n\n`);
+    })();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  const { port } = server.address() as AddressInfo;
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'orchestration-'));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+
+  const events: AgentEvent[] = [];
+  for await (const event of streamHeadless(
+    payload(`http://127.0.0.1:${port}/v1`, {
+      prompt: 'Investigate areas A and B',
+      agent: {
+        name: 'lead',
+        systemPrompt: 'You lead investigations.',
+        tools: ['read_file', 'glob', 'grep'],
+        limits: { maxTurns: 6 },
+      },
+      orchestration: { subagents: true, maxConcurrent: 2 },
+    }),
+    { workspaceRoot },
+  )) {
+    events.push(event);
+  }
+
+  const parentFirst = requests[0] as {
+    tools?: Array<{ function: { name: string } }>;
+    messages: Array<{ role: string; content: unknown }>;
+  };
+  assert.ok(parentFirst.tools?.some((tool) => tool.function.name === 'task'));
+  assert.ok(String(parentFirst.messages[0]?.content).includes('Working on large tasks'));
+  const completed = events.filter((event) => event.type === 'subagent.completed');
+  assert.equal(completed.length, 2);
+  const summaries = completed
+    .map((event) => (event.type === 'subagent.completed' ? event.summary : ''))
+    .sort();
+  assert.deepEqual(summaries, ['finding for area-a', 'finding for area-b']);
+  assert.equal(requests.length, 4);
+  const end = events.at(-1);
+  assert.equal(end?.type, 'session.completed');
+});
+
+test('a buffered result reports the plan and interventions it produced', async (t) => {
+  const endpoint = await scriptedEndpoint([
+    toolCallChunk('p1', 'todo_write', {
+      todos: [
+        { content: 'Plan', status: 'completed', activeForm: 'Planning' },
+        { content: 'Ship', status: 'in_progress', activeForm: 'Shipping' },
+      ],
+    }),
+    textChunk('Done.'),
+  ]);
+  t.after(() => endpoint.close());
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), 'activity-'));
+  t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+  const result = await invokeHeadless(
+    payload(endpoint.baseURL, {
+      agent: {
+        name: 'planner',
+        systemPrompt: 'Plan.',
+        tools: ['todo_write'],
+        limits: { maxTurns: 4 },
+      },
+      permissionRules: [{ tool: 'todo_write', decision: 'allow' }],
+    }),
+    { workspaceRoot },
+  );
+  assert.equal(result.status, 'success');
+  assert.deepEqual(
+    result.activity?.plan?.map((todo) => todo.status),
+    ['completed', 'in_progress'],
+  );
+});

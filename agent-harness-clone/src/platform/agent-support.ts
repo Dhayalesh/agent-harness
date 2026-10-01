@@ -55,7 +55,12 @@ export const AGENT_RUNTIME_SUPPORT = {
    * verbatim, and the session applies them per run
    * (`src/core/agent-session.ts`).
    */
-  limitsHonoured: ['maxTurns', 'maxOutputTokens', 'compactionThresholdPercent'] as const,
+  limitsHonoured: [
+    'maxTurns',
+    'maxOutputTokens',
+    'compactionThresholdPercent',
+    'finalSummaryOnTurnLimit',
+  ] as const,
   /**
    * Every other stored field is acted on too, which is why there is no ignored
    * list here as there is for `model_providers`: `systemPrompt` and `model` reach
@@ -79,7 +84,7 @@ export const AGENT_RUNTIME_SUPPORT = {
  * produces them. A value stored here would read as configuration that is not in
  * effect, or would be overwritten by the generated one.
  */
-export const RESERVED_TOOL_NAMES = ['skill'] as const;
+export const RESERVED_TOOL_NAMES = ['skill', 'task'] as const;
 
 /**
  * MCP tools are named `mcp__<server>__<tool>` and both halves are normalized at

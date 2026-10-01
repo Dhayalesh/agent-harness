@@ -268,6 +268,79 @@ export type AgentEvent = EventBase &
       }
     | { type: 'usage.updated'; turnId: string; usage: ModelUsage }
     /**
+     * The agent's working plan changed (its `todo_write` list).
+     *
+     * Emitted with the whole list every time, so a client renders the latest frame
+     * and never has to reconcile a diff. `cleared` means every item was completed
+     * and the stored list was emptied; `todos` still carries what was completed.
+     */
+    | {
+        type: 'plan.updated';
+        turnId: string;
+        /** The agent that owns the plan: the main session or a subagent's task id. */
+        owner: string;
+        todos: readonly { content: string; status: string; activeForm: string }[];
+        cleared: boolean;
+      }
+    /**
+     * A delegated child agent started. The parent's `task` tool call is still
+     * running; everything the child does is reported as `subagent.*` events keyed
+     * by `taskId` until `subagent.completed`.
+     */
+    | {
+        type: 'subagent.started';
+        turnId: string;
+        /** The parent's tool call that spawned this child. */
+        toolCallId: string;
+        /** Stable id of the child session; reusable to resume the same child. */
+        taskId: string;
+        description: string;
+        agentType: string;
+        resumed: boolean;
+      }
+    /**
+     * Operational progress from inside a child agent — which turn it is on, which
+     * tool it is running, whether its context was compacted. Deliberately a summary
+     * rather than the child's raw event stream: the parent's consumer needs to see
+     * that work is happening, not the child's token-level output.
+     */
+    | {
+        type: 'subagent.progress';
+        turnId: string;
+        toolCallId: string;
+        taskId: string;
+        kind: 'turn' | 'tool.started' | 'tool.completed' | 'context' | 'plan' | 'warning';
+        message: string;
+        data?: Record<string, unknown>;
+      }
+    | {
+        type: 'subagent.completed';
+        turnId: string;
+        toolCallId: string;
+        taskId: string;
+        status: 'completed' | 'failed' | 'cancelled' | 'max_turns';
+        turns: number;
+        toolCalls: number;
+        durationMs: number;
+        usage?: ModelUsage;
+        /** A bounded preview of the child's final answer. */
+        summary: string;
+        error?: string;
+      }
+    /**
+     * The runtime changed course on its own: a repeated tool call was interrupted,
+     * the turn budget ran out and a final summary was requested, or a failing tool
+     * was flagged for a different approach. These are the moments the loop decides
+     * something rather than simply continuing.
+     */
+    | {
+        type: 'agent.intervention';
+        turnId: string;
+        kind: 'doom_loop' | 'turn_limit' | 'repeated_failure';
+        message: string;
+        data?: Record<string, unknown>;
+      }
+    /**
      * Work done before the first turn can start: the workspace, the model, MCP
      * connections, skill documents. Without these a stream is silent for as long as
      * preparation takes, which for a stdio MCP server that has to be installed is

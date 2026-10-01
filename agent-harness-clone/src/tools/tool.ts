@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { AgentMessage } from '../core/messages.js';
+import type { EventPayload } from '../core/events.js';
 
 export type ToolKind = 'read' | 'write' | 'execute' | 'network' | 'interactive';
 
@@ -46,6 +47,13 @@ export type ToolExecutionContext = {
   signal: AbortSignal;
   messages: readonly AgentMessage[];
   reportProgress(message: string, data?: Record<string, unknown>): void;
+  /**
+   * Emit a first-class session event while the tool runs, stamped and sequenced by
+   * the session. For tools whose work *is* agent activity — delegation reports a
+   * child's lifecycle this way — where `reportProgress` text would be too little.
+   * Optional so tools written against the older context still type-check.
+   */
+  emit?(payload: EventPayload): void;
 };
 
 export type ToolExecutionResult = {

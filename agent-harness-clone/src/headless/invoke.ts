@@ -35,7 +35,31 @@ import type { SessionStore } from '../sessions/session-store.js';
 import { createBuiltinTools, type BuiltinToolOptions } from '../tools/builtin/index.js';
 import { createWebTools, type WebToolsOptions } from '../tools/web/index.js';
 import type { Tool } from '../tools/tool.js';
+import {
+  createTaskTool,
+  routeChildPermission,
+  type SubagentHost,
+  type SubagentSpawnSpec,
+} from '../agents/subagents.js';
 import { resolveInlineAgent } from './inline-agent.js';
+
+/**
+ * Appended to the parent's system prompt when delegation is enabled. The working
+ * method CodeGenie's orchestrator agent follows (`agent/prompt/orchestrator.txt`),
+ * adapted for an agent that may also do work itself: plan, split into waves by
+ * dependency, run each wave in parallel, reassess between waves, then verify.
+ */
+const ORCHESTRATOR_GUIDANCE = `# Working on large tasks
+
+You can delegate work to subagents with the task tool. For a small task, just do it yourself. For a large or multi-part task:
+
+1. Understand the task first. Use explore subagents to research the relevant files, patterns and architecture when that would take many reads.
+2. Plan. Record the subtasks with todo_write so progress is visible, and note which files each subtask will touch.
+3. Classify dependencies. Independent subtasks form a wave and run in parallel: issue their task calls together in one message. Subtasks that need an earlier result go in a later wave. Subtasks that may edit the same files must be in different waves.
+4. Execute wave by wave. After each wave, read the results and reassess: update the plan if something failed, revealed new work, or changed what later subtasks need. Give every subagent the context it needs from earlier waves, because it cannot see this conversation.
+5. Verify the combined result (build, tests, or inspection), then report what was done, what was verified, and anything left open.
+
+Keep the todo list current: exactly one item in progress, and mark items completed as soon as they are done.`;
 import { invocationPayloadSchema, type InvocationPayload } from './payload.js';
 
 /**
@@ -210,7 +234,34 @@ export type HeadlessResult = {
   /** Present only when `payload.includeEvents` was set. */
   events?: readonly AgentEvent[];
   durationMs: number;
+  /**
+   * The run's agentic shape, for a buffered caller that did not read the events:
+   * the final plan, each delegated subagent, and the interventions the loop made.
+   * Absent for a run with none of these.
+   */
+  activity?: HeadlessActivity;
   error?: { code: string; message: string; recoverable: boolean };
+};
+
+export type HeadlessSubagentSummary = {
+  taskId: string;
+  toolCallId: string;
+  description: string;
+  agentType: string;
+  resumed: boolean;
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | 'max_turns';
+  turns: number;
+  toolCalls: number;
+  durationMs?: number;
+  summary?: string;
+  usage?: ModelUsage;
+  error?: string;
+};
+
+export type HeadlessActivity = {
+  plan?: { content: string; status: string; activeForm: string }[];
+  subagents?: HeadlessSubagentSummary[];
+  interventions?: { kind: string; message: string; turnId: string }[];
 };
 
 /** How many turns of context history a result carries. Bounded; the tail is kept. */
@@ -758,15 +809,111 @@ async function prepare(
       historyMessageCount: initialMessages.length,
     });
 
+    const permissions = permissionHandler(payload, options);
+    const modelCapabilities = {
+      contextWindow: agent.modelProvider.capabilities.contextWindow,
+      maxOutputTokens: agent.modelProvider.capabilities.maxOutputTokens,
+    };
+    const contextManagerFor = () =>
+      new ContextOrchestrator({
+        ...(options.compactionSummarizer === undefined
+          ? {}
+          : { summarizer: options.compactionSummarizer }),
+        ...(agent.limits.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: agent.limits.maxOutputTokens }),
+        ...(agent.limits.compactionThresholdPercent === undefined
+          ? {}
+          : { policy: contextPolicyFromPercent(agent.limits.compactionThresholdPercent) }),
+      });
+
+    // Delegation. Children are ordinary sessions: same provider, workspace and
+    // permission handler, each with its own context manager, so compaction happens
+    // per child against the same model window. They persist to the same store under
+    // their own ids, which is what lets a `task_id` resume on another replica.
+    const orchestration = payload.orchestration;
+    const subagentsEnabled = orchestration !== undefined && orchestration.subagents;
+    const parentTools: Tool[] = [...agent.tools];
+    const children: SubagentHost['children'] = new Map();
+    if (subagentsEnabled) {
+      const spawnChild = (
+        spec: SubagentSpawnSpec,
+        stored?: Awaited<ReturnType<SessionStore['load']>>,
+      ) =>
+        createAgentSession({
+          sessionId: spec.taskId,
+          provider: agent.provider,
+          ...(agent.model === undefined ? {} : { model: agent.model }),
+          systemPrompt: [
+            spec.type.inheritSystemPrompt ? agent.systemPrompt : undefined,
+            spec.type.systemPrompt,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+          workingDirectory,
+          tools: spec.tools,
+          limits: {
+            ...agent.limits,
+            maxTurns: spec.type.maxTurns ?? orchestration.subagentMaxTurns,
+          },
+          permissionHandler: permissions,
+          ...(options.sessionStore === undefined ? {} : { sessionStore: options.sessionStore }),
+          ...(stored === undefined
+            ? {}
+            : {
+                initialMessages: stored.messages,
+                ...(stored.preparedContext === undefined
+                  ? {}
+                  : { preparedContext: stored.preparedContext }),
+                sessionCreatedAt: stored.createdAt,
+              }),
+          ...(options.logSink === undefined ? {} : { logSink: options.logSink }),
+          logContext: { ...logContext, parentSessionId: sessionId, taskId: spec.taskId },
+          projectContextProvider: new LocalProjectContextProvider(runtime),
+          metadata: { parentSessionId: sessionId, agentType: spec.type.name },
+          modelCapabilities,
+          contextManager: contextManagerFor(),
+          planOwner: spec.taskId,
+        });
+      parentTools.push(
+        createTaskTool(
+          {
+            parentSessionId: sessionId,
+            children,
+            tools: () => agent.tools,
+            newId: () => randomUUID().slice(0, 8),
+            spawn: (spec) => spawnChild(spec),
+            ...(options.sessionStore === undefined
+              ? {}
+              : {
+                  resume: async (spec: SubagentSpawnSpec) => {
+                    // Only a child of this parent may be resumed from it.
+                    if (!spec.taskId.startsWith(`${sessionId}-task-`)) return undefined;
+                    const stored = await options.sessionStore?.load(spec.taskId);
+                    return stored === undefined ? undefined : spawnChild(spec, stored);
+                  },
+                }),
+          },
+          { maxConcurrent: orchestration.maxConcurrent },
+        ),
+      );
+    }
+    const systemPrompt =
+      subagentsEnabled && orchestration.orchestratorGuidance
+        ? `${agent.systemPrompt}\n\n${ORCHESTRATOR_GUIDANCE}`
+        : agent.systemPrompt;
+
     const session = createAgentSession({
       sessionId,
       provider: agent.provider,
       ...(agent.model === undefined ? {} : { model: agent.model }),
-      systemPrompt: agent.systemPrompt,
+      systemPrompt,
       workingDirectory,
-      tools: agent.tools,
+      tools: parentTools,
       limits: agent.limits,
-      permissionHandler: permissionHandler(payload, options),
+      permissionHandler: permissions,
+      delegatePermission: (requestId, decision) =>
+        routeChildPermission(children, requestId, decision),
       ...(options.sessionStore === undefined ? {} : { sessionStore: options.sessionStore }),
       ...(initialMessages.length === 0 ? {} : { initialMessages }),
       ...(stored?.preparedContext === undefined ? {} : { preparedContext: stored.preparedContext }),
@@ -779,10 +926,7 @@ async function prepare(
       projectContextProvider: new LocalProjectContextProvider(runtime),
       metadata: { ...payload.metadata, agentName: agent.record.name },
       // Pass model capabilities so the context manager derives a dynamic budget.
-      modelCapabilities: {
-        contextWindow: agent.modelProvider.capabilities.contextWindow,
-        maxOutputTokens: agent.modelProvider.capabilities.maxOutputTokens,
-      },
+      modelCapabilities,
       ...(payload.compactContext ? { compactContext: true } : {}),
       // Built here rather than left to the session default because the record's
       // `compactionThresholdPercent` and the deployment's summarizer are two
@@ -794,17 +938,7 @@ async function prepare(
       // token it removes to it, so this is the same compaction behaviour with the
       // cheaper automatic stages in front and verification behind. The agent record
       // still names exactly one context setting.
-      contextManager: new ContextOrchestrator({
-        ...(options.compactionSummarizer === undefined
-          ? {}
-          : { summarizer: options.compactionSummarizer }),
-        ...(agent.limits.maxOutputTokens === undefined
-          ? {}
-          : { maxOutputTokens: agent.limits.maxOutputTokens }),
-        ...(agent.limits.compactionThresholdPercent === undefined
-          ? {}
-          : { policy: contextPolicyFromPercent(agent.limits.compactionThresholdPercent) }),
-      }),
+      contextManager: contextManagerFor(),
       // Continues the numbering the preparation events already used, so one run
       // is one sequence from the first `run.preparing` to `session.completed`.
       ...(progress === undefined ? {} : { initialSequence: progress.count() }),
@@ -1131,6 +1265,9 @@ class RunTotals {
   private peakTokens: number | undefined;
   private peakPercent = 0;
   private readonly timeline: ContextTimelineEntry[] = [];
+  private plan: HeadlessActivity['plan'];
+  private readonly subagents = new Map<string, HeadlessSubagentSummary>();
+  private readonly interventions: NonNullable<HeadlessActivity['interventions']>[number][] = [];
 
   observe(event: AgentEvent): void {
     switch (event.type) {
@@ -1229,6 +1366,43 @@ class RunTotals {
       case 'context.compaction.completed':
         this.compactions += 1;
         break;
+      case 'plan.updated':
+        if (event.owner === 'main') this.plan = event.todos.map((todo) => ({ ...todo }));
+        break;
+      case 'subagent.started':
+        this.subagents.set(event.taskId, {
+          taskId: event.taskId,
+          toolCallId: event.toolCallId,
+          description: event.description,
+          agentType: event.agentType,
+          resumed: event.resumed,
+          status: 'running',
+          turns: 0,
+          toolCalls: 0,
+        });
+        break;
+      case 'subagent.completed': {
+        const existing = this.subagents.get(event.taskId);
+        this.subagents.set(event.taskId, {
+          taskId: event.taskId,
+          toolCallId: event.toolCallId,
+          description: existing?.description ?? '',
+          agentType: existing?.agentType ?? 'general',
+          resumed: existing?.resumed ?? false,
+          status: event.status,
+          turns: event.turns,
+          toolCalls: event.toolCalls,
+          durationMs: event.durationMs,
+          summary: event.summary,
+          ...(event.usage === undefined ? {} : { usage: event.usage }),
+          ...(event.error === undefined ? {} : { error: event.error }),
+        });
+        break;
+      }
+      case 'agent.intervention':
+        this.interventions.push({ kind: event.kind, message: event.message, turnId: event.turnId });
+        if (this.interventions.length > 20) this.interventions.shift();
+        break;
       case 'error':
         // First failure wins: a model error often produces a cascade, and the one
         // that started it is the one worth reporting.
@@ -1244,6 +1418,7 @@ class RunTotals {
   }
 
   result(prepared: PreparedRun, durationMs: number): HeadlessResult {
+    const activity = this.activity();
     const text = this.text.join('');
     const artifacts = [...this.artifacts];
     const response: HeadlessResponse =
@@ -1272,7 +1447,20 @@ class RunTotals {
         ? {}
         : { context: { ...this.context, compactions: this.compactions } }),
       durationMs,
+      ...(activity === undefined ? {} : { activity }),
       ...(this.failure === undefined ? {} : { error: this.failure }),
+    };
+  }
+
+  private activity(): HeadlessActivity | undefined {
+    const subagents = [...this.subagents.values()];
+    if (!this.plan?.length && subagents.length === 0 && this.interventions.length === 0) {
+      return undefined;
+    }
+    return {
+      ...(this.plan?.length ? { plan: this.plan } : {}),
+      ...(subagents.length ? { subagents } : {}),
+      ...(this.interventions.length ? { interventions: [...this.interventions] } : {}),
     };
   }
 

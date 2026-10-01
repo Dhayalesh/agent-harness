@@ -566,6 +566,8 @@ export type {
   ContextTimelineEntry,
   HeadlessContextUsage,
   HeadlessResult,
+  HeadlessActivity,
+  HeadlessSubagentSummary,
   HeadlessResponse,
   HeadlessRunOptions,
   HeadlessSessionInfo,
@@ -584,3 +586,21 @@ export type { HeadlessServerOptions, RunningHeadlessServer } from './headless/se
 export { ResumeWindowExpiredError, RunRegistry } from './headless/run-registry.js';
 export type { RunFactory, RunRecord, RunRegistryOptions } from './headless/run-registry.js';
 export { AsyncEventQueue } from './core/event-queue.js';
+
+/**
+ * Delegation to child agents: the `task` tool and its host contract.
+ */
+export {
+  CHILD_EXCLUDED_TOOLS,
+  createTaskTool,
+  DEFAULT_SUBAGENT_TYPES,
+  routeChildPermission,
+} from './agents/subagents.js';
+export type {
+  SubagentHost,
+  SubagentSession,
+  SubagentSpawnSpec,
+  SubagentType,
+  TaskToolOptions,
+} from './agents/subagents.js';
+export type { AgentLoopPolicy } from './core/agent-session.js';

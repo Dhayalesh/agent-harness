@@ -271,6 +271,12 @@ function toCompatibleMessages(
       });
       continue;
     }
+    // Tool results first: the wire format requires every `tool` message to follow
+    // the assistant's `tool_calls` directly, so text riding on the same turn (a
+    // runtime reminder) comes after them rather than between.
+    for (const result of toolResults) {
+      compatible.push({ role: 'tool', tool_call_id: result.toolCallId, content: result.content });
+    }
     if (images.length) {
       compatible.push({
         role: 'user',
@@ -286,9 +292,6 @@ function toCompatibleMessages(
       });
     } else if (text) {
       compatible.push({ role: 'user', content: text });
-    }
-    for (const result of toolResults) {
-      compatible.push({ role: 'tool', tool_call_id: result.toolCallId, content: result.content });
     }
   }
   return compatible;

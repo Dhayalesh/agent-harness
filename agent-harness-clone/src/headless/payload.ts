@@ -148,6 +148,27 @@ export const headlessLimitsSchema = z
      * `contextWindow` less the reserved reply, and this says how full it may get.
      */
     compactionThresholdPercent: z.number().int().min(1).max(99).optional(),
+    /** Spend the last turn on a text-only summary instead of stopping dead. */
+    finalSummaryOnTurnLimit: z.boolean().optional(),
+  })
+  .strict();
+
+/**
+ * Delegation to child agents: the `task` tool.
+ *
+ * Off unless asked for, because it changes what a run costs — each child is its
+ * own model conversation. When enabled, the parent is offered `task` and each child
+ * gets a filtered copy of the parent's tools (never `task` itself: one level deep).
+ */
+export const headlessOrchestrationSchema = z
+  .object({
+    subagents: z.boolean().default(true),
+    /** Children running at once; calls beyond this queue. */
+    maxConcurrent: z.number().int().min(1).max(16).default(4),
+    /** Turn budget for each child run. */
+    subagentMaxTurns: z.number().int().positive().max(200).default(24),
+    /** Append delegation guidance to the parent's system prompt. */
+    orchestratorGuidance: z.boolean().default(true),
   })
   .strict();
 
@@ -343,6 +364,8 @@ export const invocationPayloadSchema = z
      * model is shown, not what the session stores.
      */
     compactContext: z.boolean().default(false),
+    /** Enables delegation to child agents. Absent means a single-agent run. */
+    orchestration: headlessOrchestrationSchema.optional(),
     /**
      * The preferred response encoding when the transport did not state one, so a
      * stored agent definition can carry "this one streams" without its caller
